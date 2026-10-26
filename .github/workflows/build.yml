@@ -25,7 +25,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.27.1'
           channel: 'stable'
           cache: true
 
@@ -38,8 +38,8 @@ jobs:
       - name: Restore Custom Files and Sanitize XML
         run: "mkdir -p lib android/app/src/main && cp /tmp/pubspec.yaml.bak pubspec.yaml && cp /tmp/main.dart.bak lib/main.dart && if [ -f /tmp/AndroidManifest.xml.bak ]; then sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/\"/g' -e 's/package=\"com.example.doc_snap_archive\"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml; fi"
 
-      - name: Configure Android SDK and Kotlin Versions
-        run: "if [ -f android/settings.gradle ]; then sed -i -E 's/id \"org.jetbrains.kotlin.android\" version \"[^\"]+\"/id \"org.jetbrains.kotlin.android\" version \"1.9.24\"/g' android/settings.gradle || true; fi && if [ -f android/build.gradle ]; then sed -i -E \"s/ext.kotlin_version = '[^']+'/ext.kotlin_version = '1.9.24'/g\" android/build.gradle || true; fi && if [ -f android/app/build.gradle ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle || true; sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true; sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true; fi && if [ -f android/app/build.gradle.kts ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle.kts || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts || true; fi"
+      - name: Upgrade Kotlin and Android SDK Versions
+        run: "python3 -c \"import glob, re; [open(p, 'w').write(re.sub(r'(org\\.jetbrains\\.kotlin\\.android[\"\\x27)]*\\s+version\\s+[\"\\x27])[^\"\\x27]+([\"\\x27])', r'\\g<1>2.0.21\\g<2>', re.sub(r'(kotlin_version\\s*=\\s*[\"\\x27])[^\"\\x27]+([\"\\x27])', r'\\g<1>2.0.21\\g<2>', re.sub(r'compileSdk\\s*=\\s*flutter\\.compileSdkVersion', 'compileSdk = 34', re.sub(r'minSdk\\s*=\\s*flutter\\.minSdkVersion', 'minSdk = 21', open(p).read()))))) for p in glob.glob('android/**/*.gradle*', recursive=True)]\""
 
       - name: Install Dependencies
         run: "flutter pub get"
