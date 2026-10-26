@@ -35,11 +35,11 @@ jobs:
       - name: Create Flutter Platform Scaffold
         run: "flutter create --org com.example --project-name doc_snap_archive ."
 
-      - name: Restore Custom Files
-        run: "mkdir -p lib android/app/src/main && cp /tmp/pubspec.yaml.bak pubspec.yaml && cp /tmp/main.dart.bak lib/main.dart && if [ -f /tmp/AndroidManifest.xml.bak ]; then cp /tmp/AndroidManifest.xml.bak android/app/src/main/AndroidManifest.xml; fi"
+      - name: Restore Custom Files and Sanitize XML
+        run: "mkdir -p lib android/app/src/main && cp /tmp/pubspec.yaml.bak pubspec.yaml && cp /tmp/main.dart.bak lib/main.dart && if [ -f /tmp/AndroidManifest.xml.bak ]; then sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/\"/g' -e 's/package=\"com.example.doc_snap_archive\"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml; fi"
 
-      - name: Configure Android SDK Versions
-        run: "if [ -f android/app/build.gradle ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle || true; sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true; sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true; fi && if [ -f android/app/build.gradle.kts ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle.kts || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts || true; fi"
+      - name: Configure Android SDK and Kotlin Versions
+        run: "if [ -f android/settings.gradle ]; then sed -i -E 's/id \"org.jetbrains.kotlin.android\" version \"[^\"]+\"/id \"org.jetbrains.kotlin.android\" version \"1.9.24\"/g' android/settings.gradle || true; fi && if [ -f android/build.gradle ]; then sed -i -E \"s/ext.kotlin_version = '[^']+'/ext.kotlin_version = '1.9.24'/g\" android/build.gradle || true; fi && if [ -f android/app/build.gradle ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle || true; sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true; sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true; fi && if [ -f android/app/build.gradle.kts ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle.kts || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts || true; fi"
 
       - name: Install Dependencies
         run: "flutter pub get"
@@ -52,5 +52,4 @@ jobs:
         with:
           name: doc-snap-archive-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
-
           if-no-files-found: error
