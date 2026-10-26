@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
@@ -213,7 +212,6 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _prefsRecordsKey = 'local_doc_records_v2';
   static const String _prefsOneDriveSyncDirKey = 'onedrive_local_sync_dir';
   static const String _prefsOneDriveSubfolderKey = 'onedrive_target_subfolder';
-  static const String _prefsClientIdKey = 'onedrive_client_id';
   static const String _prefsAccessTokenKey = 'onedrive_access_token';
   static const String _prefsGeminiApiKey = 'gemini_api_key';
   static const String _defaultHtmlFileName = '증빙서류_누적목록.html';
@@ -223,10 +221,8 @@ class _HomeScreenState extends State<HomeScreen> {
   DocRecord? _selectedRecord;
   bool _isBusy = false;
 
-  // 원드라이브 앱 연동 폴더 경로 (기기에 설치된 OneDrive 앱과 동기화되는 문서함 폴더) 및 클라우드 설정
   String _oneDriveLocalDir = '';
   String _oneDriveSubfolder = 'Documents/증빙서류함';
-  String _clientId = '';
   String _accessToken = '';
   String _geminiApiKey = '';
 
@@ -253,7 +249,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _oneDriveLocalDir = prefs.getString(_prefsOneDriveSyncDirKey) ?? '';
       _oneDriveSubfolder =
           prefs.getString(_prefsOneDriveSubfolderKey) ?? 'Documents/증빙서류함';
-      _clientId = prefs.getString(_prefsClientIdKey) ?? '';
       _accessToken = prefs.getString(_prefsAccessTokenKey) ?? '';
       _geminiApiKey = prefs.getString(_prefsGeminiApiKey) ?? '';
     });
@@ -280,7 +275,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required String base64Image,
   }) async {
     if (_geminiApiKey.trim().isEmpty) {
-      _showSnack('상단 설정(톱니바퀴)에서 Gemini API 키를 입력하면 사진에서 글자와 공문 1문장 요약을 자동으로 채워줍니다.');
+      _showSnack('상단 설정 아이콘에서 Gemini API 키를 입력하면 사진 속 글자와 공문 1문장 요약을 자동으로 채워줍니다.');
       return null;
     }
 
@@ -791,7 +786,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final localDirCtrl = TextEditingController(text: _oneDriveLocalDir);
     final subfolderCtrl = TextEditingController(text: _oneDriveSubfolder);
     final geminiKeyCtrl = TextEditingController(text: _geminiApiKey);
-    final clientIdCtrl = TextEditingController(text: _clientId);
     final tokenCtrl = TextEditingController(text: _accessToken);
 
     await showDialog<void>(
@@ -806,12 +800,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    '1. 설치된 원드라이브 앱 폴더 자동 덮어쓰기',
+                    '1. 설치된 원드라이브 앱 폴더 자동 덮어쓰기 (권장)',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    '스마트폰에 설치된 원드라이브 앱(오프라인/동기화 폴더) 또는 내 문서함의 특정 폴더를 한 번 지정해두면, 이후 상단 [업로드] 버튼 한 번으로 기존 HTML에 새 목록만 추가하여 자동 덮어씁니다.',
+                    '스마트폰에 깔려있는 원드라이브 앱 연동 폴더(내 문서함 내 특정 폴더)를 최초 1회 선택해 두면, 이후 상단 [업로드] 버튼 한 번으로 기존 HTML에 새 목록만 추가하여 자동 덮어씁니다.',
                     style: TextStyle(fontSize: 12, color: Colors.black87),
                   ),
                   const SizedBox(height: 8),
@@ -821,7 +815,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: TextField(
                           controller: localDirCtrl,
                           decoration: const InputDecoration(
-                            labelText: '연동된 원드라이브 로컬 폴더 경로',
+                            labelText: '지정된 원드라이브 폴더 경로',
                             hintText: '폴더 선택 버튼을 눌러 지정하세요',
                             border: OutlineInputBorder(),
                             isDense: true,
@@ -863,14 +857,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const Divider(height: 24),
                   const Text(
-                    '3. 원드라이브 클라우드 직접 덮어쓰기 (선택)',
+                    '3. 원드라이브 클라우드 API 직접 연동 (선택)',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                   ),
                   const SizedBox(height: 6),
                   TextField(
                     controller: subfolderCtrl,
                     decoration: const InputDecoration(
-                      labelText: '내 원드라이브 문서함 내 특정 폴더 경로',
+                      labelText: '원드라이브 문서함 내 하위 폴더명',
                       hintText: '예: Documents/증빙서류함',
                       border: OutlineInputBorder(),
                       isDense: true,
@@ -878,27 +872,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 8),
                   TextField(
-                    controller: clientIdCtrl,
+                    controller: tokenCtrl,
                     decoration: const InputDecoration(
-                      labelText: 'Azure App Client ID (OAuth2 사용 시)',
+                      labelText: 'Graph API Access Token (선택)',
                       border: OutlineInputBorder(),
                       isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.login),
-                      label: const Text('Microsoft 계정 원터치 연동 로그인'),
-                      onPressed: () async {
-                        final cid = clientIdCtrl.text.trim();
-                        if (cid.isEmpty) {
-                          _showSnack('Client ID를 먼저 입력해주세요.');
-                          return;
-                        }
-                        await _signInWithMicrosoft(cid, tokenCtrl);
-                      },
                     ),
                   ),
                 ],
@@ -919,8 +897,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   await prefs.setString(
                       _prefsGeminiApiKey, geminiKeyCtrl.text.trim());
                   await prefs.setString(
-                      _prefsClientIdKey, clientIdCtrl.text.trim());
-                  await prefs.setString(
                       _prefsAccessTokenKey, tokenCtrl.text.trim());
 
                   setState(() {
@@ -929,7 +905,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         ? 'Documents/증빙서류함'
                         : subfolderCtrl.text.trim();
                     _geminiApiKey = geminiKeyCtrl.text.trim();
-                    _clientId = clientIdCtrl.text.trim();
                     _accessToken = tokenCtrl.text.trim();
                   });
                   if (ctx.mounted) Navigator.pop(ctx);
@@ -942,41 +917,6 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
     );
-  }
-
-  Future<void> _signInWithMicrosoft(
-    String clientId,
-    TextEditingController tokenCtrl,
-  ) async {
-    try {
-      const redirectUri = 'msauth://doc_snap_archive/auth';
-      final authUrl = Uri.https(
-        'login.microsoftonline.com',
-        '/common/oauth2/v2.0/authorize',
-        {
-          'client_id': clientId,
-          'response_type': 'token',
-          'redirect_uri': redirectUri,
-          'scope': 'Files.ReadWrite User.Read',
-          'response_mode': 'fragment',
-        },
-      );
-
-      final result = await FlutterWebAuth2.authenticate(
-        url: authUrl.toString(),
-        callbackUrlScheme: 'msauth',
-      );
-
-      final fragment = Uri.parse(result).fragment;
-      final params = Uri.splitQueryString(fragment);
-      final token = params['access_token'];
-      if (token != null && token.isNotEmpty) {
-        tokenCtrl.text = token;
-        _showSnack('Microsoft 원드라이브 계정 연동 성공!');
-      }
-    } catch (e) {
-      _showSnack('로그인 실패: $e');
-    }
   }
 
   // ===========================================================================
@@ -1048,7 +988,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       // 5) 기존 HTML 데이터 + 현재 앱 데이터를 ID 기준으로 누적 병합
-      // (앱에서 삭제했더라도 기존 HTML에 있던 항목은 유지되며, HTML에서 삭제한 ID만 제외)
       final Map<String, DocRecord> mergedMap = {};
       for (final rec in existingHtmlRecords) {
         if (!deletedInHtmlIds.contains(rec.id)) {
@@ -1100,7 +1039,6 @@ class _HomeScreenState extends State<HomeScreen> {
           '원드라이브 지정 폴더에 [$_defaultHtmlFileName] 자동 덮어쓰기 완료! (누적 총 ${mergedList.length}건)',
         );
       } else {
-        // 폴더 선택을 취소한 경우 기존에 깔려있는 원드라이브 앱으로 바로 전달되도록 호출
         await Share.shareXFiles(
           [XFile(internalBackupFile.path, mimeType: 'text/html')],
           text: '원드라이브 문서함에 덮어쓸 누적 HTML (${mergedList.length}건)',
@@ -1425,7 +1363,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final pdf = pw.Document();
       final nowDateStr = DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now());
 
-      // 출장비 + 병원비 총액 집계 (요약 페이지 상단 배너 표시용)
       int totalTravelSum = 0;
       int totalMedicalSum = 0;
       for (final r in targetRecords) {
@@ -1442,7 +1379,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // 1) 첫 페이지(여러 건이 많으면 자동 다중 페이지): 표 형태 요약 페이지 (MultiPage)
+      // 1) 첫 페이지: 표 형태 요약 페이지 (MultiPage)
       pdf.addPage(
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
@@ -1648,7 +1585,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 분류별 라벨-값 쌍 반환 (화면 하단 상세 카드 및 PDF 상세 페이지 공용)
   List<MapEntry<String, String>> _getCategoryFieldPairs(DocRecord rec) {
     final f = rec.fields;
     switch (rec.category) {
@@ -1735,7 +1671,6 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Column(
             children: [
-              // 상단 카테고리 필터 칩 바
               Container(
                 height: 48,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -1764,8 +1699,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
               ),
-
-              // 화면 상단 1/2: 문서 목록 리스트
               Expanded(
                 flex: 1,
                 child: items.isEmpty
@@ -1820,10 +1753,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         },
                       ),
               ),
-
               const Divider(height: 2, thickness: 2),
-
-              // 화면 하단 1/2: 선택한 문서의 맞춤 필드 요약 바 + 원본 사진 뷰어
               Expanded(
                 flex: 1,
                 child: Container(
