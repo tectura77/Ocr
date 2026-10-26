@@ -1,70 +1,56 @@
 name: Build Flutter Android APK
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
-  build-android:
-    name: Build APK via GitHub Actions
-    runs-on: ubuntu-latest
+  build-android:
+    name: Build APK via GitHub Actions
+    runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.0'
-          channel: 'stable'
-          cache: true
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+          cache: true
 
-      - name: Create Flutter Platform Scaffold (if missing)
-        run: |
-          # 리포지토리에 주요 파일만 올린 경우에도 자동으로 안드로이드 프로젝트 뼈대를 생성합니다.
-          cp pubspec.yaml /tmp/pubspec.yaml.bak
-          cp lib/main.dart /tmp/main.dart.bak
-          if [ -f android/app/src/main/AndroidManifest.xml ]; then
-            cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak
-          elif [ -f AndroidManifest.xml ]; then
-            cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak
-          fi
+      - name: Backup Custom Files Before Scaffold
+        run: "cp pubspec.yaml /tmp/pubspec.yaml.bak && if [ -f lib/main.dart ]; then cp lib/main.dart /tmp/main.dart.bak; elif [ -f main.dart ]; then cp main.dart /tmp/main.dart.bak; fi && if [ -f android/app/src/main/AndroidManifest.xml ]; then cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak; elif [ -f AndroidManifest.xml ]; then cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak; fi"
 
-          flutter create --org com.example --project-name doc_snap_archive .
+      - name: Create Flutter Platform Scaffold
+        run: "flutter create --org com.example --project-name doc_snap_archive ."
 
-          cp /tmp/pubspec.yaml.bak pubspec.yaml
-          cp /tmp/main.dart.bak lib/main.dart
-          if [ -f /tmp/AndroidManifest.xml.bak ]; then
-            cp /tmp/AndroidManifest.xml.bak android/app/src/main/AndroidManifest.xml
-          fi
+      - name: Restore Custom Files
+        run: "mkdir -p lib android/app/src/main && cp /tmp/pubspec.yaml.bak pubspec.yaml && cp /tmp/main.dart.bak lib/main.dart && if [ -f /tmp/AndroidManifest.xml.bak ]; then cp /tmp/AndroidManifest.xml.bak android/app/src/main/AndroidManifest.xml; fi"
 
-      - name: Configure Android compileSdkVersion & minSdkVersion
-        run: |
-          # 카메라/웹인증 플러그인 호환성을 위해 compileSdk 34, minSdk 21 보장
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle || true
-          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle || true
-          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
+      - name: Configure Android SDK Versions
+        run: "if [ -f android/app/build.gradle ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle || true; sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true; sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true; fi && if [ -f android/app/build.gradle.kts ]; then sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle.kts || true; sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts || true; fi"
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Install Dependencies
+        run: "flutter pub get"
 
-      - name: Build Release APK
-        run: flutter build apk --release --no-tree-shake-icons
+      - name: Build Release APK
+        run: "flutter build apk --release --no-tree-shake-icons"
 
-      - name: Upload Release APK to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: doc-snap-archive-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
+      - name: Upload Release APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-snap-archive-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+          if-no-files-found: error
