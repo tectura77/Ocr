@@ -1,11 +1,8 @@
-&lt;manifest xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;
-    package=&quot;com.example.doc_snap_archive&quot;&gt;
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 인터넷 및 네트워크 권한 (AI 공문 한문장 요약 / OCR 및 원드라이브 연동용) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- 카메라 및 저장소/폴더 덮어쓰기 권한 (설치된 원드라이브 앱 연동 폴더 접근 포함) -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
@@ -14,7 +11,6 @@
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
-    <!-- 설치된 원드라이브(com.microsoft.skydrive) 앱 패키지 가시성 허용 (Android 11+) -->
     <queries>
         <package android:name="com.microsoft.skydrive" />
         <intent>
@@ -45,7 +41,6 @@
             </intent-filter>
         </activity>
 
-        <!-- 원드라이브 Microsoft OAuth2 로그인 콜백 처리 -->
         <activity
             android:name="com.linusu.flutter_web_auth_2.CallbackActivity"
             android:exported="true">
@@ -61,5 +56,4 @@
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-
-&lt;/manifest&gt;
+</manifest>
