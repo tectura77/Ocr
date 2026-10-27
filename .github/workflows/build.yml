@@ -34,6 +34,7 @@ jobs:
           rm -rf android
           mv pubspec.yaml pubspec.yaml.bak
           if [ -f "lib/main.dart" ]; then cp lib/main.dart main.dart.bak; elif [ -f "main.dart" ]; then cp main.dart main.dart.bak; fi
+          rm -f main.dart lib/main.dart
           flutter create --org com.maplocation --project-name fieldcam3 --platforms=android .
           mv pubspec.yaml.bak pubspec.yaml
           mv main.dart.bak lib/main.dart
@@ -48,7 +49,7 @@ jobs:
 
       - name: Configure App Name (GPS현장캠), App Icon (icon.png), Android V2 Embedding, Permissions, Naver Map & Signing
         run: |
-          pip install --quiet Pillow
+          pip install --quiet --break-system-packages Pillow || pip install --quiet Pillow
           python3 - << 'EOF'
           import os, re, glob, json, shutil
           from PIL import Image
@@ -468,6 +469,7 @@ jobs:
           rm -rf ios
           mv pubspec.yaml pubspec.yaml.bak
           if [ -f "lib/main.dart" ]; then cp lib/main.dart main.dart.bak; elif [ -f "main.dart" ]; then cp main.dart main.dart.bak; fi
+          rm -f main.dart lib/main.dart
           flutter create --org com.maplocation --project-name fieldcam3 --platforms=ios .
           mv pubspec.yaml.bak pubspec.yaml
           mv main.dart.bak lib/main.dart
@@ -477,7 +479,7 @@ jobs:
 
       - name: Configure iOS Info.plist, Podfile, App Icon & Native MethodChannel (AppDelegate.swift)
         run: |
-          pip3 install --quiet Pillow
+          pip3 install --quiet --break-system-packages Pillow || pip3 install --quiet Pillow
           python3 - << 'EOF'
           import os, re, json, plistlib
           from PIL import Image
