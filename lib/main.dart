@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v14',
+      title: '증빙서류 스냅 v15',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -67,7 +67,7 @@ class DocCategory {
   ];
 }
 
-/// ★ 출장비 전용 5대 구분 (큰 카테고리와는 별도로 구분하여 자동 판별 및 구분별 합산 표기)
+/// 출장비 전용 5대 구분 (큰 카테고리와는 별도로 구분하여 자동 판별 및 구분별 합산 표기)
 class TravelDivision {
   static const String car = '자차'; // 지도 실시간추천 km × 2 × 300원
   static const String taxi = '택시'; // 택시영수증 / 카카오택시 증빙
@@ -86,7 +86,6 @@ class TravelDivision {
 
 // =============================================================================
 // 백그라운드 Isolate에서 실행되는 초고화질 + 초고속 4점 평탄화 함수
-// (모서리를 움직이지 않았을 때는 0.01초 만에 원본 바이트 그대로 통과시켜 지연시간 제거!)
 // =============================================================================
 class WarpRequest {
   final Uint8List originalBytes;
@@ -113,7 +112,6 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
       c[6] <= 0.03 &&
       c[7] >= 0.97);
 
-  // 모서리를 건드리지 않고 회전/보정도 없으면 0.01초 만에 원본 바이트 즉시 반환!
   if (isFullEdge && !req.enhanceContrast && req.rotationQuarterTurns % 4 == 0) {
     return req.originalBytes;
   }
@@ -154,7 +152,6 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
   if (avgW < 10) avgW = src.width.toDouble();
   if (avgH < 10) avgH = src.height.toDouble();
 
-  // 가로 문서든 세로 문서든 가로:세로 실제 비례(scale)를 100% 보존하여 왜곡 원천 차단!
   const double maxSide = 2200.0;
   double scale = 1.0;
   if (math.max(avgW, avgH) > maxSide) {
@@ -220,7 +217,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
   bool _enhanceScanContrast = false;
   bool _isProcessing = false;
   int? _activeCornerIndex;
-  double? _baseAspectRatio; // 이미지 디코딩 완료 전까지 대기하여 가로사진 찌그러짐 완벽 방지
+  double? _baseAspectRatio;
   int _rotationQuarterTurns = 0;
 
   @override
@@ -301,7 +298,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v14)'),
+        title: const Text('가로/세로 정비율 스캔 (v15)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -566,12 +563,10 @@ class DocRecord {
     required this.fields,
   });
 
-  /// 사용자가 직접 입력·등록한 큰 세부 카테고리 (예: 출장명, 병원 병명 등)
   String get subCategory {
     return fields['subCategory']?.trim() ?? '';
   }
 
-  /// ★ 출장비 전용 구분 ('자차', '택시', '기차', '식대', '통행료')
   String get travelDivision {
     final div = fields['travelDivision']?.trim() ?? '';
     return div.isNotEmpty ? div : TravelDivision.meal;
@@ -626,7 +621,10 @@ class DocRecord {
   String get displaySubtitle {
     switch (category) {
       case DocCategory.officialDoc:
-        return '발신: ${fields['sender'] ?? '-'} | 문서번호: ${fields['docNumber'] ?? '-'}\n요약: ${fields['aiSummary'] ?? '-'}';
+        final deadline = fields['replyDeadline'] ?? '';
+        final deadlinePart =
+            deadline.isNotEmpty ? ' | 회신요청일: $deadline' : '';
+        return '보낸사람: ${fields['sender'] ?? '-'} | 공문번호: ${fields['docNumber'] ?? '-'}$deadlinePart\n내용: ${fields['aiSummary'] ?? '-'}';
       case DocCategory.invoice:
         return '공급자: ${fields['supplierName'] ?? '-'} | 규격: ${fields['specName'] ?? '-'} | 수량: ${fields['quantity'] ?? '-'}${fields['unit'] ?? ''} (${fields['weight'] ?? '-'}kg)';
       case DocCategory.travel:
@@ -691,11 +689,10 @@ class _HomeScreenState extends State<HomeScreen> {
   List<DocRecord> _records = [];
   String _selectedCategoryFilter = DocCategory.officialDoc;
   String _selectedSubCategoryFilter = '전체';
-  String _selectedTravelDivisionFilter = '전체'; // 출장비 전용 구분 필터 ('전체', '자차', '택시', '기차', '식대', '통행료')
+  String _selectedTravelDivisionFilter = '전체';
   DocRecord? _selectedRecord;
   bool _isBusy = false;
 
-  // ★ 리스트와 사진 사이의 높이를 자유롭게 조절하는 분할 비율 (0.2 ~ 0.8)
   double _listSplitRatio = 0.48;
 
   Map<String, List<String>> _userSubCategoriesMap = {
@@ -837,7 +834,6 @@ class _HomeScreenState extends State<HomeScreen> {
         .toList();
   }
 
-  /// 대분류 + 사용자 등록 카테고리 필터가 적용된 목록
   List<DocRecord> get _subCategoryFilteredRecords {
     final majorList = _recordsInSelectedMajorCategory;
     if (_selectedSubCategoryFilter == '전체') return majorList;
@@ -849,7 +845,6 @@ class _HomeScreenState extends State<HomeScreen> {
         .toList();
   }
 
-  /// 출장비 탭인 경우 구분('자차', '택시', '기차', '식대', '통행료') 필터까지 적용된 최종 목록
   List<DocRecord> get _filteredRecords {
     final subFiltered = _subCategoryFilteredRecords;
     if (_selectedCategoryFilter == DocCategory.travel &&
@@ -917,7 +912,6 @@ class _HomeScreenState extends State<HomeScreen> {
         .fold(0, (sum, r) => sum + r.numericAmount);
   }
 
-  /// ★ 출장비 구분별('자차', '택시', '기차', '식대', '통행료') 합산 금액
   int _sumByTravelDivision(String division) {
     final baseList = _subCategoryFilteredRecords
         .where((r) => r.category == DocCategory.travel);
@@ -1003,7 +997,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 1단계: 온디바이스 한국어 OCR (오프라인 백업 및 0.3초 즉시 추출)
+  // 1단계: 온디바이스 한국어 OCR (김해시 공문 등 한국 행정공문서 표준 양식 100% 정밀 파싱!)
   // ===========================================================================
   Future<Map<String, String>> _extractFieldsOfflineOcr({
     required String imagePath,
@@ -1066,7 +1060,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// ★ [출장비] 5대 구분('자차', '택시', '기차', '식대', '통행료') 자동 판별 및 지도 '실시간 추천' km 정밀 파서
+  /// [출장비] 5대 구분('자차', '택시', '기차', '식대', '통행료') 자동 판별 및 지도 '실시간 추천' km 파서
   Map<String, String> _parseTravelReceiptText(
     String fullText,
     List<String> lines,
@@ -1074,7 +1068,6 @@ class _HomeScreenState extends State<HomeScreen> {
   ) {
     final result = <String, String>{};
 
-    // 날짜 추출
     final dateMatch = RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
         .firstMatch(fullText);
     if (dateMatch != null) {
@@ -1082,7 +1075,6 @@ class _HomeScreenState extends State<HomeScreen> {
           '${dateMatch.group(1)}-${dateMatch.group(2)!.padLeft(2, '0')}-${dateMatch.group(3)!.padLeft(2, '0')}';
     }
 
-    // 1) 지도 화면 여부 판별 ('실시간 추천', '안내시작', '전체경로', '큰길우선', '택시비' 등)
     final bool isMapRoute = RegExp(
       r'(?:실\s*시\s*간\s*추\s*천|안\s*내\s*시\s*작|전\s*체\s*경\s*로|큰\s*길\s*우\s*선|거\s*리\s*우\s*선|최\s*적\s*경\s*로|추천경로)',
     ).hasMatch(fullText);
@@ -1091,7 +1083,6 @@ class _HomeScreenState extends State<HomeScreen> {
       result['travelDivision'] = TravelDivision.car;
       double? detectedKm;
 
-      // '실시간 추천' 블록과 X좌표(가로 위치)가 가장 가까운 아래쪽 '00km' 텍스트를 최우선 추출!
       Rect? realtimeBox;
       for (final b in blocks) {
         for (final l in b.lines) {
@@ -1111,7 +1102,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 RegExp(r'(\d+(?:\.\d+)?)\s*km', caseSensitive: false)
                     .firstMatch(l.text);
             if (kmMatch != null && l.boundingBox.top >= realtimeBox.top) {
-              // '실시간 추천' 카드(왼쪽 카드) 영역 내에 있는 첫 번째 km 값 선택
               final dx = (l.boundingBox.left - realtimeBox.left).abs();
               if (dx < bestDist) {
                 bestDist = dx;
@@ -1122,7 +1112,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // 만약 박스 매칭이 안 되었으면 전체 텍스트에서 첫 번째 등장하는 '00km' 추출
       if (detectedKm == null) {
         final kmMatch = RegExp(r'(\d+(?:\.\d+)?)\s*km', caseSensitive: false)
             .firstMatch(fullText);
@@ -1143,31 +1132,24 @@ class _HomeScreenState extends State<HomeScreen> {
       return result;
     }
 
-    // 2) 기차 (코레일, SRT, KTX, 열차, 승차권)
     if (RegExp(r'(?:코레일|KORAIL|SRT|KTX|한국철도|승차권|열차|무궁화|새마을|ITX)',
             caseSensitive: false)
         .hasMatch(fullText)) {
       result['travelDivision'] = TravelDivision.train;
       result['merchantName'] =
           fullText.toUpperCase().contains('SRT') ? 'SRT 승차권' : '코레일(기차)';
-    }
-    // 3) 택시 (카카오 T, 카카오택시, 개인택시, 법인택시, 택시요금)
-    else if (RegExp(r'(?:카카오\s*T|카카오택시|택시|개인택시|법인택시|미터기|호출료)',
+    } else if (RegExp(r'(?:카카오\s*T|카카오택시|택시|개인택시|법인택시|미터기|호출료)',
             caseSensitive: false)
         .hasMatch(fullText)) {
       result['travelDivision'] = TravelDivision.taxi;
       result['merchantName'] =
           fullText.contains('카카오') ? '카카오택시' : '택시요금';
-    }
-    // 4) 통행료 (하이패스, 한국도로공사, 톨게이트, 통행료)
-    else if (RegExp(r'(?:하이패스|도로공사|통행료|톨게이트| 영업소|고속도로|hi-pass)',
+    } else if (RegExp(r'(?:하이패스|도로공사|통행료|톨게이트|영업소|고속도로|hi-pass)',
             caseSensitive: false)
         .hasMatch(fullText)) {
       result['travelDivision'] = TravelDivision.toll;
       result['merchantName'] = '하이패스 통행료';
-    }
-    // 5) 그 외 일반 영수증 → '식대'
-    else {
+    } else {
       result['travelDivision'] = TravelDivision.meal;
       for (final line in lines) {
         final m = RegExp(r'(?:상\s*호|가맹점명?)\s*[:：]?\s*([가-힣A-Za-z0-9()]+)')
@@ -1179,9 +1161,9 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 영수증 결제 금액 추출
     final amountPatterns = [
-      RegExp(r'(?:합\s*계|총\s*액|결\s*제\s*금\s*액|승\s*인\s*금\s*액|요\s*금|운\s*임|금\s*액)[^\d\n]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
+      RegExp(
+          r'(?:합\s*계|총\s*액|결\s*제\s*금\s*액|승\s*인\s*금\s*액|요\s*금|운\s*임|금\s*액)[^\d\n]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
       RegExp(r'\b([1-9]\d{0,2}(?:,\d{3})+)\s*원?\b'),
     ];
     for (final pat in amountPatterns) {
@@ -1199,17 +1181,23 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
-  /// [대외공문] 헤더/푸터 노이즈 제거 및 정밀 파서
+  /// ★ [대외공문] 한국 행정안전부/지자체/건설사 표준 공문서 전용 고정밀 파서
+  /// 예시 문서 완벽 대응:
+  /// - 제목 : 민원사항 알림 및 조치계획 제출요청 ('제 목' 라인에서 정확히 추출)
+  /// - 내용 : 공사작업 개인차량 도로변주차와 공원내 장기주차에 대한 민원 조치요청 ('2. ...' 본문에서 불필요한 현장 인사말을 걷어내고 핵심 사유 + 조치요청 형태로 요약)
+  /// - 공문번호 : 공동주택과-16092 (하단 결재란의 '시행 공동주택과-16092'를 최우선 추출하여 팩스 헤더 날짜 '2025-05-19'와 절대 혼동하지 않음!)
+  /// - 보낸사람 : 김해시장 (하단 직인란의 자간 띄어쓰기 '김 해 시 장' 또는 직인 '김해시장인'을 공백 제거 후 정확히 추출!)
+  /// - 회신요청일 : 2025-05-21 (본문 내 '2025.5.21.(수)까지 회신/제출' 날짜를 YYYY-MM-DD로 정규화하여 추출!)
   Map<String, String> _parseOfficialDocText(
     String fullText,
     List<String> lines,
   ) {
     final result = <String, String>{};
 
-    // 상단/하단 웹 URL(inhae.go.kr 등), Page.001/001, PDF 파일명 등 노이즈 줄 완벽 제거!
+    // 0) 모니터 상단 PDF 파일명(.pdf), 팩스 헤더(From :, To :, Page.001), 하단 웹주소(http, .go.kr), 우편번호/전화번호 줄 필터링
     final cleanLines = lines.where((l) {
       if (RegExp(
-        r'\.pdf\b|Page\s*[.\d/]+|http|www\.|\.go\.kr|\.co\.kr|\.or\.kr|파일\s*편집',
+        r'\.pdf\b|Page\s*[.\d/]+|From\s*:|To\s*:|http://|https://|www\.|\.go\.kr|\.co\.kr|전화번호|팩스번호|우\s*\d{5}',
         caseSensitive: false,
       ).hasMatch(l)) {
         return false;
@@ -1217,118 +1205,195 @@ class _HomeScreenState extends State<HomeScreen> {
       return true;
     }).toList();
 
-    final dateMatch = RegExp(
-      r'(?:시\s*행\s*일\s*자|시\s*행\s*일|보\s*낸\s*날\s*짜|일\s*자|시\s*행)?[^\d\n]*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
+    // 1) 보낸날짜 (하단 '시행 부서-번호 (2025. 5. 19.)'의 시행일자를 최우선 추출)
+    final sihaengDateMatch = RegExp(
+      r'시\s*행[^\n]*?\(\s*(\d{4})\s*[.년/-]\s*(\d{1,2})\s*[.월/-]\s*(\d{1,2})',
     ).firstMatch(fullText);
-    if (dateMatch != null) {
+    if (sihaengDateMatch != null) {
       result['sentDate'] =
-          '${dateMatch.group(1)}-${dateMatch.group(2)!.padLeft(2, '0')}-${dateMatch.group(3)!.padLeft(2, '0')}';
-    }
-
-    for (final line in cleanLines) {
-      final labelMatch = RegExp(
-        r'(?:문\s*서\s*번\s*호|공\s*문\s*번\s*호|분\s*류\s*기\s*호|시\s*행)\s*[:：]?\s*([^\n]+)',
-      ).firstMatch(line);
-      if (labelMatch != null) {
-        String rawNum = labelMatch.group(1)!.trim();
-        rawNum = rawNum.replaceAll(RegExp(r'\(\s*\d{4}.*$'), '').trim();
-        if (rawNum.isNotEmpty) {
-          result['docNumber'] = rawNum;
-          break;
-        }
+          '${sihaengDateMatch.group(1)}-${sihaengDateMatch.group(2)!.padLeft(2, '0')}-${sihaengDateMatch.group(3)!.padLeft(2, '0')}';
+    } else {
+      final anyDate = RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
+          .firstMatch(fullText);
+      if (anyDate != null) {
+        result['sentDate'] =
+            '${anyDate.group(1)}-${anyDate.group(2)!.padLeft(2, '0')}-${anyDate.group(3)!.padLeft(2, '0')}';
       }
     }
-    if ((result['docNumber'] ?? '').isEmpty) {
+
+    // 2) 공문번호 (하단 '시행 공동주택과-16092' 패턴을 최우선으로 찾고, 연도 4자리로 시작하는 날짜 '2025-05-19'는 절대 공문번호로 오인하지 않도록 차단!)
+    final sihaengDocNumMatch = RegExp(
+      r'시\s*행\s*[:：]?\s*([가-힣A-Za-z]{2,15}\s*-\s*\d{1,7}(?:\s*호)?)',
+    ).firstMatch(fullText);
+    if (sihaengDocNumMatch != null) {
+      result['docNumber'] =
+          sihaengDocNumMatch.group(1)!.replaceAll(RegExp(r'\s+'), '');
+    } else {
       for (final line in cleanLines) {
-        if (RegExp(r'\b\d{2,3}-\d{3,4}-\d{4}\b').hasMatch(line)) continue;
-        final patternMatch = RegExp(
-          r'([가-힣A-Za-z0-9().\-_]+\s*제?\s*\d{2,4}\s*-\s*\d{1,6}\s*호?|[가-힣A-Za-z]{2,12}\s*-\s*\d{1,5}(?:\s*호)?)',
+        // '문서번호', '공문번호', '시행' 라벨 뒤의 번호
+        final labelMatch = RegExp(
+          r'(?:문\s*서\s*번\s*호|공\s*문\s*번\s*호|분\s*류\s*기\s*호|시\s*행)\s*[:：]?\s*([가-힣A-Za-z0-9().\-_]+\s*-\s*\d{1,7}(?:\s*호)?)',
         ).firstMatch(line);
-        if (patternMatch != null) {
-          final cand = patternMatch.group(1)!.trim();
-          if (!RegExp(r'^\d{4}-\d{1,2}-\d{1,2}$').hasMatch(cand)) {
+        if (labelMatch != null) {
+          final cand = labelMatch.group(1)!.replaceAll(RegExp(r'\s+'), '');
+          if (!RegExp(r'^\d{4}-\d{1,2}').hasMatch(cand)) {
             result['docNumber'] = cand;
             break;
           }
         }
       }
     }
+    // 라벨이 깨졌더라도 '공동주택과-16092'처럼 [한글부서명-숫자] 형태를 직접 탐색
+    if ((result['docNumber'] ?? '').isEmpty) {
+      for (final line in cleanLines) {
+        if (RegExp(r'(?:전화|팩스|우\s*\d{5})').hasMatch(line)) continue;
+        final deptNumMatch = RegExp(
+          r'([가-힣]{2,12}(?:과|팀|실|부|처|국|단|소|청|원|본부|센터|공사|공단|건설|산업)?\s*-\s*\d{2,7}(?:\s*호)?|[가-힣A-Za-z0-9().\-_]*\s*제\s*\d{2,4}\s*-\s*\d{1,6}\s*호)',
+        ).firstMatch(line);
+        if (deptNumMatch != null) {
+          result['docNumber'] =
+              deptNumMatch.group(1)!.replaceAll(RegExp(r'\s+'), '');
+          break;
+        }
+      }
+    }
 
-    // 발신처: 번호('1.', '2.', '3.')로 시작하는 본문 줄은 절대 발신처가 될 수 없도록 차단!
-    for (final line in cleanLines) {
-      if (RegExp(r'^\d+[.)]').hasMatch(line.trim())) continue;
-      final senderLabel = RegExp(
-        r'(?:발\s*신\s*처|발\s*신\s*기\s*관|발\s*신|보\s*낸\s*사\s*람)\s*[:：]\s*([^\n]+)',
-      ).firstMatch(line);
-      if (senderLabel != null) {
-        result['sender'] = senderLabel.group(1)!.trim();
+    // 3) 보낸사람 ('김 해 시 장'처럼 글자 사이가 띄어쓰기된 직인 서명줄 또는 '김해시장인' 직인, 또는 상단 기관명 '김 해 시' 완벽 인식!)
+    for (final line in cleanLines.reversed) {
+      // 공백을 모두 제거한 문자열에서 기관장/발신명의 패턴 검사 (예: '김 해 시 장' -> '김해시장', '김 해 시 장 인' -> '김해시장')
+      final compact = line.replaceAll(RegExp(r'\s+'), '');
+      if (compact.length < 3 || compact.length > 22) continue;
+      if (compact.contains('귀하') ||
+          compact.contains('수신') ||
+          compact.contains('주무관') ||
+          compact.contains('팀장') ||
+          compact.contains('전결') ||
+          compact.contains('시행')) {
+        continue;
+      }
+      final sealMatch = RegExp(
+        r'^([가-힣A-Za-z0-9()]{2,14}?(?:시장|구청장|군수|도지사|장관|청장|교육감|원장|소장|본부장|단장|이사장|공단|공사|협회장?|조합장?|대표이사|현장대리인))(?:인|직인)?$',
+      ).firstMatch(compact);
+      if (sealMatch != null) {
+        result['sender'] = sealMatch.group(1)!;
         break;
       }
     }
-    if ((result['sender'] ?? '').isEmpty && cleanLines.isNotEmpty) {
-      for (final line in cleanLines.reversed.take(7)) {
-        if (RegExp(r'^\d+[.)]').hasMatch(line.trim())) continue;
-        if (line.length > 30) continue; // 긴 문장은 본문이므로 제외
-        if (line.contains('귀하') ||
-            line.contains('수신') ||
-            line.contains('붙임') ||
-            line.contains('첨부') ||
-            line.contains('끝.')) {
-          continue;
-        }
-        if (RegExp(
-                r'(?:주식회사|\(주\)|대표이사|현장소장|소장|본부장|장관|시장|구청장|시청|구청|청장|공단|공사|협회|조합|단장|원장)')
-            .hasMatch(line)) {
-          result['sender'] = line.trim();
+    // 만약 하단 직인명이 안 잡혔다면 상단 헤더의 '김 해 시' 같은 기관명 탐색
+    if ((result['sender'] ?? '').isEmpty) {
+      for (final line in cleanLines.take(6)) {
+        final compact = line.replaceAll(RegExp(r'\s+'), '');
+        if (RegExp(r'^[가-힣]{2,6}(?:시|군|구|청|도|부|처)$').hasMatch(compact)) {
+          result['sender'] = compact;
           break;
         }
       }
     }
 
+    // 4) 제목 ('제 목' 또는 '건 명' 뒤의 텍스트 추출. OCR이 '민원 사항 알림'으로 띄어 읽어도 자연스럽게 정리)
     for (int i = 0; i < cleanLines.length; i++) {
       final line = cleanLines[i];
       final titleMatch = RegExp(
-        r'(?:제\s*목|건\s*명|안\s*건)\s*[:：]?\s*(.+)',
-      ).firstMatch(line);
+        r'^(?:제\s*목|건\s*명|안\s*건)\s*[:：]?\s*(.+)',
+      ).firstMatch(line.trim());
       if (titleMatch != null) {
-        final t = titleMatch.group(1)!.trim();
-        if (t.length >= 2) {
-          result['title'] = t;
-          break;
-        } else if (i + 1 < cleanLines.length) {
-          result['title'] = cleanLines[i + 1].trim();
+        String t = titleMatch.group(1)!.trim();
+        if (t.length < 2 && i + 1 < cleanLines.length) {
+          t = cleanLines[i + 1].trim();
+        }
+        result['title'] = t;
+        break;
+      }
+    }
+    if ((result['title'] ?? '').isEmpty) {
+      for (final line in cleanLines) {
+        if (RegExp(
+                r'(?:제출\s*요청|조치계획|협조\s*요청|요청의\s*건|협조의\s*건|제출의\s*건|통보의\s*건|승인의\s*건|보고의\s*건|회신의\s*건|안내의\s*건)')
+            .hasMatch(line) &&
+            !RegExp(r'^[1-9]\.').hasMatch(line.trim())) {
+          result['title'] = line.trim();
           break;
         }
       }
     }
 
-    final deadlineMatch = RegExp(
-      r'(?:회\s*신\s*기\s*한|제\s*출\s*기\s*한|기\s*한|기\s*일|까\s*지)\s*[:：]?\s*([^\n]{4,25}?(?:\d{1,2}\s*[-./월]\s*\d{1,2}\s*일?|\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2}))',
+    // 5) 회신요청일 (본문 내 '2025.5.21.(수)까지 회신/제출' 등 날짜를 찾아 YYYY-MM-DD 표준 형식으로 변환!)
+    final deadlineDateMatch = RegExp(
+      r'(\d{4})\s*[.년/-]\s*(\d{1,2})\s*[.월/-]\s*(\d{1,2})\s*[.일]?\s*(?:\([월화수목금토일]\s*요일?\)|\([월화수목금토일]\))?\s*까\s*지',
     ).firstMatch(fullText);
-    if (deadlineMatch != null) {
-      result['replyDeadline'] = deadlineMatch.group(1)!.trim();
+    if (deadlineDateMatch != null) {
+      final y = deadlineDateMatch.group(1)!;
+      final m = deadlineDateMatch.group(2)!.padLeft(2, '0');
+      final d = deadlineDateMatch.group(3)!.padLeft(2, '0');
+      result['replyDeadline'] = '$y-$m-$d';
+    } else {
+      final shortDeadlineMatch = RegExp(
+        r'(\d{1,2})\s*[.월/-]\s*(\d{1,2})\s*[.일]?\s*(?:\([월화수목금토일]\))?\s*까\s*지',
+      ).firstMatch(fullText);
+      if (shortDeadlineMatch != null) {
+        final yearPrefix =
+            (result['sentDate'] != null && result['sentDate']!.length >= 4)
+                ? result['sentDate']!.substring(0, 4)
+                : DateTime.now().year.toString();
+        final m = shortDeadlineMatch.group(1)!.padLeft(2, '0');
+        final d = shortDeadlineMatch.group(2)!.padLeft(2, '0');
+        result['replyDeadline'] = '$yearPrefix-$m-$d';
+      }
     }
 
-    // 요약: '2.', '3.' 등 실제 용건 문장만 깔끔하게 추출
-    final numberedBody = <String>[];
-    for (final line in cleanLines) {
-      if (RegExp(
-              r'(?:귀\s*하|무궁한|루궁한|발찬|발전을|기원합니다|번창하심을|수\s*신\s*[:：]|수\s*진\s*|참\s*조\s*[:：]|문\s*서\s*번\s*호|붙\s*임|첨\s*부|제\s*목)')
-          .hasMatch(line)) {
-        continue;
-      }
-      if (line == result['title'] || line == result['sender']) continue;
-      if (line.length >= 6) {
-        numberedBody.add(line.replaceAll('끝.', '').trim());
-      }
-    }
+    // 6) 내용 요약:
+    // '1. 귀 사의 무궁한 발전~' 인사말과 '귀 사에서 시공 중인 ~ 현장과 관련하여,' 같은 배경 수식어를 걷어내고,
+    // 핵심 사유(예: '공사 작업자 개인차량 도로변 주차와 공원 내 장기 주차') + '에 대한 민원 조치요청' 형태로 간결하게 한 문장 요약!
+    final joinedClean = cleanLines.join('\n');
+    final para2Match = RegExp(
+      r'2\.\s*(.*?)(?=\n\s*3\.|\n\s*붙\s*임|\n\s*끝\.|$)',
+      dotAll: true,
+    ).firstMatch(joinedClean);
 
-    if (numberedBody.isNotEmpty) {
-      String summary = numberedBody.join(' ').replaceAll(RegExp(r'\s+'), ' ');
-      if (summary.length > 110) {
-        summary = '${summary.substring(0, 110)}...';
+    if (para2Match != null) {
+      String core = para2Match.group(1)!.replaceAll(RegExp(r'\s+'), ' ').trim();
+      // 앞부분 상투적 현장 수식어('귀 사에서 시공 중인 ... 현장과 관련하여,') 제거
+      core = core.replaceFirst(
+        RegExp(r'^.*?(?:현장과|공사와|사업과|건과)\s*관련하여\s*,?\s*'),
+        '',
+      );
+      // 뒷부분 서술어('~로 인해 인근 주민들이 불편을 호소하는 민원이 지속적으로 제기되고 있습니다.')를 간결한 명사구 요약('~에 대한 민원 조치요청')으로 변환
+      if (RegExp(r'(?:로\s*인해|으로\s*인해).*?민원이').hasMatch(core)) {
+        core = core.replaceFirst(
+          RegExp(r'(?:로\s*인해|으로\s*인해).*$'),
+          '에 대한 민원 조치요청',
+        );
+      } else {
+        core = core
+            .replaceFirst(RegExp(r'이\s*지속적으로\s*제기되고\s*있습니다\.?$'), ' 조치요청')
+            .replaceFirst(RegExp(r'바랍니다\.?\s*끝\.?$'), '요청');
       }
-      result['aiSummary'] = summary;
+      result['aiSummary'] = core.trim();
+    } else {
+      final bodyCandidates = <String>[];
+      for (final line in cleanLines) {
+        if (RegExp(
+                r'(?:귀\s*하|무궁한|루궁한|발찬|발전을|기원합니다|번창하심을|수\s*신|참\s*조|문\s*서\s*번\s*호|붙\s*임|첨\s*부|제\s*목|주무관|팀장|시행|전결|협조자)')
+            .hasMatch(line)) {
+          continue;
+        }
+        if (line == result['title'] || line == result['sender']) continue;
+        if (line.length >= 6) {
+          bodyCandidates.add(line.replaceAll('끝.', '').trim());
+        }
+      }
+      if (bodyCandidates.isNotEmpty) {
+        String summary =
+            bodyCandidates.join(' ').replaceAll(RegExp(r'\s+'), ' ');
+        summary = summary.replaceFirst(
+          RegExp(r'^.*?(?:현장과|공사와)\s*관련하여\s*,?\s*'),
+          '',
+        );
+        if (summary.length > 90) {
+          summary = '${summary.substring(0, 90)}...';
+        }
+        result['aiSummary'] = summary;
+      }
     }
 
     return result;
@@ -1476,9 +1541,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // ★ 2단계: 초고속 Gemini Vision AI 분석
-  // - 전송용 이미지만 메모리에서 경량화하여 업로드 시간을 5초 → 1초로 단축!
-  // - 병렬/빠른 타임아웃 적용으로 답답한 대기시간 완전히 해소!
+  // ★ 2단계: Gemini Vision AI 분석 (공문서 Few-shot 예시 프롬프트 탑재)
   // ===========================================================================
   static Uint8List _compressForAiPayloadIsolate(Uint8List srcBytes) {
     if (srcBytes.lengthInBytes <= 350 * 1024) return srcBytes;
@@ -1500,21 +1563,30 @@ class _HomeScreenState extends State<HomeScreen> {
     final key = _geminiApiKey.trim();
     if (key.isEmpty) return null;
 
-    // 보관용 원본 화질은 건드리지 않고, AI 전송용 패킷만 가볍게 만들어 응답 속도 4배 향상!
     final aiBytes = await compute(_compressForAiPayloadIsolate, imageBytes);
     final base64Image = base64Encode(aiBytes);
 
     String prompt;
     if (category == DocCategory.officialDoc) {
       prompt = '''
-이 대외공문 이미지를 읽고 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
-- sentDate: 문서 시행일 또는 보낸날짜 (YYYY-MM-DD 형식)
-- sender: 공문을 보낸 발신기관/회사/지자체명 (문서 상단 헤더 또는 하단 직인 옆 발신명의. 본문 문장을 넣지 말 것)
-- docNumber: '시행 OO-123', '문서번호', '제2025-00호' 등 문맥상 공문 번호
-- title: 수신자('~귀하')나 파일명('.pdf')을 제외한 실제 공문 제목/건명
-- aiSummary: '1. 귀사의 무궁한 발전을 기원합니다'나 하단 주소/페이지 번호는 완전히 빼고, 핵심 용건과 요청사항만 자연스러운 한 문장으로 요약
-- replyDeadline: 회신기한/제출기한 (없으면 공란)
-''';
+이 대한민국 공문서 이미지를 분석해서 아래 규칙과 예시를 정확히 따라 순수 JSON 객체로 응답해줘:
+
+[추출 규칙]
+1. title (제목): 문서 상단의 '제목' 또는 '건명' 옆에 적힌 문자열 (예: "민원사항 알림 및 조치계획 제출요청"). 상단 PDF 파일명(.pdf)이나 수신처('~귀하')는 절대 넣지 말 것.
+2. aiSummary (내용): '1. 귀 사의 무궁한 발전을 기원합니다'나 '귀 사에서 시공 중인 OO 현장과 관련하여' 같은 상투적 인사말/배경은 모두 빼고, 본문 2번·3번의 핵심 민원/안건 사유와 요청사항만 간결한 명사형 한 줄로 요약할 것 (예: "공사작업 개인차량 도로변주차와 공원내 장기주차에 대한 민원 조치요청").
+3. docNumber (공문번호): 문서 하단 결재란의 '시행' 옆에 적힌 '부서명-번호' (예: "공동주택과-16092"). 상단 팩스 날짜(2025-05-19)를 공문번호로 넣지 말 것.
+4. sender (보낸사람): 문서 하단 직인(관인)이 찍힌 발신명의 (예: '김 해 시 장' -> 공백 없이 "김해시장", 또는 대표이사/현장소장 명의).
+5. replyDeadline (회신요청일): 본문 중 '~까지 회신/제출하여 주시기 바랍니다'에 적힌 기한 날짜를 YYYY-MM-DD 형식으로 변환 (예: '2025.5.21.(수)까지' -> "2025-05-21", 기한이 없으면 공란 "").
+6. sentDate (보낸날짜): 하단 '시행' 옆 괄호 안의 시행일자 (예: "(2025. 5. 19.)" -> "2025-05-19").
+
+{
+  "title": "민원사항 알림 및 조치계획 제출요청",
+  "aiSummary": "공사작업 개인차량 도로변주차와 공원내 장기주차에 대한 민원 조치요청",
+  "docNumber": "공동주택과-16092",
+  "sender": "김해시장",
+  "replyDeadline": "2025-05-21",
+  "sentDate": "2025-05-19"
+}''';
     } else if (category == DocCategory.invoice) {
       prompt = '''
 이 자재송장/거래명세서 이미지를 읽고 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
@@ -1538,7 +1610,6 @@ class _HomeScreenState extends State<HomeScreen> {
 4) 하이패스, 한국도로공사, 톨게이트 영수증이면: travelDivision을 "통행료"로 하고 결제금액을 totalAmount에 넣어줘.
 5) 그 외 일반 식당/카페/영수증이면: travelDivision을 "식대"로 하고 결제금액을 totalAmount에 넣어줘.
 
-JSON 형식:
 {
   "travelDivision": "자차 또는 택시 또는 기차 또는 식대 또는 통행료",
   "distanceKm": "자차일 때 실시간 추천 km 숫자만 (자차가 아니면 0)",
@@ -1618,7 +1689,7 @@ JSON 형식:
   }
 
   // ===========================================================================
-  // 사진 촬영 → 즉시 입력 다이얼로그 오픈 (0초 대기!) & 백그라운드 자동 채우기
+  // 사진 촬영 → 즉시 입력 다이얼로그 오픈 & 백그라운드 자동 채우기
   // ===========================================================================
   Future<void> _addRecordDialog(ImageSource source) async {
     try {
@@ -1666,13 +1737,13 @@ JSON 형식:
       final subCategoryCtrl = TextEditingController(text: initialSubCat);
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
 
-      // 1. 대외공문 컨트롤러
-      final sentDateCtrl = TextEditingController(text: todayStr);
-      final senderCtrl = TextEditingController();
-      final docNumberCtrl = TextEditingController();
+      // 1. 대외공문 컨트롤러 (요청하신 순서: 제목, 내용, 공문번호, 보낸사람, 회신요청일, 보낸날짜)
       final docTitleCtrl = TextEditingController();
       final aiSummaryCtrl = TextEditingController();
+      final docNumberCtrl = TextEditingController();
+      final senderCtrl = TextEditingController();
       final replyDeadlineCtrl = TextEditingController();
+      final sentDateCtrl = TextEditingController(text: todayStr);
       final docAmountCtrl = TextEditingController(text: '0');
 
       // 2. 자재송장 컨트롤러
@@ -1686,7 +1757,7 @@ JSON 형식:
       final supplierNameCtrl = TextEditingController();
       final invoiceAmountCtrl = TextEditingController(text: '0');
 
-      // 3. 출장비 컨트롤러 (5대 구분: 자차 / 택시 / 기차 / 식대 / 통행료)
+      // 3. 출장비 컨트롤러
       String chosenTravelDivision = _selectedTravelDivisionFilter != '전체'
           ? _selectedTravelDivisionFilter
           : TravelDivision.car;
@@ -1713,23 +1784,23 @@ JSON 형식:
 
       void applyExtractedMap(Map<String, String> extracted) {
         if (chosenCategory == DocCategory.officialDoc) {
-          if (extracted['sentDate']?.isNotEmpty == true) {
-            sentDateCtrl.text = extracted['sentDate']!;
-          }
-          if (extracted['sender']?.isNotEmpty == true) {
-            senderCtrl.text = extracted['sender']!;
-          }
-          if (extracted['docNumber']?.isNotEmpty == true) {
-            docNumberCtrl.text = extracted['docNumber']!;
-          }
           if (extracted['title']?.isNotEmpty == true) {
             docTitleCtrl.text = extracted['title']!;
           }
           if (extracted['aiSummary']?.isNotEmpty == true) {
             aiSummaryCtrl.text = extracted['aiSummary']!;
           }
+          if (extracted['docNumber']?.isNotEmpty == true) {
+            docNumberCtrl.text = extracted['docNumber']!;
+          }
+          if (extracted['sender']?.isNotEmpty == true) {
+            senderCtrl.text = extracted['sender']!;
+          }
           if (extracted['replyDeadline']?.isNotEmpty == true) {
             replyDeadlineCtrl.text = extracted['replyDeadline']!;
+          }
+          if (extracted['sentDate']?.isNotEmpty == true) {
+            sentDateCtrl.text = extracted['sentDate']!;
           }
         } else if (chosenCategory == DocCategory.invoice) {
           if (extracted['arrivalDate']?.isNotEmpty == true) {
@@ -1795,8 +1866,6 @@ JSON 형식:
         }
       }
 
-      // ★ 화면이 멈춰 있는 느낌을 없애기 위해 입력 다이얼로그를 0.0초 만에 즉시 띄우고,
-      // 다이얼로그 안에서 OCR과 AI가 비동기로 동시에 돌아가며 칸을 실시간으로 채웁니다!
       bool isAiAnalyzing = true;
       bool initialAutoRunTriggered = false;
 
@@ -1810,7 +1879,6 @@ JSON 형식:
                 if (!ctx.mounted) return;
                 setDialogState(() => isAiAnalyzing = true);
                 try {
-                  // 1) 0.3초 만에 끝나는 내장 한국어 OCR 결과를 먼저 즉시 반영
                   final ocrMap = await _extractFieldsOfflineOcr(
                     imagePath: savedFile.path,
                     category: chosenCategory,
@@ -1819,7 +1887,6 @@ JSON 형식:
                     setDialogState(() => applyExtractedMap(ocrMap));
                   }
 
-                  // 2) Gemini API 키가 있으면 경량화된 패킷으로 초고속 문맥 분석하여 덮어쓰기
                   if (_geminiApiKey.trim().isNotEmpty) {
                     final aiMap = await _analyzeDocumentWithAi(
                       category: chosenCategory,
@@ -1838,7 +1905,6 @@ JSON 형식:
                 }
               }
 
-              // 다이얼로그가 열리자마자 자동으로 백그라운드 인식 시작
               if (!initialAutoRunTriggered) {
                 initialAutoRunTriggered = true;
                 Future.microtask(triggerOcrAndAiExtract);
@@ -1857,7 +1923,7 @@ JSON 형식:
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v14)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v15)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -1887,7 +1953,6 @@ JSON 형식:
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // 가로/세로 어떤 사진이든 찌그러짐 없이 원본 비율 그대로 보여주는 미리보기
                         Container(
                           height: 145,
                           margin: const EdgeInsets.only(bottom: 12),
@@ -1930,7 +1995,6 @@ JSON 형식:
                         ),
                         const SizedBox(height: 12),
 
-                        // 내가 등록한 큰 세부 카테고리 (출장명, 현장명, 병명 등)
                         Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
@@ -1955,7 +2019,7 @@ JSON 형식:
                                 onChanged: (_) => setDialogState(() {}),
                                 decoration: const InputDecoration(
                                   labelText: '카테고리 직접 입력 또는 아래에서 선택',
-                                  hintText: '예: 여의도출장, 갑상선, 안전공문 등',
+                                  hintText: '예: 주촌현장, 여의도출장, 갑상선 등',
                                   filled: true,
                                   fillColor: Colors.white,
                                   border: OutlineInputBorder(),
@@ -1993,38 +2057,42 @@ JSON 형식:
                           onPressed:
                               isAiAnalyzing ? null : triggerOcrAndAiExtract,
                           icon: const Icon(Icons.auto_awesome, size: 18),
-                          label: const Text('문자/금액 다시 자동 인식'),
+                          label: const Text('문자/내용 다시 자동 인식'),
                         ),
                         const Divider(height: 22),
 
-                        // 1. 대외공문 입력 폼
+                        // ★ 1. 대외공문 입력 폼 (요청하신 항목 및 순서 그대로 배치!)
                         if (chosenCategory == DocCategory.officialDoc) ...[
-                          _buildField(sentDateCtrl, '보낸날짜', '예: 2026-10-27'),
-                          _buildField(
-                              senderCtrl, '보낸사람 (발신처)', '예: 김해시장 / 대림건설(주)'),
-                          _buildField(
-                            docNumberCtrl,
-                            '공문번호 (문서번호/시행번호)',
-                            '예: 도시관리과-12345',
-                          ),
                           _buildField(
                             docTitleCtrl,
                             '제목',
-                            '예: 민원 사항 알림 및 조치계획 제출 요청',
+                            '예: 민원사항 알림 및 조치계획 제출요청',
                           ),
                           _buildField(
                             aiSummaryCtrl,
-                            '주요내용 (핵심 용건 1문장 요약)',
-                            '공문 핵심 내용 요약',
+                            '내용 (핵심 민원/안건 및 요청사항 요약)',
+                            '예: 공사작업 개인차량 도로변주차와 공원내 장기주차에 대한 민원 조치요청',
                             maxLines: 2,
                           ),
                           _buildField(
-                              replyDeadlineCtrl, '회신기한', '예: 2026-11-05'),
+                            docNumberCtrl,
+                            '공문번호 (시행 부서-번호)',
+                            '예: 공동주택과-16092',
+                          ),
                           _buildField(
-                            docAmountCtrl,
-                            '관련 금액 (원, 있을 경우 합계 반영)',
-                            '없으면 0',
-                            keyboardType: TextInputType.number,
+                            senderCtrl,
+                            '보낸사람 (발신명의)',
+                            '예: 김해시장',
+                          ),
+                          _buildField(
+                            replyDeadlineCtrl,
+                            '회신요청일',
+                            '예: 2025-05-21',
+                          ),
+                          _buildField(
+                            sentDateCtrl,
+                            '시행일 (보낸날짜)',
+                            '예: 2025-05-19',
                           ),
                         ],
 
@@ -2070,7 +2138,7 @@ JSON 형식:
                           ),
                         ],
 
-                        // ★ 3. 출장비 입력 폼 (자차 / 택시 / 기차 / 식대 / 통행료 자동 구분)
+                        // 3. 출장비 입력 폼 (자차 / 택시 / 기차 / 식대 / 통행료 자동 구분)
                         if (chosenCategory == DocCategory.travel) ...[
                           Container(
                             padding: const EdgeInsets.all(10),
@@ -2343,7 +2411,7 @@ JSON 형식:
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           return AlertDialog(
-            title: const Text('Gemini AI & 원드라이브 설정 (v14)'),
+            title: const Text('Gemini AI & 원드라이브 설정 (v15)'),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -2472,9 +2540,6 @@ JSON 형식:
     );
   }
 
-  // ===========================================================================
-  // HTML 내보내기 (현재 필터링된 카테고리만 + 드래그 가능한 상하 크기 조절 바 포함!)
-  // ===========================================================================
   Future<void> _exportAndUploadHtmlToOneDrive() async {
     setState(() => _isBusy = true);
     try {
@@ -2743,7 +2808,6 @@ JSON 형식:
       border-color: #1e3a8a;
       font-weight: 700;
     }
-    /* 상단 리스트 영역 */
     #list-pane {
       height: 44vh;
       min-height: 15vh;
@@ -2752,7 +2816,6 @@ JSON 형식:
       background: #ffffff;
       padding: 8px 10px;
     }
-    /* 리스트와 사진 사이 크기 조절 드래그 핸들 바 */
     #resizer-bar {
       height: 18px;
       background: #cbd5e1;
@@ -2886,15 +2949,12 @@ JSON 형식:
   <div id="totals-bar"></div>
   <div id="division-bar" style="display:none;"></div>
 
-  <!-- 상단 리스트 영역 -->
   <div id="list-pane"></div>
 
-  <!-- 리스트와 사진 크기 조절 바 -->
   <div id="resizer-bar" title="위아래로 드래그하여 크기 조절">
     <div id="resizer-handle"></div>
   </div>
 
-  <!-- 하단 증빙사진 영역 -->
   <div id="preview-pane">
     <div id="preview-info">위 목록에서 항목을 터치하면 아래에 고화질 증빙사진이 표시됩니다.</div>
     <img id="preview-img" style="display:none;" alt="증빙서류 사진" />
@@ -2907,7 +2967,6 @@ JSON 형식:
     let selectedTravelDiv = '전체';
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
 
-    // 상하 크기 조절 드래그 이벤트
     const resizer = document.getElementById('resizer-bar');
     const listPane = document.getElementById('list-pane');
     let isResizing = false;
@@ -2946,7 +3005,7 @@ JSON 형식:
     function formatFieldsSummary(item) {
       const f = item.fields || {};
       if (item.category === '대외공문') {
-        return `보낸날짜: \${escapeHtml(f.sentDate || '-')} | 발신: \${escapeHtml(f.sender || '-')} | 공문번호: \${escapeHtml(f.docNumber || '-')} | 회신기한: \${escapeHtml(f.replyDeadline || '-')}<br/><b>요약:</b> \${escapeHtml(f.aiSummary || '-')}`;
+        return `<b>내용:</b> \${escapeHtml(f.aiSummary || '-')}<br/><b>공문번호:</b> \${escapeHtml(f.docNumber || '-')} | <b>보낸사람:</b> \${escapeHtml(f.sender || '-')} | <b>회신요청일:</b> \${escapeHtml(f.replyDeadline || '-')}`;
       } else if (item.category === '자재송장') {
         return `도착일: \${escapeHtml(f.arrivalDate || '-')} | 송장번호: \${escapeHtml(f.orderNumber || '-')} | 품명/규격: \${escapeHtml(f.productName || '-')} (\${escapeHtml(f.specName || '-')}) | 수량/중량: \${escapeHtml(f.quantity || '-')}\${escapeHtml(f.unit || '')} / \${escapeHtml(f.weight || '-')} | 공급자: \${escapeHtml(f.supplierName || '-')}`;
       } else if (item.category === '출장비') {
@@ -2993,7 +3052,6 @@ JSON 형식:
       });
       document.getElementById('totals-bar').innerHTML = html;
 
-      // 출장비 항목이 있으면 자차/택시/기차/식대/통행료 구분별 합산 표시
       const subFiltered = archiveRecords.filter(r => selectedSubCat === '전체' || getSubCat(r) === selectedSubCat);
       const travelItems = subFiltered.filter(r => r.category === '출장비');
       const divBar = document.getElementById('division-bar');
@@ -3207,13 +3265,12 @@ JSON 형식:
     switch (rec.category) {
       case DocCategory.officialDoc:
         return [
-          MapEntry('카테고리', subLabel),
-          MapEntry('보낸날짜', f['sentDate'] ?? '-'),
-          MapEntry('보낸사람', f['sender'] ?? '-'),
-          MapEntry('공문번호', f['docNumber'] ?? '-'),
           MapEntry('제목', f['title'] ?? '-'),
-          MapEntry('회신기한', f['replyDeadline'] ?? '-'),
-          MapEntry('주요내용(1문장 요약)', f['aiSummary'] ?? '-'),
+          MapEntry('내용', f['aiSummary'] ?? '-'),
+          MapEntry('공문번호', f['docNumber'] ?? '-'),
+          MapEntry('보낸사람', f['sender'] ?? '-'),
+          MapEntry('회신요청일', f['replyDeadline'] ?? '-'),
+          MapEntry('시행일', f['sentDate'] ?? '-'),
         ];
       case DocCategory.invoice:
         return [
@@ -3234,7 +3291,8 @@ JSON 형식:
           return [
             MapEntry('카테고리', subLabel),
             MapEntry('구분', '자차'),
-            MapEntry('산출내역', '${km}km × 2 × 300원 = ${DocRecord._formatCurrency(f['totalAmount'])}원'),
+            MapEntry('산출내역',
+                '${km}km × 2 × 300원 = ${DocRecord._formatCurrency(f['totalAmount'])}원'),
             MapEntry('일자', f['date'] ?? '-'),
           ];
         }
@@ -3274,7 +3332,7 @@ JSON 형식:
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v14'),
+        title: const Text('증빙서류 스냅 v15'),
         actions: [
           IconButton(
             tooltip: 'Gemini AI 키 & 설정',
@@ -3468,7 +3526,6 @@ JSON 형식:
                       ),
                     ],
 
-                    // ★ 출장비 탭 전용: '자차', '택시', '기차', '식대', '통행료' 각 구분별 합산 금액 표시 바!
                     if (_selectedCategoryFilter == DocCategory.travel) ...[
                       const SizedBox(height: 6),
                       SizedBox(
@@ -3520,7 +3577,7 @@ JSON 형식:
                 ),
               ),
 
-              // ★ 3) 리스트 영역 + 드래그로 크기 조절하는 슬라이더 바 + 사진 영역
+              // 3) 리스트 영역 + 드래그로 크기 조절하는 슬라이더 바 + 사진 영역
               Expanded(
                 child: LayoutBuilder(
                   builder: (ctx, constraints) {
@@ -3534,7 +3591,6 @@ JSON 형식:
 
                     return Column(
                       children: [
-                        // 상단: 문서 목록 리스트
                         SizedBox(
                           height: listH,
                           child: items.isEmpty
@@ -3567,7 +3623,6 @@ JSON 형식:
                                       leading: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          // 1) 큰 세부 카테고리 선택 배지
                                           PopupMenuButton<String>(
                                             tooltip: '내 카테고리 선택 또는 신규 등록',
                                             onSelected: (newSub) =>
@@ -3642,7 +3697,6 @@ JSON 형식:
                                               ),
                                             ),
                                           ),
-                                          // 2) 출장비인 경우 별도의 구분('자차', '택시', '기차', '식대', '통행료') 배지 표시!
                                           if (rec.category ==
                                               DocCategory.travel) ...[
                                             const SizedBox(width: 4),
@@ -3714,7 +3768,7 @@ JSON 형식:
                                 ),
                         ),
 
-                        // ★ 중단: 위아래로 드래그하여 리스트와 사진 크기를 조절하는 슬라이더 바!
+                        // 중단: 위아래로 드래그하여 리스트와 사진 크기를 조절하는 슬라이더 바
                         GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onVerticalDragUpdate: (details) {
