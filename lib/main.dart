@@ -65,14 +65,6 @@ class DocCategory {
     travel,
     medical,
   ];
-
-  /// 문서 종류별 기본 제공 세부 카테고리 예시 (사용자가 얼마든지 직접 추가 가능)
-  static Map<String, List<String>> defaultSubCategories = {
-    officialDoc: ['일반공문', '설계변경', '안전점검', '기성청구', '인허가'],
-    invoice: ['철근/강재', '레미콘/시멘트', '배관/설비자재', '전기자재', '기타자재'],
-    travel: ['현장출장', '본사회의', '관공서업무', '거래처방문', '기타출장'],
-    medical: ['갑상선', '치질', '치과', '안과', '감기/내과', '도수/정형외과'],
-  };
 }
 
 // =============================================================================
@@ -115,16 +107,17 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
   if (avgW < 10) avgW = src.width.toDouble();
   if (avgH < 10) avgH = src.height.toDouble();
 
-  const double maxSide = 1400.0;
+  // 고해상도 OCR 인식을 위해 최대 변을 1600px까지 유지하되 가로:세로 정비율 엄격 보존
+  const double maxSide = 1600.0;
   double scale = 1.0;
   if (math.max(avgW, avgH) > maxSide) {
     scale = maxSide / math.max(avgW, avgH);
-  } else if (math.max(avgW, avgH) < 600) {
-    scale = 600.0 / math.max(avgW, avgH);
+  } else if (math.max(avgW, avgH) < 700) {
+    scale = 700.0 / math.max(avgW, avgH);
   }
 
-  final int dstW = (avgW * scale).round().clamp(200, 1600);
-  final int dstH = (avgH * scale).round().clamp(200, 1600);
+  final int dstW = (avgW * scale).round().clamp(250, 1800);
+  final int dstH = (avgH * scale).round().clamp(250, 1800);
 
   final dst = img.Image(width: dstW, height: dstH);
 
@@ -156,7 +149,7 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
     }
   }
 
-  return Uint8List.fromList(img.encodeJpg(dst, quality: 88));
+  return Uint8List.fromList(img.encodeJpg(dst, quality: 90));
 }
 
 // =============================================================================
@@ -451,7 +444,7 @@ class _QuadOverlayPainter extends CustomPainter {
 }
 
 // =============================================================================
-// 문서 항목 데이터 모델 (사용자 지정 세부 카테고리 subCategory 완벽 지원)
+// 문서 항목 데이터 모델 (사용자가 직접 등록한 세부 카테고리만 표시)
 // =============================================================================
 class DocRecord {
   final String id;
@@ -470,13 +463,12 @@ class DocRecord {
     required this.fields,
   });
 
-  /// 사용자가 지정한 세부 이력 카테고리 (예: 병원비 내 '갑상선', '치질', '치과' 등)
+  /// 사용자가 직접 입력·등록한 세부 카테고리 (없으면 빈 문자열)
   String get subCategory {
-    final sub = fields['subCategory']?.trim() ?? '';
-    return sub.isNotEmpty ? sub : '미분류';
+    return fields['subCategory']?.trim() ?? '';
   }
 
-  /// 해당 항목의 금액(원) 정수값 반환 (세부 카테고리별 합계 및 전체 합계 계산용)
+  /// 해당 항목의 금액(원) 정수값 반환
   int get numericAmount {
     String? raw;
     if (category == DocCategory.travel) {
@@ -571,7 +563,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   static const String _prefsRecordsKey = 'local_doc_records_v2';
-  static const String _prefsCustomSubCatsKey = 'custom_sub_categories_v1';
+  static const String _prefsUserSubCatsKey = 'user_registered_sub_cats_v2';
   static const String _prefsOneDriveSyncDirKey = 'onedrive_local_sync_dir';
   static const String _prefsOneDriveSubfolderKey = 'onedrive_target_subfolder';
   static const String _prefsAccessTokenKey = 'onedrive_access_token';
@@ -579,13 +571,18 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _defaultHtmlFileName = '증빙서류_누적목록.html';
 
   List<DocRecord> _records = [];
-  String _selectedCategoryFilter = DocCategory.medical; // 대분류 탭 (전체/대외공문/자재송장/출장비/병원비)
-  String _selectedSubCategoryFilter = '전체'; // 세부 이력 카테고리 필터 (예: 전체 / 갑상선 / 치질 등)
+  String _selectedCategoryFilter = DocCategory.officialDoc;
+  String _selectedSubCategoryFilter = '전체';
   DocRecord? _selectedRecord;
   bool _isBusy = false;
 
-  // 문서 종류별 사용자 정의 세부 카테고리 목록
-  Map<String, List<String>> _subCategoriesMap = {};
+  // ★ 기본 예시 없이 오직 사용자가 한 번이라도 직접 입력/등록한 세부 카테고리만 저장!
+  Map<String, List<String>> _userSubCategoriesMap = {
+    DocCategory.officialDoc: [],
+    DocCategory.invoice: [],
+    DocCategory.travel: [],
+    DocCategory.medical: [],
+  };
 
   String _oneDriveLocalDir = '';
   String _oneDriveSubfolder = 'Documents/증빙서류함';
@@ -607,37 +604,40 @@ class _HomeScreenState extends State<HomeScreen> {
         .map((e) => DocRecord.fromJson(jsonDecode(e) as Map<String, dynamic>))
         .toList();
 
-    // 저장된 세부 카테고리 불러오기 (없으면 기본 예시 세팅)
-    final Map<String, List<String>> loadedSubMap = {};
-    for (final cat in DocCategory.inputList) {
-      loadedSubMap[cat] = List<String>.from(
-        DocCategory.defaultSubCategories[cat] ?? ['일반'],
-      );
-    }
-    final rawSubJson = prefs.getString(_prefsCustomSubCatsKey);
+    final Map<String, List<String>> loadedSubMap = {
+      for (final c in DocCategory.inputList) c: <String>[],
+    };
+
+    final rawSubJson = prefs.getString(_prefsUserSubCatsKey);
     if (rawSubJson != null && rawSubJson.isNotEmpty) {
       try {
         final decoded = jsonDecode(rawSubJson) as Map<String, dynamic>;
         decoded.forEach((key, value) {
           if (value is List) {
-            loadedSubMap[key] = value.map((e) => e.toString()).toList();
+            loadedSubMap[key] = value
+                .map((e) => e.toString().trim())
+                .where((s) => s.isNotEmpty)
+                .toList();
           }
         });
       } catch (_) {}
     }
-    // 기존 기록에 들어있는 세부 카테고리도 자동 병합
+
+    // 사용자가 기존에 저장한 문서들에 입력했던 카테고리도 자동으로 목록에 보존
     for (final r in loaded) {
       final sub = r.subCategory;
-      final list = loadedSubMap[r.category] ?? [];
-      if (sub != '미분류' && !list.contains(sub)) {
-        list.add(sub);
-        loadedSubMap[r.category] = list;
+      if (sub.isNotEmpty) {
+        final list = loadedSubMap[r.category] ?? <String>[];
+        if (!list.contains(sub)) {
+          list.add(sub);
+          loadedSubMap[r.category] = list;
+        }
       }
     }
 
     setState(() {
       _records = loaded;
-      _subCategoriesMap = loadedSubMap;
+      _userSubCategoriesMap = loadedSubMap;
       if (_records.isNotEmpty) {
         _selectedCategoryFilter = _records.first.category;
         _selectedRecord = _records.first;
@@ -656,27 +656,37 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.setStringList(_prefsRecordsKey, encoded);
   }
 
-  Future<void> _saveSubCategoriesMap() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsCustomSubCatsKey, jsonEncode(_subCategoriesMap));
+  Future<void> _registerUserSubCategory(String majorCat, String subCat) async {
+    final clean = subCat.trim();
+    if (clean.isEmpty) return;
+    final list = List<String>.from(_userSubCategoriesMap[majorCat] ?? []);
+    if (!list.contains(clean)) {
+      list.add(clean);
+      setState(() {
+        _userSubCategoriesMap[majorCat] = list;
+      });
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _prefsUserSubCatsKey,
+        jsonEncode(_userSubCategoriesMap),
+      );
+    }
   }
 
-  /// 새 세부 카테고리 추가 (예: 병원비에 '갑상선', '치질', '무릎도수' 등 추가)
+  /// 새 세부 카테고리 직접 등록 팝업
   Future<String?> _promptAddNewSubCategory(String parentCategory) async {
     final ctrl = TextEditingController();
     final added = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('[$parentCategory] 새 세부 카테고리 추가'),
+        title: Text('[$parentCategory] 내 카테고리 등록'),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          decoration: InputDecoration(
-            labelText: '세부 이력/카테고리명 입력',
-            hintText: parentCategory == DocCategory.medical
-                ? '예: 갑상선, 치질, 치과, 안과'
-                : '예: 현장A동, 철근, 안전점검',
-            border: const OutlineInputBorder(),
+          decoration: const InputDecoration(
+            labelText: '새 카테고리 이름 입력',
+            hintText: '한 번 등록하면 다음부터 목록에서 바로 고를 수 있습니다',
+            border: OutlineInputBorder(),
           ),
         ),
         actions: [
@@ -686,27 +696,19 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            child: const Text('추가'),
+            child: const Text('등록'),
           ),
         ],
       ),
     );
 
     if (added != null && added.isNotEmpty) {
-      final list = List<String>.from(_subCategoriesMap[parentCategory] ?? []);
-      if (!list.contains(added)) {
-        list.insert(0, added);
-        setState(() {
-          _subCategoriesMap[parentCategory] = list;
-        });
-        await _saveSubCategoriesMap();
-      }
+      await _registerUserSubCategory(parentCategory, added);
       return added;
     }
     return null;
   }
 
-  /// 현재 선택된 대분류(예: 병원비)에 속한 전체 기록
   List<DocRecord> get _recordsInSelectedMajorCategory {
     if (_selectedCategoryFilter == DocCategory.all) return _records;
     return _records
@@ -714,36 +716,50 @@ class _HomeScreenState extends State<HomeScreen> {
         .toList();
   }
 
-  /// 대분류 + 세부 카테고리(예: 병원비 > 갑상선) 필터가 모두 적용된 기록
   List<DocRecord> get _filteredRecords {
     final majorList = _recordsInSelectedMajorCategory;
     if (_selectedSubCategoryFilter == '전체') return majorList;
+    if (_selectedSubCategoryFilter == '미지정') {
+      return majorList.where((r) => r.subCategory.isEmpty).toList();
+    }
     return majorList
         .where((r) => r.subCategory == _selectedSubCategoryFilter)
         .toList();
   }
 
-  /// 현재 대분류 내에서 사용 중인 모든 세부 카테고리 목록 반환
-  List<String> get _availableSubCategoriesForCurrentTab {
+  /// 현재 탭에서 사용자가 직접 등록한 세부 카테고리들만 반환 (임의의 고정 예시 없음!)
+  List<String> get _userRegisteredSubCategoriesForCurrentTab {
     final Set<String> subs = {};
     if (_selectedCategoryFilter == DocCategory.all) {
+      for (final list in _userSubCategoriesMap.values) {
+        subs.addAll(list);
+      }
       for (final r in _records) {
-        subs.add(r.subCategory);
+        if (r.subCategory.isNotEmpty) subs.add(r.subCategory);
       }
     } else {
-      subs.addAll(_subCategoriesMap[_selectedCategoryFilter] ?? []);
+      subs.addAll(_userSubCategoriesMap[_selectedCategoryFilter] ?? []);
       for (final r in _recordsInSelectedMajorCategory) {
-        subs.add(r.subCategory);
+        if (r.subCategory.isNotEmpty) subs.add(r.subCategory);
       }
     }
-    return ['전체', ...subs];
+    final result = ['전체', ...subs];
+    if (_recordsInSelectedMajorCategory.any((r) => r.subCategory.isEmpty) &&
+        subs.isNotEmpty) {
+      result.add('미지정');
+    }
+    return result;
   }
 
-  /// 세부 카테고리별 합계 금액 계산 (예: 병원비 내 '갑상선' 합계, '치질' 합계)
   int _sumBySubCategory(String subCat) {
     final baseList = _recordsInSelectedMajorCategory;
     if (subCat == '전체') {
       return baseList.fold(0, (sum, r) => sum + r.numericAmount);
+    }
+    if (subCat == '미지정') {
+      return baseList
+          .where((r) => r.subCategory.isEmpty)
+          .fold(0, (sum, r) => sum + r.numericAmount);
     }
     return baseList
         .where((r) => r.subCategory == subCat)
@@ -753,6 +769,9 @@ class _HomeScreenState extends State<HomeScreen> {
   int _countBySubCategory(String subCat) {
     final baseList = _recordsInSelectedMajorCategory;
     if (subCat == '전체') return baseList.length;
+    if (subCat == '미지정') {
+      return baseList.where((r) => r.subCategory.isEmpty).length;
+    }
     return baseList.where((r) => r.subCategory == subCat).length;
   }
 
@@ -765,7 +784,6 @@ class _HomeScreenState extends State<HomeScreen> {
         .fold(0, (sum, r) => sum + r.numericAmount);
   }
 
-  /// 이미 찍은 사진의 세부 카테고리(예: 갑상선 ↔ 치질) 변경
   Future<void> _changeRecordSubCategory(
     DocRecord record,
     String newSubCategory,
@@ -774,6 +792,8 @@ class _HomeScreenState extends State<HomeScreen> {
       final created = await _promptAddNewSubCategory(record.category);
       if (created == null || created.isEmpty) return;
       newSubCategory = created;
+    } else {
+      await _registerUserSubCategory(record.category, newSubCategory);
     }
 
     final idx = _records.indexWhere((r) => r.id == record.id);
@@ -798,11 +818,11 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
     await _saveLocalRecords();
-    _showSnack('이 사진의 카테고리가 [$newSubCategory](으)로 지정되었습니다.');
+    _showSnack('카테고리가 [$newSubCategory](으)로 지정되었습니다.');
   }
 
   // ===========================================================================
-  // 1단계: 문맥 인지형 온디바이스 한국어 OCR 분석기
+  // 1단계: 온디바이스 한국어 OCR (Y좌표 줄 정렬 + 공문서 구조 정밀 파싱)
   // ===========================================================================
   Future<Map<String, String>> _extractFieldsOfflineOcr({
     required String imagePath,
@@ -814,21 +834,49 @@ class _HomeScreenState extends State<HomeScreen> {
       final inputImage = InputImage.fromFilePath(imagePath);
       final RecognizedText recognized =
           await textRecognizer.processImage(inputImage);
-      final fullText = recognized.text;
-      final lines = fullText
-          .split('\n')
-          .map((l) => l.trim())
-          .where((l) => l.isNotEmpty)
-          .toList();
+
+      // ML Kit 블록의 TextLine들을 위→아래(Y좌표), 좌→우(X좌표) 순서로 정밀 병합하여
+      // 표 형태나 좌우로 떨어진 '문서번호 | 제2026-01호', '제 목 | ...'이 한 줄로 정확히 이어지게 처리!
+      final allTextLines = <TextLine>[];
+      for (final block in recognized.blocks) {
+        allTextLines.addAll(block.lines);
+      }
+      allTextLines.sort((a, b) => a.boundingBox.top.compareTo(b.boundingBox.top));
+
+      final mergedRows = <String>[];
+      List<TextLine> currentRow = [];
+      double currentTop = -1000;
+
+      for (final tl in allTextLines) {
+        final top = tl.boundingBox.top;
+        final height = tl.boundingBox.height;
+        if (currentRow.isEmpty || (top - currentTop).abs() <= height * 0.65) {
+          currentRow.add(tl);
+          if (currentRow.length == 1) currentTop = top;
+        } else {
+          currentRow.sort(
+              (a, b) => a.boundingBox.left.compareTo(b.boundingBox.left));
+          mergedRows.add(currentRow.map((e) => e.text.trim()).join('  '));
+          currentRow = [tl];
+          currentTop = top;
+        }
+      }
+      if (currentRow.isNotEmpty) {
+        currentRow
+            .sort((a, b) => a.boundingBox.left.compareTo(b.boundingBox.left));
+        mergedRows.add(currentRow.map((e) => e.text.trim()).join('  '));
+      }
+
+      final fullText = mergedRows.join('\n');
 
       if (category == DocCategory.medical) {
-        return _parseMedicalReceiptText(fullText, lines);
+        return _parseMedicalReceiptText(fullText, mergedRows);
       } else if (category == DocCategory.invoice) {
-        return _parseInvoiceText(fullText, lines);
+        return _parseInvoiceText(fullText, mergedRows);
       } else if (category == DocCategory.officialDoc) {
-        return _parseOfficialDocText(fullText, lines);
+        return _parseOfficialDocText(fullText, mergedRows);
       } else {
-        return _parseTravelReceiptText(fullText, lines);
+        return _parseTravelReceiptText(fullText, mergedRows);
       }
     } catch (_) {
       return {};
@@ -839,151 +887,154 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// [대외공문] 문맥 기반 스마트 파서
+  /// [대외공문] Y좌표 정렬 줄 기반 고정밀 파서
   Map<String, String> _parseOfficialDocText(
     String fullText,
     List<String> lines,
   ) {
     final result = <String, String>{};
 
+    // 1) 보낸날짜 / 시행일
     final dateMatch = RegExp(
-      r'(?:시\s*행|일\s*자|날\s*짜|발\s*신\s*일)?[^\d]*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
+      r'(?:시\s*행\s*일\s*자|시\s*행\s*일|보\s*낸\s*날\s*짜|일\s*자|시\s*행)?[^\d\n]*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
     ).firstMatch(fullText);
     if (dateMatch != null) {
       result['sentDate'] =
           '${dateMatch.group(1)}-${dateMatch.group(2)!.padLeft(2, '0')}-${dateMatch.group(3)!.padLeft(2, '0')}';
     }
 
-    final docNumPatterns = [
-      RegExp(
-        r'(?:문\s*서\s*번\s*호|공\s*문\s*번\s*호|분\s*류\s*기\s*호|시\s*행)\s*[:：]?\s*([가-힣A-Za-z0-9\s\-_().]{2,25}?(?:-\s*\d+|\d+\s*호))',
-      ),
-      RegExp(r'([가-힣A-Za-z0-9\-]*\s*제\s*\d{2,4}\s*[-.]?\s*\d*\s*호)'),
-      RegExp(
-        r'\b([가-힣A-Za-z]{2,12}\s*-\s*(?:\d{2,4}\s*-\s*)?\d{1,5}(?:\s*호)?)\b',
-      ),
-    ];
-
-    for (final pat in docNumPatterns) {
+    // 2) 공문번호 (예: '문서번호: ...', '시행 대림-123 (2026.10.27)', '제2026-15호', '공무-123' 등)
+    for (final line in lines) {
+      final labelMatch = RegExp(
+        r'(?:문\s*서\s*번\s*호|공\s*문\s*번\s*호|분\s*류\s*기\s*호|문\s*서\s*명|시\s*행)\s*[:：]?\s*([^\n]+)',
+      ).firstMatch(line);
+      if (labelMatch != null) {
+        String rawNum = labelMatch.group(1)!.trim();
+        // 뒤에 붙은 시행일자 (2026. 10. 27.) 제거
+        rawNum = rawNum.replaceAll(RegExp(r'\(\s*\d{4}.*$'), '').trim();
+        if (rawNum.isNotEmpty) {
+          result['docNumber'] = rawNum;
+          break;
+        }
+      }
+    }
+    if ((result['docNumber'] ?? '').isEmpty) {
       for (final line in lines) {
         if (RegExp(r'\b\d{2,3}-\d{3,4}-\d{4}\b').hasMatch(line)) continue;
-        if (RegExp(r'\b\d{3}-\d{2}-\d{5}\b').hasMatch(line)) continue;
-        final m = pat.firstMatch(line);
-        if (m != null) {
-          final candidate = m.group(1)!.trim();
-          if (!RegExp(r'^\d{4}-\d{1,2}-\d{1,2}$').hasMatch(candidate)) {
-            result['docNumber'] = candidate;
+        final patternMatch = RegExp(
+          r'([가-힣A-Za-z0-9().\-_]+\s*제?\s*\d{2,4}\s*-\s*\d{1,5}\s*호?|[가-힣A-Za-z]{2,12}\s*-\s*\d{1,5}(?:\s*호)?)',
+        ).firstMatch(line);
+        if (patternMatch != null) {
+          final cand = patternMatch.group(1)!.trim();
+          if (!RegExp(r'^\d{4}-\d{1,2}-\d{1,2}$').hasMatch(cand)) {
+            result['docNumber'] = cand;
             break;
           }
         }
       }
-      if ((result['docNumber'] ?? '').isNotEmpty) break;
     }
 
+    // 3) 보낸사람 (발신처 / 상단 기관명 / 하단 직인 발신명의)
     for (final line in lines) {
-      if (RegExp(r'^(?:발\s*신|보\s*낸\s*사\s*람|발\s*신\s*처|발\s*신\s*기\s*관)')
-          .hasMatch(line)) {
-        result['sender'] = line
-            .replaceAll(
-                RegExp(r'^(?:발\s*신|보\s*낸\s*사\s*람|발\s*신\s*처|발\s*신\s*기\s*관)\s*[:：]?'),
-                '')
-            .trim();
+      final senderLabel = RegExp(
+        r'(?:발\s*신\s*처|발\s*신\s*기\s*관|발\s*신|보\s*낸\s*사\s*람)\s*[:：]\s*([^\n]+)',
+      ).firstMatch(line);
+      if (senderLabel != null) {
+        result['sender'] = senderLabel.group(1)!.trim();
         break;
       }
     }
     if ((result['sender'] ?? '').isEmpty && lines.isNotEmpty) {
-      for (final line in lines.reversed.take(6)) {
-        if (!line.contains('귀하') &&
-            !line.contains('수신') &&
-            RegExp(r'(?:주식회사|\(주\)|대표이사|소장|장관|시장|구청장|공단|협회|조합|대리인|본부장)')
-                .hasMatch(line)) {
+      // 공문서 맨 마지막(직인 위치)에서 발신 기관/대표자명 추출
+      for (final line in lines.reversed.take(7)) {
+        if (line.contains('귀하') ||
+            line.contains('수신') ||
+            line.contains('붙임') ||
+            line.contains('첨부') ||
+            line.contains('담당')) {
+          continue;
+        }
+        if (RegExp(
+                r'(?:주식회사|\(주\)|대표이사|현장대리인|현장소장|소장|본부장|장관|시장|구청장|청장|공단|공사|협회|조합|단장|원장)')
+            .hasMatch(line)) {
           result['sender'] = line.trim();
           break;
         }
       }
     }
 
+    // 4) 제목 ('제 목', '건 명', '안 건' 줄과 같은 높이의 오른쪽 텍스트 또는 '~의 건')
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
-      if (RegExp(r'^(?:제\s*목|건\s*명|안\s*건)\s*[:：]?').hasMatch(line)) {
-        String extractedTitle =
-            line.replaceAll(RegExp(r'^(?:제\s*목|건\s*명|안\s*건)\s*[:：]?'), '').trim();
-        if (extractedTitle.isEmpty && i + 1 < lines.length) {
-          extractedTitle = lines[i + 1].trim();
-        }
-        result['title'] = extractedTitle;
-        break;
-      }
-    }
-    if ((result['title'] ?? '').isEmpty) {
-      for (final line in lines) {
-        if (line.contains('요청의 건') ||
-            line.contains('협조의 건') ||
-            line.contains('제출의 건') ||
-            line.contains('통보의 건') ||
-            line.contains('승인의 건') ||
-            line.contains('보고의 건') ||
-            line.contains('회신의 건') ||
-            line.contains('안내의 건')) {
-          result['title'] = line;
+      final titleMatch = RegExp(
+        r'(?:제\s*목|건\s*명|안\s*건)\s*[:：]?\s*(.+)',
+      ).firstMatch(line);
+      if (titleMatch != null) {
+        final t = titleMatch.group(1)!.trim();
+        if (t.length >= 2) {
+          result['title'] = t;
+          break;
+        } else if (i + 1 < lines.length) {
+          result['title'] = lines[i + 1].trim();
           break;
         }
       }
     }
     if ((result['title'] ?? '').isEmpty) {
       for (final line in lines) {
-        if (line.length < 4) continue;
-        if (RegExp(r'(?:귀\s*하|수\s*신|참\s*조|발\s*신|문\s*서\s*번\s*호|무궁한|발전을|기원합니다)')
+        if (RegExp(r'(?:요청의\s*건|협조의\s*건|제출의\s*건|통보의\s*건|승인의\s*건|보고의\s*건|회신의\s*건|안내의\s*건|송부의\s*건|청구의\s*건)')
             .hasMatch(line)) {
-          continue;
+          result['title'] = line.trim();
+          break;
         }
-        result['title'] = line;
-        break;
       }
     }
 
+    // 5) 회신기한
     final deadlineMatch = RegExp(
-      r'(?:회\s*신\s*기\s*한|제\s*출\s*기\s*한|기\s*한|까\s*지)[^\d]*(\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2}|\d{1,2}\s*월\s*\d{1,2}\s*일)',
+      r'(?:회\s*신\s*기\s*한|제\s*출\s*기\s*한|기\s*한|기\s*일|까\s*지)\s*[:：]?\s*([^\n]{4,25}?(?:\d{1,2}\s*[-./월]\s*\d{1,2}\s*일?|\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2}))',
     ).firstMatch(fullText);
     if (deadlineMatch != null) {
       result['replyDeadline'] = deadlineMatch.group(1)!.trim();
     }
 
-    final meaningfulLines = <String>[];
+    // 6) 주요내용 한문장 요약 (수신처와 '1. 귀사의 무궁한 발전~' 인사말을 제외한 본문 핵심 문장 결합)
+    final bodyCandidates = <String>[];
+    bool passedTitle = false;
     for (final line in lines) {
+      if (result['title'] != null &&
+          result['title']!.isNotEmpty &&
+          line.contains(result['title']!)) {
+        passedTitle = true;
+        continue;
+      }
       if (RegExp(
-              r'(?:귀\s*하|무궁한|발찬|발전을|기원합니다|축하드립니다|수\s*신\s*[:：]|참\s*조\s*[:：]|붙\s*임|첨\s*부|끝\.)')
+              r'(?:귀\s*하|무궁한|발찬|발전을|기원합니다|번창하심을|수\s*신\s*[:：]|참\s*조\s*[:：]|문\s*서\s*번\s*호|붙\s*임|첨\s*부|끝\.)')
           .hasMatch(line)) {
         continue;
       }
-      if (line == result['title'] || line == result['sender']) continue;
-      if (line.length >= 6) {
-        meaningfulLines.add(line);
+      if (passedTitle || RegExp(r'^[2-5가-라]\.\s*').hasMatch(line)) {
+        if (line != result['sender'] && line.length >= 6) {
+          bodyCandidates.add(line);
+        }
       }
     }
 
-    if (meaningfulLines.isNotEmpty) {
-      final numberedBody = meaningfulLines
-          .where((l) =>
-              RegExp(r'^[2-9가-하\-·•]').hasMatch(l) ||
-              RegExp(r'(?:요청|바랍니다|제출|협조|통보|회신|공지|알려)').hasMatch(l))
-          .toList();
-      final targetSummaryLines =
-          numberedBody.isNotEmpty ? numberedBody : meaningfulLines;
+    if (bodyCandidates.isNotEmpty) {
       String summary =
-          targetSummaryLines.take(2).join(' ').replaceAll(RegExp(r'\s+'), ' ');
-      if (summary.length > 90) {
-        summary = '${summary.substring(0, 90)}...';
+          bodyCandidates.take(2).join(' ').replaceAll(RegExp(r'\s+'), ' ');
+      if (summary.length > 95) {
+        summary = '${summary.substring(0, 95)}...';
       }
       result['aiSummary'] = summary;
     } else if ((result['title'] ?? '').isNotEmpty) {
-      result['aiSummary'] = '${result['title']}에 관한 공문입니다.';
+      result['aiSummary'] = '${result['title']} 관련 협조 및 처리 요청 건입니다.';
     }
 
     return result;
   }
 
-  /// [자재송장 / 거래명세서] 문맥 기반 스마트 파서
+  /// [자재송장 / 거래명세서] 파서
   Map<String, String> _parseInvoiceText(String fullText, List<String> lines) {
     final result = <String, String>{};
 
@@ -1158,7 +1209,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 2단계: Gemini AI 문맥 추론 분석 (설정 시 작동)
+  // 2단계: Gemini Vision AI 문맥 추론 분석 (대외공문 100% 문맥 이해 및 요약)
   // ===========================================================================
   Future<Map<String, String>?> _analyzeDocumentWithAi({
     required String category,
@@ -1169,17 +1220,14 @@ class _HomeScreenState extends State<HomeScreen> {
     String prompt;
     if (category == DocCategory.officialDoc) {
       prompt = '''
-이 대외공문 이미지를 읽고 문맥을 파악해서 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘.
-특히 '공문번호'라는 글자가 없더라도 부서명-연도-호수(예: 제2026-15호, 공무-123 등)처럼 문맥상 문서번호에 해당하는 값을 찾아서 docNumber에 넣고,
-수신자('~귀하')나 인사말('귀사의 무궁한 발전을~')은 제목과 요약에서 절대 빼고 실제 공문의 핵심 안건과 요청사항만 한 문장으로 명확히 요약해줘:
-{
-  "sentDate": "보낸날짜 (YYYY-MM-DD 형식)",
-  "sender": "보낸사람 (발신기관/회사명)",
-  "docNumber": "문맥상 공문번호/문서번호",
-  "title": "공문 실제 제목/건명 (수신처 제외)",
-  "aiSummary": "인사말을 제외한 공문의 실제 핵심 요청/통보 내용을 한 문장으로 요약",
-  "replyDeadline": "회신기한 (없으면 공란)"
-}''';
+이 대외공문 이미지를 사람처럼 시각적 레이아웃과 문맥으로 읽고 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
+- sentDate: 문서 시행일 또는 보낸날짜 (YYYY-MM-DD 형식)
+- sender: 공문을 보낸 발신기관/회사/대표자명 (문서 상단 헤더 또는 하단 직인 옆 발신명의)
+- docNumber: '공문번호'라는 라벨이 없더라도 '시행 OO-123', '문서번호', '제2026-00호', '부서명-숫자' 등 문맥상 공문 번호에 해당하는 값
+- title: 수신자('~귀하', '~현장대리인')를 절대 넣지 말고, '제목' 또는 '건명'에 해당하는 공문의 실제 제목
+- aiSummary: '1. 귀사의 무궁한 발전을 기원합니다' 같은 상투적 인사말은 완전히 제외하고, 이 공문이 왜 왔는지 핵심 용건과 요청사항만 자연스러운 한 문장으로 요약
+- replyDeadline: 본문이나 표에 적힌 회신기한/제출기한 (없으면 공란)
+''';
     } else if (category == DocCategory.invoice) {
       prompt = '''
 이 자재송장/거래명세서 이미지를 읽고 문맥을 파악해서 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
@@ -1259,7 +1307,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 사진 촬영 → 무왜곡 4모서리 스캔 → 세부 카테고리(갑상선/치질 등) 지정 & 저장
+  // 사진 촬영 → 무왜곡 4모서리 스캔 → 내가 등록한 카테고리 선택/신규등록 & 저장
   // ===========================================================================
   Future<void> _addRecordDialog(ImageSource source) async {
     try {
@@ -1294,16 +1342,19 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
 
       String chosenCategory = _selectedCategoryFilter == DocCategory.all
-          ? DocCategory.medical
+          ? DocCategory.officialDoc
           : _selectedCategoryFilter;
 
-      List<String> currentSubList =
-          List<String>.from(_subCategoriesMap[chosenCategory] ?? ['일반']);
-      String chosenSubCategory = (_selectedSubCategoryFilter != '전체' &&
-              currentSubList.contains(_selectedSubCategoryFilter))
+      // 사용자가 직접 등록했던 카테고리 목록 불러오기 (처음엔 비어 있음)
+      List<String> registeredSubList =
+          List<String>.from(_userSubCategoriesMap[chosenCategory] ?? []);
+      String initialSubCat = (_selectedSubCategoryFilter != '전체' &&
+              _selectedSubCategoryFilter != '미지정' &&
+              registeredSubList.contains(_selectedSubCategoryFilter))
           ? _selectedSubCategoryFilter
-          : (currentSubList.isNotEmpty ? currentSubList.first : '일반');
+          : (registeredSubList.isNotEmpty ? registeredSubList.first : '');
 
+      final subCategoryCtrl = TextEditingController(text: initialSubCat);
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
 
       // 1. 대외공문 컨트롤러
@@ -1434,7 +1485,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // 2) 초기 자동 인식
+      // 2) 초기 자동 인식 (온디바이스 Y좌표 정렬 OCR + Gemini API 키가 있으면 AI 문맥 추론까지 자동 수행)
       setState(() => _isBusy = true);
       final initialOcr = await _extractFieldsOfflineOcr(
         imagePath: savedFile.path,
@@ -1480,7 +1531,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       setDialogState(() => applyExtractedMap(aiMap));
                     }
                   }
-                  _showSnack('문서 맥락 분석 및 항목 자동 인식이 완료되었습니다.');
+                  _showSnack('문서 분석 및 항목 자동 인식이 완료되었습니다.');
                 } catch (e) {
                   _showSnack('문자 인식 완료: $e');
                 } finally {
@@ -1488,11 +1539,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
               }
 
-              final subListForDialog =
-                  _subCategoriesMap[chosenCategory] ?? ['일반'];
+              final mySavedCats =
+                  _userSubCategoriesMap[chosenCategory] ?? <String>[];
 
               return AlertDialog(
-                title: const Text('증빙서류 세부 카테고리 & 정보 입력'),
+                title: const Text('증빙서류 정보 입력'),
                 content: SizedBox(
                   width: double.maxFinite,
                   child: SingleChildScrollView(
@@ -1502,7 +1553,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         // 왜곡 없이 원본 비율 그대로 보여주는 스캔 미리보기
                         Container(
-                          height: 140,
+                          height: 135,
                           margin: const EdgeInsets.only(bottom: 12),
                           padding: const EdgeInsets.all(6),
                           decoration: BoxDecoration(
@@ -1521,7 +1572,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         DropdownButtonFormField<String>(
                           value: chosenCategory,
                           decoration: const InputDecoration(
-                            labelText: '문서 종류 (대분류)',
+                            labelText: '문서 종류 선택',
                             border: OutlineInputBorder(),
                             isDense: true,
                           ),
@@ -1534,9 +1585,9 @@ class _HomeScreenState extends State<HomeScreen> {
                               setDialogState(() {
                                 chosenCategory = v;
                                 final subs =
-                                    _subCategoriesMap[chosenCategory] ?? ['일반'];
-                                chosenSubCategory =
-                                    subs.isNotEmpty ? subs.first : '일반';
+                                    _userSubCategoriesMap[chosenCategory] ?? [];
+                                subCategoryCtrl.text =
+                                    subs.isNotEmpty ? subs.first : '';
                               });
                               await triggerOcrAndAiExtract();
                             }
@@ -1544,7 +1595,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         const SizedBox(height: 12),
 
-                        // ★ 핵심: 세부 이력 카테고리 선택 및 [+ 직접 추가] (예: 병원비 내 갑상선, 치질 등)
+                        // ★ 핵심: 임의의 예시 없이, 내가 한 번 입력·등록하면 다음부터 바로 고를 수 있는 카테고리 영역
                         Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
@@ -1555,64 +1606,57 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    '[$chosenCategory] 세부 이력 카테고리 지정',
-                                    style: const TextStyle(
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFF1E3A8A),
-                                    ),
+                              const Text(
+                                '세부 카테고리 (한 번 입력해 저장하면 다음부터 아래에 버튼으로 등록됩니다)',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF1E3A8A),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: subCategoryCtrl,
+                                onChanged: (_) => setDialogState(() {}),
+                                decoration: const InputDecoration(
+                                  labelText: '카테고리 직접 입력 또는 아래에서 선택',
+                                  hintText: '새 이름을 입력하고 저장하면 자동 등록됨',
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
+                              if (mySavedCats.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                const Text(
+                                  '내가 등록한 카테고리에서 선택:',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.black87,
                                   ),
-                                  TextButton.icon(
-                                    style: TextButton.styleFrom(
+                                ),
+                                const SizedBox(height: 4),
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children: mySavedCats.map((sub) {
+                                    final isSel =
+                                        subCategoryCtrl.text.trim() == sub;
+                                    return ChoiceChip(
                                       visualDensity: VisualDensity.compact,
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 6),
-                                    ),
-                                    onPressed: () async {
-                                      final added =
-                                          await _promptAddNewSubCategory(
-                                              chosenCategory);
-                                      if (added != null && added.isNotEmpty) {
+                                      label: Text(sub),
+                                      selected: isSel,
+                                      selectedColor: Colors.indigo.shade100,
+                                      onSelected: (_) {
                                         setDialogState(() {
-                                          chosenSubCategory = added;
+                                          subCategoryCtrl.text = sub;
                                         });
-                                      }
-                                    },
-                                    icon: const Icon(Icons.add_circle_outline,
-                                        size: 16),
-                                    label: const Text(
-                                      '카테고리 직접 추가',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Wrap(
-                                spacing: 6,
-                                runSpacing: 6,
-                                children: subListForDialog.map((sub) {
-                                  final isSel = chosenSubCategory == sub;
-                                  return ChoiceChip(
-                                    visualDensity: VisualDensity.compact,
-                                    label: Text(sub),
-                                    selected: isSel,
-                                    selectedColor: Colors.indigo.shade100,
-                                    onSelected: (_) {
-                                      setDialogState(() {
-                                        chosenSubCategory = sub;
-                                      });
-                                    },
-                                  );
-                                }).toList(),
-                              ),
+                                      },
+                                    );
+                                  }).toList(),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -1630,9 +1674,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                 )
                               : const Icon(Icons.auto_awesome),
                           label: Text(
-                            chosenCategory == DocCategory.officialDoc
-                                ? '공문 맥락 분석 & 한문장 요약 다시 실행'
-                                : '사진 속 문자/금액 다시 자동 인식',
+                            _geminiApiKey.trim().isNotEmpty
+                                ? 'Gemini AI 문맥 분석 & 요약 다시 실행'
+                                : '내장 OCR 자동 인식 다시 실행 (AI키 설정 시 정확도 상승)',
                           ),
                         ),
                         const Divider(height: 22),
@@ -1644,18 +1688,18 @@ class _HomeScreenState extends State<HomeScreen> {
                               senderCtrl, '보낸사람 (발신처)', '예: 대림건설(주) 대표이사'),
                           _buildField(
                             docNumberCtrl,
-                            '공문번호 (문맥상 문서/분류번호 자동추출)',
+                            '공문번호 (문서번호/시행번호)',
                             '예: 대림-2026-045호',
                           ),
                           _buildField(
                             docTitleCtrl,
-                            '제목 (수신처 제외 본 안건)',
+                            '제목',
                             '예: 현장 설계변경 승인 요청의 건',
                           ),
                           _buildField(
                             aiSummaryCtrl,
                             '주요내용 (핵심 용건 1문장 요약)',
-                            '인사말을 제외한 핵심 본문 요약',
+                            '공문 핵심 내용 요약',
                             maxLines: 2,
                           ),
                           _buildField(
@@ -1783,8 +1827,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (confirmed != true) return;
 
+      final enteredSubCategory = subCategoryCtrl.text.trim();
+      if (enteredSubCategory.isNotEmpty) {
+        await _registerUserSubCategory(chosenCategory, enteredSubCategory);
+      }
+
       final Map<String, String> collectedFields = {
-        'subCategory': chosenSubCategory,
+        'subCategory': enteredSubCategory,
       };
       if (chosenCategory == DocCategory.officialDoc) {
         collectedFields['sentDate'] = sentDateCtrl.text.trim();
@@ -1876,7 +1925,7 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('앱 목록에서 삭제'),
         content: const Text(
           '이 항목을 앱에서 삭제하시겠습니까?\n'
-          '(이미 원드라이브 HTML에 내보낸 기록은 지워지지 않고 계속 쌓여 유지됩니다.)',
+          '(이미 내보낸 누적 HTML의 기록은 지워지지 않고 계속 쌓여 유지됩니다.)',
         ),
         actions: [
           TextButton(
@@ -1902,7 +1951,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
     await _saveLocalRecords();
-    _showSnack('앱 목록에서 삭제되었습니다. (원드라이브 누적 본은 유지됨)');
+    _showSnack('앱 목록에서 삭제되었습니다. (누적 HTML 본은 유지됨)');
   }
 
   Future<void> _openSettingsDialog() async {
@@ -1916,30 +1965,48 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           return AlertDialog(
-            title: const Text('원드라이브 자동 덮어쓰기 & AI 설정'),
+            title: const Text('Gemini AI & 원드라이브 설정'),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    '1. 설치된 원드라이브 앱 폴더 자동 덮어쓰기',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    '1. Gemini AI 키 등록 (대외공문 정확도 100% 향상)',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: Color(0xFF1E3A8A),
+                    ),
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    '스마트폰에 깔려있는 원드라이브 앱 연동 폴더(내 문서함 내 특정 폴더)를 최초 1회 선택해 두면, 이후 상단 [HTML 내보내기] 버튼 한 번으로 기존 HTML에 새 목록만 추가하여 자동 덮어씁니다.',
+                    '대외공문처럼 표와 문맥이 섞인 서류는 Google AI Studio에서 무료 발급받은 Gemini API 키를 한 번 넣어두면 보낸사람·공문번호·제목·회신기한·한문장 요약을 정확히 읽어옵니다.',
                     style: TextStyle(fontSize: 12, color: Colors.black87),
                   ),
                   const SizedBox(height: 8),
+                  TextField(
+                    controller: geminiKeyCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Gemini API Key 입력',
+                      hintText: 'AIzaSy...',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const Divider(height: 24),
+                  const Text(
+                    '2. 로컬 폴더 지정 (선택)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  const SizedBox(height: 6),
                   Row(
                     children: [
                       Expanded(
                         child: TextField(
                           controller: localDirCtrl,
                           decoration: const InputDecoration(
-                            labelText: '지정된 원드라이브 폴더 경로',
-                            hintText: '폴더 선택 버튼을 눌러 지정하세요',
+                            labelText: '로컬 백업 폴더 경로',
                             border: OutlineInputBorder(),
                             isDense: true,
                           ),
@@ -1952,7 +2019,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         onPressed: () async {
                           final selectedDir =
                               await FilePicker.platform.getDirectoryPath(
-                            dialogTitle: '원드라이브 연동 폴더(내 문서함 등) 선택',
+                            dialogTitle: 'HTML 저장 폴더 선택',
                           );
                           if (selectedDir != null) {
                             setDialogState(() {
@@ -1965,22 +2032,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const Divider(height: 24),
                   const Text(
-                    '2. Gemini AI 키 (대외공문 문맥 추론 & 한문장 요약 정밀도 향상)',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                  ),
-                  const SizedBox(height: 6),
-                  TextField(
-                    controller: geminiKeyCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Gemini API Key (선택)',
-                      hintText: 'AIzaSy... (입력 시 촬영 직후 AI 문맥 추론 자동 실행)',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const Divider(height: 24),
-                  const Text(
-                    '3. 원드라이브 클라우드 API 직접 연동 (선택)',
+                    '3. 원드라이브 클라우드 API 직접 업로드 설정 (선택)',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                   ),
                   const SizedBox(height: 6),
@@ -2043,38 +2095,39 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 원드라이브 누적 HTML 내보내기 (왼쪽: 리스트 + 세부 카테고리별/전체 합계, 오른쪽: 증빙사진)
+  // 원드라이브 HTML 내보내기 (자동 누적 병합 + 원드라이브 앱 즉시 업로드/덮어쓰기)
   // ===========================================================================
-  Future<void> _oneClickSyncHtmlToOneDrive() async {
+  Future<void> _exportAndUploadHtmlToOneDrive() async {
     setState(() => _isBusy = true);
     try {
       List<DocRecord> existingHtmlRecords = [];
       Set<String> deletedInHtmlIds = {};
 
-      if (_oneDriveLocalDir.isEmpty && _accessToken.isEmpty) {
-        final pickedDir = await FilePicker.platform.getDirectoryPath(
-          dialogTitle: '원드라이브 앱과 연동할 내 문서함 폴더를 선택하세요 (최초 1회)',
-        );
-        if (pickedDir != null && pickedDir.isNotEmpty) {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(_prefsOneDriveSyncDirKey, pickedDir);
-          setState(() => _oneDriveLocalDir = pickedDir);
-        }
+      // 1) 앱 내부에 보관 중인 누적 HTML 마스터 파일을 먼저 읽어서(앱에서 지운 항목도 보존) 병합!
+      final appDir = await getApplicationDocumentsDirectory();
+      final internalMasterFile =
+          File(p.join(appDir.path, _defaultHtmlFileName));
+      if (await internalMasterFile.exists()) {
+        final backupHtml = await internalMasterFile.readAsString();
+        existingHtmlRecords.addAll(_parseRecordsFromHtml(backupHtml));
+        deletedInHtmlIds.addAll(_parseDeletedIdsFromHtml(backupHtml));
       }
 
-      File? targetSyncFile;
+      // 2) 지정된 로컬 폴더에 있는 HTML 파일도 읽어서 병합 (HTML에서 삭제한 내역 반영)
+      File? targetLocalFile;
       if (_oneDriveLocalDir.isNotEmpty) {
         final dir = Directory(_oneDriveLocalDir);
         if (await dir.exists()) {
-          targetSyncFile = File(p.join(dir.path, _defaultHtmlFileName));
-          if (await targetSyncFile.exists()) {
-            final existingHtml = await targetSyncFile.readAsString();
-            existingHtmlRecords = _parseRecordsFromHtml(existingHtml);
-            deletedInHtmlIds = _parseDeletedIdsFromHtml(existingHtml);
+          targetLocalFile = File(p.join(dir.path, _defaultHtmlFileName));
+          if (await targetLocalFile.exists()) {
+            final localHtml = await targetLocalFile.readAsString();
+            existingHtmlRecords.addAll(_parseRecordsFromHtml(localHtml));
+            deletedInHtmlIds.addAll(_parseDeletedIdsFromHtml(localHtml));
           }
         }
       }
 
+      // 3) Graph API 토큰이 설정된 경우 원격 원드라이브 파일도 읽어서 병합
       final cleanSubfolder =
           _oneDriveSubfolder.replaceAll(RegExp(r'^/+|/+$'), '');
       final remoteFilePath = '/$cleanSubfolder/$_defaultHtmlFileName';
@@ -2089,23 +2142,12 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         if (getResp.statusCode == 200) {
           final remoteHtml = utf8.decode(getResp.bodyBytes);
-          final remoteRecords = _parseRecordsFromHtml(remoteHtml);
-          final remoteDeleted = _parseDeletedIdsFromHtml(remoteHtml);
-          deletedInHtmlIds.addAll(remoteDeleted);
-          for (final r in remoteRecords) {
-            existingHtmlRecords.add(r);
-          }
+          existingHtmlRecords.addAll(_parseRecordsFromHtml(remoteHtml));
+          deletedInHtmlIds.addAll(_parseDeletedIdsFromHtml(remoteHtml));
         }
       }
 
-      final appDir = await getApplicationDocumentsDirectory();
-      final internalBackupFile = File(p.join(appDir.path, _defaultHtmlFileName));
-      if (existingHtmlRecords.isEmpty && await internalBackupFile.exists()) {
-        final backupHtml = await internalBackupFile.readAsString();
-        existingHtmlRecords = _parseRecordsFromHtml(backupHtml);
-        deletedInHtmlIds.addAll(_parseDeletedIdsFromHtml(backupHtml));
-      }
-
+      // 4) ID 기준 중복 제거 및 누적 병합 (앱에서 삭제했더라도 기존 HTML에 있던 기록은 계속 쌓임!)
       final Map<String, DocRecord> mergedMap = {};
       for (final rec in existingHtmlRecords) {
         if (!deletedInHtmlIds.contains(rec.id)) {
@@ -2124,15 +2166,17 @@ class _HomeScreenState extends State<HomeScreen> {
       final updatedHtml =
           _buildCumulativeHtmlDocument(mergedList, deletedInHtmlIds);
 
-      await internalBackupFile.writeAsString(updatedHtml, flush: true);
-
-      bool savedDirectly = false;
-
-      if (targetSyncFile != null) {
-        await targetSyncFile.writeAsString(updatedHtml, flush: true);
-        savedDirectly = true;
+      // 5) 앱 내부 누적 마스터 파일 및 지정된 로컬 폴더에 자동 덮어쓰기
+      await internalMasterFile.writeAsString(updatedHtml, flush: true);
+      if (targetLocalFile != null) {
+        try {
+          await targetLocalFile.writeAsString(updatedHtml, flush: true);
+        } catch (_) {}
       }
 
+      // 6) Graph API 토큰이 있으면 클라우드에 직접 업로드하고,
+      // 그렇지 않으면 안드로이드에 설치된 'OneDrive' 앱으로 즉시 업로드되도록 파일 전송 시트 실행!
+      bool uploadedViaApi = false;
       if (_accessToken.isNotEmpty) {
         final uploadUrl = Uri.parse(
           'https://graph.microsoft.com/v1.0/me/drive/root:$remoteFilePath:/content',
@@ -2146,24 +2190,61 @@ class _HomeScreenState extends State<HomeScreen> {
           body: utf8.encode(updatedHtml),
         );
         if (putResp.statusCode == 200 || putResp.statusCode == 201) {
-          savedDirectly = true;
+          uploadedViaApi = true;
         }
       }
 
-      if (savedDirectly) {
+      if (uploadedViaApi) {
         _showSnack(
-          '원드라이브 지정 폴더에 [$_defaultHtmlFileName] 자동 덮어쓰기 완료! (누적 총 ${mergedList.length}건)',
+          '원드라이브 클라우드($remoteFilePath)에 자동 덮어쓰기 완료! (누적 ${mergedList.length}건)',
         );
       } else {
+        // ★ 안드로이드에서 로컬 폴더 저장만으로는 OneDrive 앱이 클라우드로 자동 업로드를 안 하는 문제를 해결하기 위해
+        // 생성된 누적 HTML 파일을 OneDrive 앱 아이콘으로 바로 보내 업로드/덮어쓰기할 수 있도록 연결!
         await Share.shareXFiles(
-          [XFile(internalBackupFile.path, mimeType: 'text/html')],
-          text: '원드라이브 문서함에 덮어쓸 누적 HTML (${mergedList.length}건)',
+          [XFile(internalMasterFile.path, mimeType: 'text/html')],
+          subject: _defaultHtmlFileName,
+          text: '원드라이브(OneDrive) 아이콘을 선택하면 내 원드라이브 폴더에 즉시 업로드됩니다. (누적 총 ${mergedList.length}건)',
         );
       }
     } catch (e) {
-      _showSnack('원드라이브 HTML 덮어쓰기 중 오류: $e');
+      _showSnack('HTML 내보내기 중 오류: $e');
     } finally {
       if (mounted) setState(() => _isBusy = false);
+    }
+  }
+
+  /// 외부(원드라이브)에서 수정/삭제한 HTML 파일을 앱으로 불러와 동기화하는 기능
+  Future<void> _importExistingHtmlFromOneDrive() async {
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['html', 'htm'],
+      );
+      if (picked == null || picked.files.single.path == null) return;
+
+      final file = File(picked.files.single.path!);
+      final htmlContent = await file.readAsString();
+      final importedRecords = _parseRecordsFromHtml(htmlContent);
+      final importedDeletedIds = _parseDeletedIdsFromHtml(htmlContent);
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final internalMasterFile =
+          File(p.join(appDir.path, _defaultHtmlFileName));
+      await internalMasterFile.writeAsString(htmlContent, flush: true);
+
+      // 등록된 세부 카테고리 동기화
+      for (final r in importedRecords) {
+        if (r.subCategory.isNotEmpty) {
+          await _registerUserSubCategory(r.category, r.subCategory);
+        }
+      }
+
+      _showSnack(
+        '기존 HTML 파일(총 ${importedRecords.length}건, 삭제이력 ${importedDeletedIds.length}건)을 불러왔습니다.',
+      );
+    } catch (e) {
+      _showSnack('HTML 불러오기 실패: $e');
     }
   }
 
@@ -2201,7 +2282,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 좌-우 분할(왼쪽: 세부 카테고리별 합계·전체 합계·리스트 / 오른쪽: 증빙사진) 구조의 HTML 생성
+  /// 좌-우 분할(왼쪽: 내가 등록한 카테고리별 합계·전체 합계·리스트 / 오른쪽: 증빙사진) 구조의 HTML 생성
   String _buildCumulativeHtmlDocument(
     List<DocRecord> records,
     Set<String> deletedIds,
@@ -2247,7 +2328,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     .btn-save { background: #10b981; color: white; font-weight: 600; }
     .btn-save:hover { background: #059669; }
-    /* 상단 전체 합계 및 세부 카테고리(갑상선, 치질 등)별 합계 바 */
     #totals-bar {
       background: #ffffff;
       border-bottom: 1px solid #cbd5e1;
@@ -2277,7 +2357,6 @@ class _HomeScreenState extends State<HomeScreen> {
       border-color: #1e3a8a;
       font-weight: 700;
     }
-    /* 본문 좌(리스트) - 우(증빙사진) 2단 레이아웃 */
     #main-split {
       flex: 1;
       display: flex;
@@ -2367,10 +2446,10 @@ class _HomeScreenState extends State<HomeScreen> {
     <div class="toolbar">
       <select id="category-filter" onchange="onMajorFilterChange()">
         <option value="전체">전체 문서종류</option>
-        <option value="병원비">병원비</option>
-        <option value="출장비">출장비</option>
-        <option value="자재송장">자재송장</option>
         <option value="대외공문">대외공문</option>
+        <option value="자재송장">자재송장</option>
+        <option value="출장비">출장비</option>
+        <option value="병원비">병원비</option>
       </select>
       <button class="btn-save" onclick="downloadUpdatedHtml()">삭제/변경 반영된 HTML 저장</button>
     </div>
@@ -2384,7 +2463,7 @@ class _HomeScreenState extends State<HomeScreen> {
       <table>
         <thead>
           <tr>
-            <th style="width: 95px;">세부 카테고리</th>
+            <th style="width: 95px;">카테고리</th>
             <th style="width: 165px;">제목 / 상호 / 건명</th>
             <th>세부 항목 요약</th>
             <th style="width: 95px; text-align:right;">금액</th>
@@ -2410,7 +2489,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     function getSubCat(item) {
       const f = item.fields || {};
-      return (f.subCategory && f.subCategory.trim() !== '') ? f.subCategory.trim() : '미분류';
+      return (f.subCategory && f.subCategory.trim() !== '') ? f.subCategory.trim() : '';
     }
 
     function getAmount(item) {
@@ -2461,6 +2540,7 @@ class _HomeScreenState extends State<HomeScreen> {
       const subMap = {};
       majorFiltered.forEach(r => {
         const sc = getSubCat(r);
+        if (!sc) return;
         if (!subMap[sc]) subMap[sc] = { count: 0, sum: 0 };
         subMap[sc].count += 1;
         subMap[sc].sum += getAmount(r);
@@ -2495,8 +2575,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
         tr.innerHTML = `
           <td>
-            <div class="badge-major">\${escapeHtml(item.category)}</div><br/>
-            <span class="badge-sub">\${escapeHtml(sc)}</span>
+            <div class="badge-major">\${escapeHtml(item.category)}</div>
+            \${sc ? '<br/><span class="badge-sub">' + escapeHtml(sc) + '</span>' : ''}
           </td>
           <td>\${escapeHtml(getTitle(item))}</td>
           <td>\${formatFieldsSummary(item)}</td>
@@ -2522,7 +2602,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       const amt = getAmount(item);
       const sc = getSubCat(item);
-      infoEl.innerHTML = `<div><b>[\${escapeHtml(item.category)} &gt; \${escapeHtml(sc)}] \${escapeHtml(getTitle(item))}</b> \${amt > 0 ? '(' + amt.toLocaleString() + '원)' : ''}</div><div style="margin-top:4px;">\${formatFieldsSummary(item)}</div>`;
+      const catHeader = sc ? `\${escapeHtml(item.category)} &gt; \${escapeHtml(sc)}` : escapeHtml(item.category);
+      infoEl.innerHTML = `<div><b>[\${catHeader}] \${escapeHtml(getTitle(item))}</b> \${amt > 0 ? '(' + amt.toLocaleString() + '원)' : ''}</div><div style="margin-top:4px;">\${formatFieldsSummary(item)}</div>`;
       imgEl.src = 'data:image/jpeg;base64,' + item.base64Image;
       imgEl.style.display = 'block';
     }
@@ -2590,6 +2671,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final rec = targetRecords[i];
         final imgBytes = base64Decode(rec.base64Image);
         final pdfImage = pw.MemoryImage(imgBytes);
+        final catLabel = rec.subCategory.isNotEmpty
+            ? '${rec.category} · ${rec.subCategory}'
+            : rec.category;
 
         pdf.addPage(
           pw.Page(
@@ -2605,7 +2689,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
                         pw.Text(
-                          '[${rec.category} · ${rec.subCategory}] ${rec.displayTitle}',
+                          '[$catLabel] ${rec.displayTitle}',
                           style: pw.TextStyle(
                             font: koreanBoldFont,
                             fontSize: 11,
@@ -2641,7 +2725,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final pdfFile = File(
         p.join(
           tempDir.path,
-          '증빙사진_${_selectedCategoryFilter}_${_selectedSubCategoryFilter}_$timestamp.pdf',
+          '증빙사진_${_selectedCategoryFilter}_$timestamp.pdf',
         ),
       );
       await pdfFile.writeAsBytes(pdfBytes, flush: true);
@@ -2659,10 +2743,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<MapEntry<String, String>> _getCategoryFieldPairs(DocRecord rec) {
     final f = rec.fields;
+    final subLabel = rec.subCategory.isNotEmpty ? rec.subCategory : '미지정';
     switch (rec.category) {
       case DocCategory.officialDoc:
         return [
-          MapEntry('세부카테고리', rec.subCategory),
+          MapEntry('카테고리', subLabel),
           MapEntry('보낸날짜', f['sentDate'] ?? '-'),
           MapEntry('보낸사람', f['sender'] ?? '-'),
           MapEntry('공문번호', f['docNumber'] ?? '-'),
@@ -2672,7 +2757,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ];
       case DocCategory.invoice:
         return [
-          MapEntry('세부카테고리', rec.subCategory),
+          MapEntry('카테고리', subLabel),
           MapEntry('도착일', f['arrivalDate'] ?? '-'),
           MapEntry('주문/송장번호', f['orderNumber'] ?? '-'),
           MapEntry('제품명', f['productName'] ?? '-'),
@@ -2684,7 +2769,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ];
       case DocCategory.travel:
         return [
-          MapEntry('세부카테고리', rec.subCategory),
+          MapEntry('카테고리', subLabel),
           MapEntry('출장거리(편도)', '${f['distanceKm'] ?? '0'} km'),
           MapEntry('교통비(자가용=거리×300×2)',
               '${DocRecord._formatCurrency(f['carFare'])}원'),
@@ -2697,7 +2782,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ];
       case DocCategory.medical:
         return [
-          MapEntry('세부카테고리(진료이력)', rec.subCategory),
+          MapEntry('카테고리', subLabel),
           MapEntry('상호', f['clinicName'] ?? '-'),
           MapEntry('사업자등록번호', f['bizRegNumber'] ?? '-'),
           MapEntry('발행일', f['issueDate'] ?? '-'),
@@ -2716,7 +2801,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final items = _filteredRecords;
-    final subCategories = _availableSubCategoriesForCurrentTab;
+    final subCategories = _userRegisteredSubCategoriesForCurrentTab;
     final majorTotalSum = _sumByMajorCategory(_selectedCategoryFilter);
     final currentSubTotalSum = _sumBySubCategory(_selectedSubCategoryFilter);
 
@@ -2727,22 +2812,30 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('증빙서류 스냅'),
         actions: [
           IconButton(
-            tooltip: '원드라이브 폴더 & AI 설정',
+            tooltip: 'Gemini AI 키 & 설정',
             icon: Icon(
-              (_oneDriveLocalDir.isNotEmpty || _accessToken.isNotEmpty)
-                  ? Icons.cloud_done
+              _geminiApiKey.trim().isNotEmpty
+                  ? Icons.auto_awesome
                   : Icons.settings,
+              color: _geminiApiKey.trim().isNotEmpty
+                  ? Colors.amberAccent
+                  : Colors.white,
             ),
             onPressed: _openSettingsDialog,
           ),
+          IconButton(
+            tooltip: '기존 HTML 파일 불러오기',
+            icon: const Icon(Icons.folder_open, size: 20),
+            onPressed: _isBusy ? null : _importExistingHtmlFromOneDrive,
+          ),
           TextButton.icon(
-            onPressed: _isBusy ? null : _oneClickSyncHtmlToOneDrive,
+            onPressed: _isBusy ? null : _exportAndUploadHtmlToOneDrive,
             icon: const Icon(Icons.cloud_upload, color: Colors.white, size: 18),
             label: const Text(
               'HTML 내보내기',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 12.5,
+                fontSize: 12,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -2758,7 +2851,7 @@ class _HomeScreenState extends State<HomeScreen> {
               'PDF 내보내기',
               style: TextStyle(
                 color: Colors.amberAccent,
-                fontSize: 12.5,
+                fontSize: 12,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -2809,7 +2902,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // 2) 상단 2줄: 세부 이력 카테고리별 합계 & 전체 합계 대시보드 (예: 병원비 내 '갑상선 17,100원', '치질 4,600원')
+              // 2) 상단 2줄: 전체 합계 & 내가 등록한 카테고리별 합계 대시보드
               Container(
                 width: double.infinity,
                 padding:
@@ -2850,7 +2943,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             child: const Padding(
                               padding: EdgeInsets.symmetric(horizontal: 4),
                               child: Text(
-                                '+ 새 카테고리 추가',
+                                '+ 내 카테고리 등록',
                                 style: TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.bold,
@@ -2861,55 +2954,58 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                       ],
                     ),
-                    const SizedBox(height: 6),
-                    SizedBox(
-                      height: 34,
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: subCategories.length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 6),
-                        itemBuilder: (ctx, idx) {
-                          final subCat = subCategories[idx];
-                          final selected = subCat == _selectedSubCategoryFilter;
-                          final cnt = _countBySubCategory(subCat);
-                          final sum = _sumBySubCategory(subCat);
-                          final labelText = subCat == '전체'
-                              ? '전체 ($cnt건 · ${NumberFormat('#,###').format(sum)}원)'
-                              : '$subCat ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
-                          return ChoiceChip(
-                            visualDensity: VisualDensity.compact,
-                            selectedColor: Colors.indigo.shade100,
-                            label: Text(
-                              labelText,
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: selected
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
+                    if (subCategories.length > 1) ...[
+                      const SizedBox(height: 6),
+                      SizedBox(
+                        height: 34,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: subCategories.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 6),
+                          itemBuilder: (ctx, idx) {
+                            final subCat = subCategories[idx];
+                            final selected =
+                                subCat == _selectedSubCategoryFilter;
+                            final cnt = _countBySubCategory(subCat);
+                            final sum = _sumBySubCategory(subCat);
+                            final labelText = subCat == '전체'
+                                ? '전체 ($cnt건 · ${NumberFormat('#,###').format(sum)}원)'
+                                : '$subCat ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
+                            return ChoiceChip(
+                              visualDensity: VisualDensity.compact,
+                              selectedColor: Colors.indigo.shade100,
+                              label: Text(
+                                labelText,
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: selected
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
                               ),
-                            ),
-                            selected: selected,
-                            onSelected: (_) {
-                              setState(() {
-                                _selectedSubCategoryFilter = subCat;
-                                final currentList = _filteredRecords;
-                                if (!currentList
-                                    .any((r) => r.id == _selectedRecord?.id)) {
-                                  _selectedRecord = currentList.isNotEmpty
-                                      ? currentList.first
-                                      : null;
-                                }
-                              });
-                            },
-                          );
-                        },
+                              selected: selected,
+                              onSelected: (_) {
+                                setState(() {
+                                  _selectedSubCategoryFilter = subCat;
+                                  final currentList = _filteredRecords;
+                                  if (!currentList
+                                      .any((r) => r.id == _selectedRecord?.id)) {
+                                    _selectedRecord = currentList.isNotEmpty
+                                        ? currentList.first
+                                        : null;
+                                  }
+                                });
+                              },
+                            );
+                          },
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
 
-              // 3) 화면 상단 1/2: 문서 목록 리스트 (배지를 눌러 언제든 갑상선/치질 등 세부 카테고리 지정·변경 가능)
+              // 3) 화면 상단 1/2: 문서 목록 리스트 (배지를 눌러 내가 등록한 카테고리에서 고르거나 새로 등록)
               Expanded(
                 flex: 1,
                 child: items.isEmpty
@@ -2926,26 +3022,29 @@ class _HomeScreenState extends State<HomeScreen> {
                         itemBuilder: (ctx, idx) {
                           final rec = items[idx];
                           final isSelected = _selectedRecord?.id == rec.id;
-                          final subOptions =
-                              _subCategoriesMap[rec.category] ?? ['일반'];
+                          final mySubOptions =
+                              _userSubCategoriesMap[rec.category] ?? <String>[];
+                          final badgeText = rec.subCategory.isNotEmpty
+                              ? rec.subCategory
+                              : '카테고리 지정';
 
                           return ListTile(
                             dense: true,
                             selected: isSelected,
                             selectedTileColor: Colors.blue.shade50,
-                            // 사진 왼쪽 배지를 누르면 해당 사진의 세부 카테고리(예: 갑상선, 치질 등)를 즉시 변경하거나 새로 추가 가능!
                             leading: PopupMenuButton<String>(
-                              tooltip: '세부 카테고리 지정/변경',
+                              tooltip: '내 카테고리 선택 또는 신규 등록',
                               onSelected: (newSub) =>
                                   _changeRecordSubCategory(rec, newSub),
                               itemBuilder: (_) => [
-                                ...subOptions.map(
+                                ...mySubOptions.map(
                                   (sc) => PopupMenuItem(
                                     value: sc,
-                                    child: Text('[$sc] 카테고리로 지정'),
+                                    child: Text(sc),
                                   ),
                                 ),
-                                const PopupMenuDivider(),
+                                if (mySubOptions.isNotEmpty)
+                                  const PopupMenuDivider(),
                                 const PopupMenuItem(
                                   value: '__ADD_NEW__',
                                   child: Row(
@@ -2954,7 +3053,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                           size: 16, color: Colors.blueAccent),
                                       SizedBox(width: 6),
                                       Text(
-                                        '새 카테고리 직접 입력...',
+                                        '새 카테고리 등록...',
                                         style: TextStyle(
                                           color: Colors.blueAccent,
                                           fontWeight: FontWeight.bold,
@@ -2970,18 +3069,22 @@ class _HomeScreenState extends State<HomeScreen> {
                                   vertical: 6,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: Colors.indigo.shade100,
+                                  color: rec.subCategory.isNotEmpty
+                                      ? Colors.indigo.shade100
+                                      : Colors.grey.shade200,
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Text(
-                                      rec.subCategory,
-                                      style: const TextStyle(
+                                      badgeText,
+                                      style: TextStyle(
                                         fontSize: 11.5,
                                         fontWeight: FontWeight.bold,
-                                        color: Colors.indigo,
+                                        color: rec.subCategory.isNotEmpty
+                                            ? Colors.indigo
+                                            : Colors.black54,
                                       ),
                                     ),
                                     const Icon(
@@ -3048,7 +3151,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '[${_selectedRecord!.category} > ${_selectedRecord!.subCategory}] ${_selectedRecord!.displayTitle}',
+                                    '[${_selectedRecord!.category}${_selectedRecord!.subCategory.isNotEmpty ? " > ${_selectedRecord!.subCategory}" : ""}] ${_selectedRecord!.displayTitle}',
                                     style: const TextStyle(
                                       color: Colors.amberAccent,
                                       fontWeight: FontWeight.bold,
