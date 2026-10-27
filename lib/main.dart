@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:http/http.dart' as http;
@@ -66,6 +67,78 @@ class DocCategory {
 }
 
 // =============================================================================
+// 백그라운드 Isolate에서 실행되는 안전한 4점 모서리 평탄화 함수 (UI 멈춤/강제종료 원천 차단)
+// =============================================================================
+class WarpRequest {
+  final Uint8List originalBytes;
+  final List<double> cornerCoords; // [x0, y0, x1, y1, x2, y2, x3, y3]
+  final bool enhanceContrast;
+
+  WarpRequest({
+    required this.originalBytes,
+    required this.cornerCoords,
+    required this.enhanceContrast,
+  });
+}
+
+Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
+  final decoded = img.decodeImage(req.originalBytes);
+  if (decoded == null) return req.originalBytes;
+  final src = img.bakeOrientation(decoded);
+
+  final c = req.cornerCoords;
+  final p0x = c[0] * src.width;
+  final p0y = c[1] * src.height;
+  final p1x = c[2] * src.width;
+  final p1y = c[3] * src.height;
+  final p2x = c[4] * src.width;
+  final p2y = c[5] * src.height;
+  final p3x = c[6] * src.width;
+  final p3y = c[7] * src.height;
+
+  final topW = math.sqrt(math.pow(p1x - p0x, 2) + math.pow(p1y - p0y, 2));
+  final botW = math.sqrt(math.pow(p2x - p3x, 2) + math.pow(p2y - p3y, 2));
+  final leftH = math.sqrt(math.pow(p3x - p0x, 2) + math.pow(p3y - p0y, 2));
+  final rightH = math.sqrt(math.pow(p2x - p1x, 2) + math.pow(p2y - p1y, 2));
+
+  // 메모리 초과 및 연산 지연을 막기 위해 적정 스캔 해상도(최대 1100x1500)로 제한
+  int dstW = math.max(topW, botW).round().clamp(300, 1100);
+  int dstH = math.max(leftH, rightH).round().clamp(300, 1500);
+
+  final dst = img.Image(width: dstW, height: dstH);
+
+  for (int y = 0; y < dstH; y++) {
+    final v = dstH > 1 ? y / (dstH - 1) : 0.0;
+    for (int x = 0; x < dstW; x++) {
+      final u = dstW > 1 ? x / (dstW - 1) : 0.0;
+      final sx = (1 - u) * (1 - v) * p0x +
+          u * (1 - v) * p1x +
+          u * v * p2x +
+          (1 - u) * v * p3x;
+      final sy = (1 - u) * (1 - v) * p0y +
+          u * (1 - v) * p1y +
+          u * v * p2y +
+          (1 - u) * v * p3y;
+
+      final ix = sx.round().clamp(0, src.width - 1);
+      final iy = sy.round().clamp(0, src.height - 1);
+      final pixel = src.getPixel(ix, iy);
+
+      if (req.enhanceContrast) {
+        int r = ((pixel.r - 128) * 1.18 + 136).round().clamp(0, 255);
+        int g = ((pixel.g - 128) * 1.18 + 136).round().clamp(0, 255);
+        int b = ((pixel.b - 128) * 1.18 + 136).round().clamp(0, 255);
+        dst.setPixelRgb(x, y, r, g, b);
+      } else {
+        dst.setPixel(x, y, pixel);
+      }
+    }
+  }
+
+  return Uint8List.fromList(img.encodeJpg(dst, quality: 86));
+}
+
+// =============================================================================
 // 4점 모서리 지정 및 원근 평탄화(Perspective Warp) 다이얼로그
 // =============================================================================
 class PerspectiveCropDialog extends StatefulWidget {
@@ -78,7 +151,7 @@ class PerspectiveCropDialog extends StatefulWidget {
 }
 
 class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
-  // 정규화된 4개 모서리 좌표 (0.0 ~ 1.0): 좌상, 우상, 우하, 좌하
+  // 정규화된 4개 모서리 좌표 (0.0 ~ 1.0): 1(좌상), 2(우상), 3(우하), 4(좌하)
   List<Offset> _corners = const [
     Offset(0.08, 0.08),
     Offset(0.92, 0.08),
@@ -91,59 +164,28 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
   int? _activeCornerIndex;
 
   Future<void> _applyPerspectiveFlatten() async {
+    if (_isProcessing) return;
     setState(() => _isProcessing = true);
     try {
-      final resultBytes = await Future<Uint8List>(() {
-        final decoded = img.decodeImage(widget.originalBytes);
-        if (decoded == null) return widget.originalBytes;
-        final src = img.bakeOrientation(decoded);
+      final flatCoords = <double>[
+        _corners[0].dx,
+        _corners[0].dy,
+        _corners[1].dx,
+        _corners[1].dy,
+        _corners[2].dx,
+        _corners[2].dy,
+        _corners[3].dx,
+        _corners[3].dy,
+      ];
 
-        final p0 = Offset(_corners[0].dx * src.width, _corners[0].dy * src.height);
-        final p1 = Offset(_corners[1].dx * src.width, _corners[1].dy * src.height);
-        final p2 = Offset(_corners[2].dx * src.width, _corners[2].dy * src.height);
-        final p3 = Offset(_corners[3].dx * src.width, _corners[3].dy * src.height);
-
-        final topWidth = (p1 - p0).distance;
-        final bottomWidth = (p2 - p3).distance;
-        final leftHeight = (p3 - p0).distance;
-        final rightHeight = (p2 - p1).distance;
-
-        int dstW = math.max(topWidth, bottomWidth).round().clamp(300, 1800);
-        int dstH = math.max(leftHeight, rightHeight).round().clamp(300, 2400);
-
-        final dst = img.Image(width: dstW, height: dstH);
-
-        for (int y = 0; y < dstH; y++) {
-          final v = y / (dstH - 1);
-          for (int x = 0; x < dstW; x++) {
-            final u = x / (dstW - 1);
-            final sx = (1 - u) * (1 - v) * p0.dx +
-                u * (1 - v) * p1.dx +
-                u * v * p2.dx +
-                (1 - u) * v * p3.dx;
-            final sy = (1 - u) * (1 - v) * p0.dy +
-                u * (1 - v) * p1.dy +
-                u * v * p2.dy +
-                (1 - u) * v * p3.dy;
-
-            final ix = sx.round().clamp(0, src.width - 1);
-            final iy = sy.round().clamp(0, src.height - 1);
-            final pixel = src.getPixel(ix, iy);
-
-            if (_enhanceScanContrast) {
-              // 문서 가독성을 높이는 스캔 명암 보정
-              int r = ((pixel.r - 128) * 1.18 + 136).round().clamp(0, 255);
-              int g = ((pixel.g - 128) * 1.18 + 136).round().clamp(0, 255);
-              int b = ((pixel.b - 128) * 1.18 + 136).round().clamp(0, 255);
-              dst.setPixelRgb(x, y, r, g, b);
-            } else {
-              dst.setPixel(x, y, pixel);
-            }
-          }
-        }
-
-        return Uint8List.fromList(img.encodeJpg(dst, quality: 88));
-      });
+      final resultBytes = await compute(
+        _performPerspectiveWarpIsolate,
+        WarpRequest(
+          originalBytes: widget.originalBytes,
+          cornerCoords: flatCoords,
+          enhanceContrast: _enhanceScanContrast,
+        ),
+      );
 
       if (mounted) Navigator.pop(context, resultBytes);
     } catch (_) {
@@ -182,7 +224,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
               children: [
                 const Expanded(
                   child: Text(
-                    '파란색 점 4개를 서류의 네 모서리에 맞춘 뒤 하단 [평평하게 펴기]를 누르세요.',
+                    '파란색 점 4개를 서류의 네 모서리에 맞춘 뒤 하단 버튼을 누르세요.',
                     style: TextStyle(color: Colors.white, fontSize: 12.5),
                   ),
                 ),
@@ -226,7 +268,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
                           closestIdx = i;
                         }
                       }
-                      if (minDist < 60) {
+                      if (minDist < 65) {
                         setState(() => _activeCornerIndex = closestIdx);
                       }
                     },
@@ -573,16 +615,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ===========================================================================
   // 1단계: 온디바이스(오프라인) Google ML Kit 한글 OCR 자동 추출기
-  // (API 키 없이도 촬영 즉시 병원비·약국영수증·자재송장·대외공문·출장비 텍스트 추출!)
   // ===========================================================================
   Future<Map<String, String>> _extractFieldsOfflineOcr({
     required String imagePath,
     required String category,
   }) async {
-    final textRecognizer = TextRecognizer(script: TextRecognitionScript.korean);
+    TextRecognizer? textRecognizer;
     try {
+      textRecognizer = TextRecognizer(script: TextRecognitionScript.korean);
       final inputImage = InputImage.fromFilePath(imagePath);
-      final RecognizedText recognized = await textRecognizer.processImage(inputImage);
+      final RecognizedText recognized =
+          await textRecognizer.processImage(inputImage);
       final fullText = recognized.text;
       final lines = fullText
           .split('\n')
@@ -602,16 +645,21 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       return {};
     } finally {
-      await textRecognizer.close();
+      try {
+        await textRecognizer?.close();
+      } catch (_) {}
     }
   }
 
   /// 병원비 / 약제비 계산서·영수증 전용 고정밀 한국어 파서
-  /// (올려주신 타워약국 약제비 영수증 양식 포함 모든 병원·약국 영수증 완벽 대응)
-  Map<String, String> _parseMedicalReceiptText(String fullText, List<String> lines) {
+  /// (보내주신 맘온누리약국 / 타워약국 영수증 포함 모든 약국·병원 영수증 완벽 파싱)
+  Map<String, String> _parseMedicalReceiptText(
+    String fullText,
+    List<String> lines,
+  ) {
     final result = <String, String>{};
 
-    // 1) 사업자등록번호 (예: 840-78-00407)
+    // 1) 사업자등록번호 (예: 276-63-00432, 840-78-00407)
     final bizMatch = RegExp(r'\b(\d{3})\s*-\s*(\d{2})\s*-\s*(\d{5})\b')
         .firstMatch(fullText);
     if (bizMatch != null) {
@@ -619,7 +667,7 @@ class _HomeScreenState extends State<HomeScreen> {
           '${bizMatch.group(1)}-${bizMatch.group(2)}-${bizMatch.group(3)}';
     }
 
-    // 2) 발행일 / 조제일자 (예: 2026-04-02)
+    // 2) 발행일 / 조제일자 (예: 2026-10-01)
     final dateLabelMatch = RegExp(
       r'(?:발\s*행\s*일|조\s*제\s*일\s*자|진\s*료\s*일\s*자)[^\d]*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
     ).firstMatch(fullText);
@@ -637,32 +685,32 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 3) 상호 (병원/약국/의원 이름 또는 '상 호' 라벨 옆 텍스트)
-    for (final line in lines) {
-      final sanghoMatch =
-          RegExp(r'상\s*호\s*[:：]?\s*([가-힣A-Za-z0-9()]+)').firstMatch(line);
-      if (sanghoMatch != null) {
-        final candidate = sanghoMatch.group(1)!.trim();
-        if (candidate.isNotEmpty && !candidate.contains('사업자')) {
-          result['clinicName'] = candidate;
-          break;
+    // 3) 상호 (예: 맘온누리약국, 타워약국 등)
+    final nameMatch = RegExp(
+      r'([가-힣0-9]{2,15}(?:약국|병원|의원|치과|한의원|클리닉|메디컬|센터))',
+    ).firstMatch(fullText);
+    if (nameMatch != null) {
+      result['clinicName'] = nameMatch.group(1)!;
+    } else {
+      for (final line in lines) {
+        final sanghoMatch =
+            RegExp(r'상\s*호\s*[:：]?\s*([가-힣A-Za-z0-9()]+)').firstMatch(line);
+        if (sanghoMatch != null) {
+          final candidate = sanghoMatch.group(1)!.trim();
+          if (candidate.isNotEmpty && !candidate.contains('사업자')) {
+            result['clinicName'] = candidate;
+            break;
+          }
         }
       }
     }
-    if ((result['clinicName'] ?? '').isEmpty) {
-      final nameMatch = RegExp(
-        r'([가-힣0-9]{2,15}(?:약국|병원|의원|치과|한의원|클리닉|메디컬|센터))',
-      ).firstMatch(fullText);
-      if (nameMatch != null) {
-        result['clinicName'] = nameMatch.group(1)!;
-      }
-    }
 
-    // 4) 총수납금액 (본인부담금 / 합계 / 카드 / 총수납금액)
+    // 4) 총수납금액 (합계 4,600 / 본인부담금 4,600 / 현금 4,600 / 카드 등)
     final amountPatterns = [
       RegExp(r'합\s*계[^\d\n]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
       RegExp(r'총\s*수\s*납\s*금\s*액[^\d]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
       RegExp(r'본\s*인\s*부\s*담\s*금[^\d]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
+      RegExp(r'현\s*금[^\d\n]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
       RegExp(r'카\s*드[^\d\n]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
       RegExp(r'결\s*제\s*금\s*액[^\d]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
     ];
@@ -678,7 +726,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
     if ((result['totalPaid'] ?? '').isEmpty) {
-      // 콤마가 포함된 금액 중 가장 적절한 수납금액 추출
       final allCommaNums = RegExp(r'\b([1-9]\d{0,2}(?:,\d{3})+)\b')
           .allMatches(fullText)
           .map((m) => int.tryParse(m.group(1)!.replaceAll(',', '')) ?? 0)
@@ -721,11 +768,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
-  /// 대외공문 오프라인 OCR 파서 (한 줄 요약 자동 생성 포함)
-  Map<String, String> _parseOfficialDocText(String fullText, List<String> lines) {
+  /// 대외공문 오프라인 OCR 파서
+  Map<String, String> _parseOfficialDocText(
+    String fullText,
+    List<String> lines,
+  ) {
     final result = <String, String>{};
-    final dateMatch = RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
-        .firstMatch(fullText);
+    final dateMatch =
+        RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
+            .firstMatch(fullText);
     if (dateMatch != null) {
       result['sentDate'] =
           '${dateMatch.group(1)}-${dateMatch.group(2)!.padLeft(2, '0')}-${dateMatch.group(3)!.padLeft(2, '0')}';
@@ -733,11 +784,16 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final line in lines) {
       if (line.contains('제목') && (result['title'] ?? '').isEmpty) {
         result['title'] = line.replaceAll(RegExp(r'^.*제목\s*[:：]?'), '').trim();
-      } else if ((line.contains('시행') || line.contains('문서번호') || line.contains('공문번호')) &&
+      } else if ((line.contains('시행') ||
+              line.contains('문서번호') ||
+              line.contains('공문번호')) &&
           (result['docNumber'] ?? '').isEmpty) {
-        result['docNumber'] =
-            line.replaceAll(RegExp(r'^.*(?:시행|문서번호|공문번호)\s*[:：]?'), '').trim();
-      } else if ((line.contains('수신') || line.contains('발신') || line.contains('기관')) &&
+        result['docNumber'] = line
+            .replaceAll(RegExp(r'^.*(?:시행|문서번호|공문번호)\s*[:：]?'), '')
+            .trim();
+      } else if ((line.contains('수신') ||
+              line.contains('발신') ||
+              line.contains('기관')) &&
           (result['sender'] ?? '').isEmpty) {
         result['sender'] = line.trim();
       }
@@ -745,7 +801,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if ((result['title'] ?? '').isEmpty && lines.isNotEmpty) {
       result['title'] = lines.first;
     }
-    // 오프라인 기본 1문장 요약 구성
     final bodyPreview = lines.take(5).join(' ');
     if (bodyPreview.isNotEmpty) {
       result['aiSummary'] = bodyPreview.length > 75
@@ -756,7 +811,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 출장비 영수증 오프라인 OCR 파서
-  Map<String, String> _parseTravelReceiptText(String fullText, List<String> lines) {
+  Map<String, String> _parseTravelReceiptText(
+    String fullText,
+    List<String> lines,
+  ) {
     final result = <String, String>{};
     final allCommaNums = RegExp(r'\b([1-9]\d{0,2}(?:,\d{3})+)\b')
         .allMatches(fullText)
@@ -764,7 +822,9 @@ class _HomeScreenState extends State<HomeScreen> {
         .where((v) => v >= 500 && v < 10000000)
         .toList();
     if (allCommaNums.isNotEmpty) {
-      if (fullText.contains('하이패스') || fullText.contains('도로공사') || fullText.contains('통행료')) {
+      if (fullText.contains('하이패스') ||
+          fullText.contains('도로공사') ||
+          fullText.contains('통행료')) {
         result['hipassTotal'] = allCommaNums.last.toString();
       } else {
         result['receiptTotal'] = allCommaNums.last.toString();
@@ -774,7 +834,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 2단계: Gemini AI 정밀 분석 (API 키가 설정된 경우 추가로 덮어써서 정확도 극대화)
+  // 2단계: Gemini AI 정밀 분석 (API 키 설정 시 선택 작동)
   // ===========================================================================
   Future<Map<String, String>?> _analyzeDocumentWithAi({
     required String category,
@@ -878,9 +938,9 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final XFile? picked = await _picker.pickImage(
         source: source,
-        maxWidth: 2000,
-        maxHeight: 2000,
-        imageQuality: 90,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 85,
       );
       if (picked == null) return;
 
@@ -1057,14 +1117,12 @@ class _HomeScreenState extends State<HomeScreen> {
               Future<void> triggerOcrAndAiExtract() async {
                 setDialogState(() => isAiAnalyzing = true);
                 try {
-                  // 1차: 온디바이스 한국어 OCR 실행
                   final ocrMap = await _extractFieldsOfflineOcr(
                     imagePath: savedFile.path,
                     category: chosenCategory,
                   );
                   setDialogState(() => applyExtractedMap(ocrMap));
 
-                  // 2차: Gemini API 키가 있으면 AI 정밀 추출 추가 적용
                   if (_geminiApiKey.trim().isNotEmpty) {
                     final aiMap = await _analyzeDocumentWithAi(
                       category: chosenCategory,
@@ -1076,7 +1134,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
                   _showSnack('사진에서 문자/금액을 자동으로 읽어왔습니다.');
                 } catch (e) {
-                  _showSnack('문자 인식 완료 (일부 항목은 직접 확인해주세요): $e');
+                  _showSnack('문자 인식 완료: $e');
                 } finally {
                   setDialogState(() => isAiAnalyzing = false);
                 }
@@ -1091,7 +1149,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // 평평하게 펴진 스캔 미리보기 썸네일
                         Container(
                           height: 110,
                           margin: const EdgeInsets.only(bottom: 12),
@@ -1226,13 +1283,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
                         // 4. 병원비 입력 폼
                         if (chosenCategory == DocCategory.medical) ...[
-                          _buildField(clinicNameCtrl, '상호 (병원/약국명)', '예: 타워약국'),
-                          _buildField(bizRegNumberCtrl, '사업자등록번호', '예: 840-78-00407'),
-                          _buildField(issueDateCtrl, '발행일', '예: 2026-04-02'),
+                          _buildField(clinicNameCtrl, '상호 (병원/약국명)', '예: 맘온누리약국'),
+                          _buildField(bizRegNumberCtrl, '사업자등록번호', '예: 276-63-00432'),
+                          _buildField(issueDateCtrl, '발행일', '예: 2026-10-01'),
                           _buildField(
                             totalPaidCtrl,
                             '총수납금액 (원)',
-                            '예: 3000',
+                            '예: 4600',
                             keyboardType: TextInputType.number,
                           ),
                         ],
@@ -1375,9 +1432,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _showSnack('앱 목록에서 삭제되었습니다. (원드라이브 누적 본은 유지됨)');
   }
 
-  // ===========================================================================
-  // 원드라이브 앱 연동 폴더 & AI 키 설정 다이얼로그
-  // ===========================================================================
   Future<void> _openSettingsDialog() async {
     final localDirCtrl = TextEditingController(text: _oneDriveLocalDir);
     final subfolderCtrl = TextEditingController(text: _oneDriveSubfolder);
@@ -1515,9 +1569,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ===========================================================================
-  // 버튼 한 번으로 원드라이브 특정 폴더에 누적 HTML 자동 병합 & 덮어쓰기
-  // ===========================================================================
   Future<void> _oneClickSyncHtmlToOneDrive() async {
     setState(() => _isBusy = true);
     try {
@@ -1931,9 +1982,6 @@ class _HomeScreenState extends State<HomeScreen> {
 </html>''';
   }
 
-  // ===========================================================================
-  // PDF 내보내기 (첫 장: 전체 항목 표 형태 요약 페이지 + 이후 장: 평평하게 펴진 스캔본 페이지)
-  // ===========================================================================
   Future<void> _exportAndSharePdf() async {
     final targetRecords = _filteredRecords;
     if (targetRecords.isEmpty) {
@@ -1965,7 +2013,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // 1) 첫 페이지: 표 형태 요약 페이지
       pdf.addPage(
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
@@ -2073,7 +2120,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
 
-      // 2) 두 번째 장부터: 평평하게 펴진 스캔 문서가 A4용지에 반듯하게 들어가도록 배치
       for (int i = 0; i < targetRecords.length; i++) {
         final rec = targetRecords[i];
         final imgBytes = base64Decode(rec.base64Image);
