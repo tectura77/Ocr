@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -42,7 +43,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   }
 }
 
-/// 문서 분류 상수
+/// 문서 대분류 상수 (대외공문 / 자재송장 / 출장비 / 병원비)
 class DocCategory {
   static const String all = '전체';
   static const String officialDoc = '대외공문';
@@ -64,10 +65,18 @@ class DocCategory {
     travel,
     medical,
   ];
+
+  /// 문서 종류별 기본 제공 세부 카테고리 예시 (사용자가 얼마든지 직접 추가 가능)
+  static Map<String, List<String>> defaultSubCategories = {
+    officialDoc: ['일반공문', '설계변경', '안전점검', '기성청구', '인허가'],
+    invoice: ['철근/강재', '레미콘/시멘트', '배관/설비자재', '전기자재', '기타자재'],
+    travel: ['현장출장', '본사회의', '관공서업무', '거래처방문', '기타출장'],
+    medical: ['갑상선', '치질', '치과', '안과', '감기/내과', '도수/정형외과'],
+  };
 }
 
 // =============================================================================
-// 백그라운드 Isolate에서 실행되는 안전한 4점 모서리 평탄화 함수 (UI 멈춤/강제종료 원천 차단)
+// 백그라운드 Isolate에서 실행되는 정비율(무왜곡) 4점 모서리 평탄화 함수
 // =============================================================================
 class WarpRequest {
   final Uint8List originalBytes;
@@ -101,9 +110,21 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
   final leftH = math.sqrt(math.pow(p3x - p0x, 2) + math.pow(p3y - p0y, 2));
   final rightH = math.sqrt(math.pow(p2x - p1x, 2) + math.pow(p2y - p1y, 2));
 
-  // 메모리 초과 및 연산 지연을 막기 위해 적정 스캔 해상도(최대 1100x1500)로 제한
-  int dstW = math.max(topW, botW).round().clamp(300, 1100);
-  int dstH = math.max(leftH, rightH).round().clamp(300, 1500);
+  double avgW = (topW + botW) / 2.0;
+  double avgH = (leftH + rightH) / 2.0;
+  if (avgW < 10) avgW = src.width.toDouble();
+  if (avgH < 10) avgH = src.height.toDouble();
+
+  const double maxSide = 1400.0;
+  double scale = 1.0;
+  if (math.max(avgW, avgH) > maxSide) {
+    scale = maxSide / math.max(avgW, avgH);
+  } else if (math.max(avgW, avgH) < 600) {
+    scale = 600.0 / math.max(avgW, avgH);
+  }
+
+  final int dstW = (avgW * scale).round().clamp(200, 1600);
+  final int dstH = (avgH * scale).round().clamp(200, 1600);
 
   final dst = img.Image(width: dstW, height: dstH);
 
@@ -125,9 +146,9 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
       final pixel = src.getPixel(ix, iy);
 
       if (req.enhanceContrast) {
-        int r = ((pixel.r - 128) * 1.18 + 136).round().clamp(0, 255);
-        int g = ((pixel.g - 128) * 1.18 + 136).round().clamp(0, 255);
-        int b = ((pixel.b - 128) * 1.18 + 136).round().clamp(0, 255);
+        int r = ((pixel.r - 128) * 1.15 + 134).round().clamp(0, 255);
+        int g = ((pixel.g - 128) * 1.15 + 134).round().clamp(0, 255);
+        int b = ((pixel.b - 128) * 1.15 + 134).round().clamp(0, 255);
         dst.setPixelRgb(x, y, r, g, b);
       } else {
         dst.setPixel(x, y, pixel);
@@ -135,11 +156,11 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
     }
   }
 
-  return Uint8List.fromList(img.encodeJpg(dst, quality: 86));
+  return Uint8List.fromList(img.encodeJpg(dst, quality: 88));
 }
 
 // =============================================================================
-// 4점 모서리 지정 및 원근 평탄화(Perspective Warp) 다이얼로그
+// 4점 모서리 지정 및 원본 비율 유지(No-distortion) 스캔 다이얼로그
 // =============================================================================
 class PerspectiveCropDialog extends StatefulWidget {
   final Uint8List originalBytes;
@@ -151,17 +172,35 @@ class PerspectiveCropDialog extends StatefulWidget {
 }
 
 class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
-  // 정규화된 4개 모서리 좌표 (0.0 ~ 1.0): 1(좌상), 2(우상), 3(우하), 4(좌하)
   List<Offset> _corners = const [
-    Offset(0.08, 0.08),
-    Offset(0.92, 0.08),
-    Offset(0.92, 0.92),
-    Offset(0.08, 0.92),
+    Offset(0.06, 0.06),
+    Offset(0.94, 0.06),
+    Offset(0.94, 0.94),
+    Offset(0.06, 0.94),
   ];
 
   bool _enhanceScanContrast = true;
   bool _isProcessing = false;
   int? _activeCornerIndex;
+  double _imageAspectRatio = 0.75;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveImageAspectRatio();
+  }
+
+  Future<void> _resolveImageAspectRatio() async {
+    try {
+      final codec = await ui.instantiateImageCodec(widget.originalBytes);
+      final frame = await codec.getNextFrame();
+      final w = frame.image.width.toDouble();
+      final h = frame.image.height.toDouble();
+      if (w > 0 && h > 0 && mounted) {
+        setState(() => _imageAspectRatio = w / h);
+      }
+    } catch (_) {}
+  }
 
   Future<void> _applyPerspectiveFlatten() async {
     if (_isProcessing) return;
@@ -224,7 +263,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
               children: [
                 const Expanded(
                   child: Text(
-                    '파란색 점 4개를 서류의 네 모서리에 맞춘 뒤 하단 버튼을 누르세요.',
+                    '파란색 점 4개를 서류의 네 모서리에 맞춘 뒤 하단 버튼을 누르세요. (원본 비율 유지)',
                     style: TextStyle(color: Colors.white, fontSize: 12.5),
                   ),
                 ),
@@ -237,7 +276,8 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
                     ),
                     Switch(
                       value: _enhanceScanContrast,
-                      onChanged: (v) => setState(() => _enhanceScanContrast = v),
+                      onChanged: (v) =>
+                          setState(() => _enhanceScanContrast = v),
                     ),
                   ],
                 ),
@@ -247,88 +287,95 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
           Expanded(
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: LayoutBuilder(
-                builder: (ctx, constraints) {
-                  final boxW = constraints.maxWidth;
-                  final boxH = constraints.maxHeight;
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: _imageAspectRatio,
+                  child: LayoutBuilder(
+                    builder: (ctx, constraints) {
+                      final boxW = constraints.maxWidth;
+                      final boxH = constraints.maxHeight;
 
-                  return GestureDetector(
-                    onPanStart: (details) {
-                      final pos = details.localPosition;
-                      int closestIdx = 0;
-                      double minDist = double.infinity;
-                      for (int i = 0; i < 4; i++) {
-                        final pt = Offset(
-                          _corners[i].dx * boxW,
-                          _corners[i].dy * boxH,
-                        );
-                        final d = (pt - pos).distance;
-                        if (d < minDist) {
-                          minDist = d;
-                          closestIdx = i;
-                        }
-                      }
-                      if (minDist < 65) {
-                        setState(() => _activeCornerIndex = closestIdx);
-                      }
-                    },
-                    onPanUpdate: (details) {
-                      if (_activeCornerIndex == null) return;
-                      final pos = details.localPosition;
-                      final nx = (pos.dx / boxW).clamp(0.0, 1.0);
-                      final ny = (pos.dy / boxH).clamp(0.0, 1.0);
-                      setState(() {
-                        final updated = List<Offset>.from(_corners);
-                        updated[_activeCornerIndex!] = Offset(nx, ny);
-                        _corners = updated;
-                      });
-                    },
-                    onPanEnd: (_) => setState(() => _activeCornerIndex = null),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        Image.memory(
-                          widget.originalBytes,
-                          fit: BoxFit.fill,
-                        ),
-                        CustomPaint(
-                          painter: _QuadOverlayPainter(corners: _corners),
-                        ),
-                        for (int i = 0; i < 4; i++)
-                          Positioned(
-                            left: _corners[i].dx * boxW - 18,
-                            top: _corners[i].dy * boxH - 18,
-                            child: Container(
-                              width: 36,
-                              height: 36,
-                              decoration: BoxDecoration(
-                                color: _activeCornerIndex == i
-                                    ? Colors.amber
-                                    : Colors.blueAccent.withOpacity(0.85),
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 2.5),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black54,
-                                    blurRadius: 4,
+                      return GestureDetector(
+                        onPanStart: (details) {
+                          final pos = details.localPosition;
+                          int closestIdx = 0;
+                          double minDist = double.infinity;
+                          for (int i = 0; i < 4; i++) {
+                            final pt = Offset(
+                              _corners[i].dx * boxW,
+                              _corners[i].dy * boxH,
+                            );
+                            final d = (pt - pos).distance;
+                            if (d < minDist) {
+                              minDist = d;
+                              closestIdx = i;
+                            }
+                          }
+                          if (minDist < 70) {
+                            setState(() => _activeCornerIndex = closestIdx);
+                          }
+                        },
+                        onPanUpdate: (details) {
+                          if (_activeCornerIndex == null) return;
+                          final pos = details.localPosition;
+                          final nx = (pos.dx / boxW).clamp(0.0, 1.0);
+                          final ny = (pos.dy / boxH).clamp(0.0, 1.0);
+                          setState(() {
+                            final updated = List<Offset>.from(_corners);
+                            updated[_activeCornerIndex!] = Offset(nx, ny);
+                            _corners = updated;
+                          });
+                        },
+                        onPanEnd: (_) =>
+                            setState(() => _activeCornerIndex = null),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.memory(
+                              widget.originalBytes,
+                              fit: BoxFit.contain,
+                            ),
+                            CustomPaint(
+                              painter: _QuadOverlayPainter(corners: _corners),
+                            ),
+                            for (int i = 0; i < 4; i++)
+                              Positioned(
+                                left: _corners[i].dx * boxW - 18,
+                                top: _corners[i].dy * boxH - 18,
+                                child: Container(
+                                  width: 36,
+                                  height: 36,
+                                  decoration: BoxDecoration(
+                                    color: _activeCornerIndex == i
+                                        ? Colors.amber
+                                        : Colors.blueAccent.withOpacity(0.85),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                        color: Colors.white, width: 2.5),
+                                    boxShadow: const [
+                                      BoxShadow(
+                                        color: Colors.black54,
+                                        blurRadius: 4,
+                                      ),
+                                    ],
                                   ),
-                                ],
-                              ),
-                              alignment: Alignment.center,
-                              child: Text(
-                                '${i + 1}',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    '${i + 1}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  );
-                },
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
               ),
             ),
           ),
@@ -404,11 +451,11 @@ class _QuadOverlayPainter extends CustomPainter {
 }
 
 // =============================================================================
-// 문서 항목 데이터 모델
+// 문서 항목 데이터 모델 (사용자 지정 세부 카테고리 subCategory 완벽 지원)
 // =============================================================================
 class DocRecord {
   final String id;
-  final String category; // 대외공문, 자재송장, 출장비, 병원비
+  final String category; // 대분류: 대외공문, 자재송장, 출장비, 병원비
   final String createdAt;
   final String imagePath;
   final String base64Image;
@@ -423,6 +470,27 @@ class DocRecord {
     required this.fields,
   });
 
+  /// 사용자가 지정한 세부 이력 카테고리 (예: 병원비 내 '갑상선', '치질', '치과' 등)
+  String get subCategory {
+    final sub = fields['subCategory']?.trim() ?? '';
+    return sub.isNotEmpty ? sub : '미분류';
+  }
+
+  /// 해당 항목의 금액(원) 정수값 반환 (세부 카테고리별 합계 및 전체 합계 계산용)
+  int get numericAmount {
+    String? raw;
+    if (category == DocCategory.travel) {
+      raw = fields['totalAmount'];
+    } else if (category == DocCategory.medical) {
+      raw = fields['totalPaid'];
+    } else {
+      raw = fields['amount'];
+    }
+    if (raw == null || raw.trim().isEmpty) return 0;
+    final cleaned = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    return int.tryParse(cleaned) ?? 0;
+  }
+
   String get displayTitle {
     switch (category) {
       case DocCategory.officialDoc:
@@ -436,11 +504,11 @@ class DocRecord {
         final sup = fields['supplierName'] ?? '';
         return prod.isNotEmpty
             ? '$prod (${sup.isNotEmpty ? sup : "송장"})'
-            : '자재송장';
+            : (sup.isNotEmpty ? '$sup 자재송장' : '자재송장');
       case DocCategory.travel:
         final dist = fields['distanceKm'] ?? '0';
         final total = fields['totalAmount'] ?? '0';
-        return '왕복 ${dist}km 출장 (총 ${_formatCurrency(total)}원)';
+        return '왕복 ${dist}km 출장 (${_formatCurrency(total)}원)';
       case DocCategory.medical:
         final clinic = fields['clinicName'] ?? '';
         final paid = fields['totalPaid'] ?? '0';
@@ -453,7 +521,7 @@ class DocRecord {
   String get displaySubtitle {
     switch (category) {
       case DocCategory.officialDoc:
-        return '발신: ${fields['sender'] ?? '-'} | 번호: ${fields['docNumber'] ?? '-'} | 기한: ${fields['replyDeadline'] ?? '-'}';
+        return '발신: ${fields['sender'] ?? '-'} | 문서번호: ${fields['docNumber'] ?? '-'}\n요약: ${fields['aiSummary'] ?? '-'}';
       case DocCategory.invoice:
         return '공급자: ${fields['supplierName'] ?? '-'} | 규격: ${fields['specName'] ?? '-'} | 수량: ${fields['quantity'] ?? '-'}${fields['unit'] ?? ''} (${fields['weight'] ?? '-'}kg)';
       case DocCategory.travel:
@@ -462,59 +530,6 @@ class DocRecord {
         return '사업자번호: ${fields['bizRegNumber'] ?? '-'} | 발행일: ${fields['issueDate'] ?? '-'} | 수납액: ${_formatCurrency(fields['totalPaid'])}원';
       default:
         return createdAt;
-    }
-  }
-
-  String get referenceDate {
-    switch (category) {
-      case DocCategory.officialDoc:
-        return fields['sentDate']?.isNotEmpty == true
-            ? fields['sentDate']!
-            : createdAt.split(' ').first;
-      case DocCategory.invoice:
-        return fields['arrivalDate']?.isNotEmpty == true
-            ? fields['arrivalDate']!
-            : createdAt.split(' ').first;
-      case DocCategory.travel:
-        return createdAt.split(' ').first;
-      case DocCategory.medical:
-        return fields['issueDate']?.isNotEmpty == true
-            ? fields['issueDate']!
-            : createdAt.split(' ').first;
-      default:
-        return createdAt.split(' ').first;
-    }
-  }
-
-  String get summaryKeyDetails {
-    switch (category) {
-      case DocCategory.officialDoc:
-        return '공문번호: ${fields['docNumber'] ?? '-'}\n요약: ${fields['aiSummary'] ?? '-'}\n회신기한: ${fields['replyDeadline'] ?? '-'}';
-      case DocCategory.invoice:
-        return '주문번호: ${fields['orderNumber'] ?? '-'}\n품명/규격: ${fields['productName'] ?? '-'} / ${fields['specName'] ?? '-'}\n수량/중량: ${fields['quantity'] ?? '-'}${fields['unit'] ?? ''} / ${fields['weight'] ?? '-'}';
-      case DocCategory.travel:
-        return '거리: ${fields['distanceKm'] ?? '0'}km (교통비 ${_formatCurrency(fields['carFare'])}원)\n영수증합산: ${_formatCurrency(fields['receiptTotal'])}원\n하이패스합산: ${_formatCurrency(fields['hipassTotal'])}원';
-      case DocCategory.medical:
-        return '상호: ${fields['clinicName'] ?? '-'}\n사업자번호: ${fields['bizRegNumber'] ?? '-'}';
-      default:
-        return '';
-    }
-  }
-
-  String get summaryAmountOrMetric {
-    switch (category) {
-      case DocCategory.officialDoc:
-        return fields['replyDeadline']?.isNotEmpty == true
-            ? '기한: ${fields['replyDeadline']}'
-            : '-';
-      case DocCategory.invoice:
-        return '${fields['quantity'] ?? '0'}${fields['unit'] ?? ''} (${fields['weight'] ?? '0'}kg)';
-      case DocCategory.travel:
-        return '${_formatCurrency(fields['totalAmount'])}원';
-      case DocCategory.medical:
-        return '${_formatCurrency(fields['totalPaid'])}원';
-      default:
-        return '-';
     }
   }
 
@@ -556,6 +571,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   static const String _prefsRecordsKey = 'local_doc_records_v2';
+  static const String _prefsCustomSubCatsKey = 'custom_sub_categories_v1';
   static const String _prefsOneDriveSyncDirKey = 'onedrive_local_sync_dir';
   static const String _prefsOneDriveSubfolderKey = 'onedrive_target_subfolder';
   static const String _prefsAccessTokenKey = 'onedrive_access_token';
@@ -563,9 +579,13 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _defaultHtmlFileName = '증빙서류_누적목록.html';
 
   List<DocRecord> _records = [];
-  String _selectedCategoryFilter = DocCategory.all;
+  String _selectedCategoryFilter = DocCategory.medical; // 대분류 탭 (전체/대외공문/자재송장/출장비/병원비)
+  String _selectedSubCategoryFilter = '전체'; // 세부 이력 카테고리 필터 (예: 전체 / 갑상선 / 치질 등)
   DocRecord? _selectedRecord;
   bool _isBusy = false;
+
+  // 문서 종류별 사용자 정의 세부 카테고리 목록
+  Map<String, List<String>> _subCategoriesMap = {};
 
   String _oneDriveLocalDir = '';
   String _oneDriveSubfolder = 'Documents/증빙서류함';
@@ -587,9 +607,39 @@ class _HomeScreenState extends State<HomeScreen> {
         .map((e) => DocRecord.fromJson(jsonDecode(e) as Map<String, dynamic>))
         .toList();
 
+    // 저장된 세부 카테고리 불러오기 (없으면 기본 예시 세팅)
+    final Map<String, List<String>> loadedSubMap = {};
+    for (final cat in DocCategory.inputList) {
+      loadedSubMap[cat] = List<String>.from(
+        DocCategory.defaultSubCategories[cat] ?? ['일반'],
+      );
+    }
+    final rawSubJson = prefs.getString(_prefsCustomSubCatsKey);
+    if (rawSubJson != null && rawSubJson.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawSubJson) as Map<String, dynamic>;
+        decoded.forEach((key, value) {
+          if (value is List) {
+            loadedSubMap[key] = value.map((e) => e.toString()).toList();
+          }
+        });
+      } catch (_) {}
+    }
+    // 기존 기록에 들어있는 세부 카테고리도 자동 병합
+    for (final r in loaded) {
+      final sub = r.subCategory;
+      final list = loadedSubMap[r.category] ?? [];
+      if (sub != '미분류' && !list.contains(sub)) {
+        list.add(sub);
+        loadedSubMap[r.category] = list;
+      }
+    }
+
     setState(() {
       _records = loaded;
+      _subCategoriesMap = loadedSubMap;
       if (_records.isNotEmpty) {
+        _selectedCategoryFilter = _records.first.category;
         _selectedRecord = _records.first;
       }
       _oneDriveLocalDir = prefs.getString(_prefsOneDriveSyncDirKey) ?? '';
@@ -606,15 +656,153 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.setStringList(_prefsRecordsKey, encoded);
   }
 
-  List<DocRecord> get _filteredRecords {
+  Future<void> _saveSubCategoriesMap() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefsCustomSubCatsKey, jsonEncode(_subCategoriesMap));
+  }
+
+  /// 새 세부 카테고리 추가 (예: 병원비에 '갑상선', '치질', '무릎도수' 등 추가)
+  Future<String?> _promptAddNewSubCategory(String parentCategory) async {
+    final ctrl = TextEditingController();
+    final added = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('[$parentCategory] 새 세부 카테고리 추가'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: '세부 이력/카테고리명 입력',
+            hintText: parentCategory == DocCategory.medical
+                ? '예: 갑상선, 치질, 치과, 안과'
+                : '예: 현장A동, 철근, 안전점검',
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('추가'),
+          ),
+        ],
+      ),
+    );
+
+    if (added != null && added.isNotEmpty) {
+      final list = List<String>.from(_subCategoriesMap[parentCategory] ?? []);
+      if (!list.contains(added)) {
+        list.insert(0, added);
+        setState(() {
+          _subCategoriesMap[parentCategory] = list;
+        });
+        await _saveSubCategoriesMap();
+      }
+      return added;
+    }
+    return null;
+  }
+
+  /// 현재 선택된 대분류(예: 병원비)에 속한 전체 기록
+  List<DocRecord> get _recordsInSelectedMajorCategory {
     if (_selectedCategoryFilter == DocCategory.all) return _records;
     return _records
         .where((r) => r.category == _selectedCategoryFilter)
         .toList();
   }
 
+  /// 대분류 + 세부 카테고리(예: 병원비 > 갑상선) 필터가 모두 적용된 기록
+  List<DocRecord> get _filteredRecords {
+    final majorList = _recordsInSelectedMajorCategory;
+    if (_selectedSubCategoryFilter == '전체') return majorList;
+    return majorList
+        .where((r) => r.subCategory == _selectedSubCategoryFilter)
+        .toList();
+  }
+
+  /// 현재 대분류 내에서 사용 중인 모든 세부 카테고리 목록 반환
+  List<String> get _availableSubCategoriesForCurrentTab {
+    final Set<String> subs = {};
+    if (_selectedCategoryFilter == DocCategory.all) {
+      for (final r in _records) {
+        subs.add(r.subCategory);
+      }
+    } else {
+      subs.addAll(_subCategoriesMap[_selectedCategoryFilter] ?? []);
+      for (final r in _recordsInSelectedMajorCategory) {
+        subs.add(r.subCategory);
+      }
+    }
+    return ['전체', ...subs];
+  }
+
+  /// 세부 카테고리별 합계 금액 계산 (예: 병원비 내 '갑상선' 합계, '치질' 합계)
+  int _sumBySubCategory(String subCat) {
+    final baseList = _recordsInSelectedMajorCategory;
+    if (subCat == '전체') {
+      return baseList.fold(0, (sum, r) => sum + r.numericAmount);
+    }
+    return baseList
+        .where((r) => r.subCategory == subCat)
+        .fold(0, (sum, r) => sum + r.numericAmount);
+  }
+
+  int _countBySubCategory(String subCat) {
+    final baseList = _recordsInSelectedMajorCategory;
+    if (subCat == '전체') return baseList.length;
+    return baseList.where((r) => r.subCategory == subCat).length;
+  }
+
+  int _sumByMajorCategory(String majorCat) {
+    if (majorCat == DocCategory.all) {
+      return _records.fold(0, (sum, r) => sum + r.numericAmount);
+    }
+    return _records
+        .where((r) => r.category == majorCat)
+        .fold(0, (sum, r) => sum + r.numericAmount);
+  }
+
+  /// 이미 찍은 사진의 세부 카테고리(예: 갑상선 ↔ 치질) 변경
+  Future<void> _changeRecordSubCategory(
+    DocRecord record,
+    String newSubCategory,
+  ) async {
+    if (newSubCategory == '__ADD_NEW__') {
+      final created = await _promptAddNewSubCategory(record.category);
+      if (created == null || created.isEmpty) return;
+      newSubCategory = created;
+    }
+
+    final idx = _records.indexWhere((r) => r.id == record.id);
+    if (idx == -1) return;
+
+    final updatedFields = Map<String, String>.from(record.fields);
+    updatedFields['subCategory'] = newSubCategory;
+
+    final updated = DocRecord(
+      id: record.id,
+      category: record.category,
+      createdAt: record.createdAt,
+      imagePath: record.imagePath,
+      base64Image: record.base64Image,
+      fields: updatedFields,
+    );
+
+    setState(() {
+      _records[idx] = updated;
+      if (_selectedRecord?.id == record.id) {
+        _selectedRecord = updated;
+      }
+    });
+    await _saveLocalRecords();
+    _showSnack('이 사진의 카테고리가 [$newSubCategory](으)로 지정되었습니다.');
+  }
+
   // ===========================================================================
-  // 1단계: 온디바이스(오프라인) Google ML Kit 한글 OCR 자동 추출기
+  // 1단계: 문맥 인지형 온디바이스 한국어 OCR 분석기
   // ===========================================================================
   Future<Map<String, String>> _extractFieldsOfflineOcr({
     required String imagePath,
@@ -651,15 +839,225 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 병원비 / 약제비 계산서·영수증 전용 고정밀 한국어 파서
-  /// (보내주신 맘온누리약국 / 타워약국 영수증 포함 모든 약국·병원 영수증 완벽 파싱)
+  /// [대외공문] 문맥 기반 스마트 파서
+  Map<String, String> _parseOfficialDocText(
+    String fullText,
+    List<String> lines,
+  ) {
+    final result = <String, String>{};
+
+    final dateMatch = RegExp(
+      r'(?:시\s*행|일\s*자|날\s*짜|발\s*신\s*일)?[^\d]*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
+    ).firstMatch(fullText);
+    if (dateMatch != null) {
+      result['sentDate'] =
+          '${dateMatch.group(1)}-${dateMatch.group(2)!.padLeft(2, '0')}-${dateMatch.group(3)!.padLeft(2, '0')}';
+    }
+
+    final docNumPatterns = [
+      RegExp(
+        r'(?:문\s*서\s*번\s*호|공\s*문\s*번\s*호|분\s*류\s*기\s*호|시\s*행)\s*[:：]?\s*([가-힣A-Za-z0-9\s\-_().]{2,25}?(?:-\s*\d+|\d+\s*호))',
+      ),
+      RegExp(r'([가-힣A-Za-z0-9\-]*\s*제\s*\d{2,4}\s*[-.]?\s*\d*\s*호)'),
+      RegExp(
+        r'\b([가-힣A-Za-z]{2,12}\s*-\s*(?:\d{2,4}\s*-\s*)?\d{1,5}(?:\s*호)?)\b',
+      ),
+    ];
+
+    for (final pat in docNumPatterns) {
+      for (final line in lines) {
+        if (RegExp(r'\b\d{2,3}-\d{3,4}-\d{4}\b').hasMatch(line)) continue;
+        if (RegExp(r'\b\d{3}-\d{2}-\d{5}\b').hasMatch(line)) continue;
+        final m = pat.firstMatch(line);
+        if (m != null) {
+          final candidate = m.group(1)!.trim();
+          if (!RegExp(r'^\d{4}-\d{1,2}-\d{1,2}$').hasMatch(candidate)) {
+            result['docNumber'] = candidate;
+            break;
+          }
+        }
+      }
+      if ((result['docNumber'] ?? '').isNotEmpty) break;
+    }
+
+    for (final line in lines) {
+      if (RegExp(r'^(?:발\s*신|보\s*낸\s*사\s*람|발\s*신\s*처|발\s*신\s*기\s*관)')
+          .hasMatch(line)) {
+        result['sender'] = line
+            .replaceAll(
+                RegExp(r'^(?:발\s*신|보\s*낸\s*사\s*람|발\s*신\s*처|발\s*신\s*기\s*관)\s*[:：]?'),
+                '')
+            .trim();
+        break;
+      }
+    }
+    if ((result['sender'] ?? '').isEmpty && lines.isNotEmpty) {
+      for (final line in lines.reversed.take(6)) {
+        if (!line.contains('귀하') &&
+            !line.contains('수신') &&
+            RegExp(r'(?:주식회사|\(주\)|대표이사|소장|장관|시장|구청장|공단|협회|조합|대리인|본부장)')
+                .hasMatch(line)) {
+          result['sender'] = line.trim();
+          break;
+        }
+      }
+    }
+
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (RegExp(r'^(?:제\s*목|건\s*명|안\s*건)\s*[:：]?').hasMatch(line)) {
+        String extractedTitle =
+            line.replaceAll(RegExp(r'^(?:제\s*목|건\s*명|안\s*건)\s*[:：]?'), '').trim();
+        if (extractedTitle.isEmpty && i + 1 < lines.length) {
+          extractedTitle = lines[i + 1].trim();
+        }
+        result['title'] = extractedTitle;
+        break;
+      }
+    }
+    if ((result['title'] ?? '').isEmpty) {
+      for (final line in lines) {
+        if (line.contains('요청의 건') ||
+            line.contains('협조의 건') ||
+            line.contains('제출의 건') ||
+            line.contains('통보의 건') ||
+            line.contains('승인의 건') ||
+            line.contains('보고의 건') ||
+            line.contains('회신의 건') ||
+            line.contains('안내의 건')) {
+          result['title'] = line;
+          break;
+        }
+      }
+    }
+    if ((result['title'] ?? '').isEmpty) {
+      for (final line in lines) {
+        if (line.length < 4) continue;
+        if (RegExp(r'(?:귀\s*하|수\s*신|참\s*조|발\s*신|문\s*서\s*번\s*호|무궁한|발전을|기원합니다)')
+            .hasMatch(line)) {
+          continue;
+        }
+        result['title'] = line;
+        break;
+      }
+    }
+
+    final deadlineMatch = RegExp(
+      r'(?:회\s*신\s*기\s*한|제\s*출\s*기\s*한|기\s*한|까\s*지)[^\d]*(\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2}|\d{1,2}\s*월\s*\d{1,2}\s*일)',
+    ).firstMatch(fullText);
+    if (deadlineMatch != null) {
+      result['replyDeadline'] = deadlineMatch.group(1)!.trim();
+    }
+
+    final meaningfulLines = <String>[];
+    for (final line in lines) {
+      if (RegExp(
+              r'(?:귀\s*하|무궁한|발찬|발전을|기원합니다|축하드립니다|수\s*신\s*[:：]|참\s*조\s*[:：]|붙\s*임|첨\s*부|끝\.)')
+          .hasMatch(line)) {
+        continue;
+      }
+      if (line == result['title'] || line == result['sender']) continue;
+      if (line.length >= 6) {
+        meaningfulLines.add(line);
+      }
+    }
+
+    if (meaningfulLines.isNotEmpty) {
+      final numberedBody = meaningfulLines
+          .where((l) =>
+              RegExp(r'^[2-9가-하\-·•]').hasMatch(l) ||
+              RegExp(r'(?:요청|바랍니다|제출|협조|통보|회신|공지|알려)').hasMatch(l))
+          .toList();
+      final targetSummaryLines =
+          numberedBody.isNotEmpty ? numberedBody : meaningfulLines;
+      String summary =
+          targetSummaryLines.take(2).join(' ').replaceAll(RegExp(r'\s+'), ' ');
+      if (summary.length > 90) {
+        summary = '${summary.substring(0, 90)}...';
+      }
+      result['aiSummary'] = summary;
+    } else if ((result['title'] ?? '').isNotEmpty) {
+      result['aiSummary'] = '${result['title']}에 관한 공문입니다.';
+    }
+
+    return result;
+  }
+
+  /// [자재송장 / 거래명세서] 문맥 기반 스마트 파서
+  Map<String, String> _parseInvoiceText(String fullText, List<String> lines) {
+    final result = <String, String>{};
+
+    final dateMatch = RegExp(r'(\d{4})\s*[-./]\s*(\d{2})\s*[-./]\s*(\d{2})')
+        .firstMatch(fullText);
+    if (dateMatch != null) {
+      result['arrivalDate'] =
+          '${dateMatch.group(1)}-${dateMatch.group(2)}-${dateMatch.group(3)}';
+    }
+
+    final orderMatch = RegExp(
+      r'(?:송\s*장\s*번\s*호|주\s*문\s*번\s*호|청\s*구\s*번\s*호|NO)\s*[:：]?\s*([A-Za-z0-9\-]{5,25})',
+    ).firstMatch(fullText);
+    if (orderMatch != null) {
+      result['orderNumber'] = orderMatch.group(1)!;
+    }
+
+    final steelSpecMatch = RegExp(
+      r'\b((?:U?SHD|HD|SD|KS\s*D)\s*[0-9A-Za-z\-*xX.\s]{2,20})\b',
+    ).firstMatch(fullText);
+    if (steelSpecMatch != null) {
+      result['specName'] = steelSpecMatch.group(1)!.trim();
+    }
+
+    final supplierMatch = RegExp(
+      r'([가-힣A-Za-z0-9]+(?:제철|철강|자재|산업|건업|물산|상사|테크|금속|시멘트|레미콘)(?:\(주\)|주식회사)?)',
+    ).firstMatch(fullText);
+    if (supplierMatch != null) {
+      result['supplierName'] = supplierMatch.group(1)!;
+    } else if (fullText.toUpperCase().contains('HYUNDAI STEEL')) {
+      result['supplierName'] = '현대제철(주)';
+    }
+
+    for (final line in lines) {
+      if ((result['productName'] ?? '').isEmpty &&
+          (line.contains('품명') ||
+              line.contains('제품명') ||
+              line.contains('이형봉강') ||
+              line.contains('철근'))) {
+        if (line.contains('이형봉강')) {
+          result['productName'] = '이형봉강(철근)';
+        } else {
+          final cleaned =
+              line.replaceAll(RegExp(r'.*(?:품명|제품명|품목)\s*[:：]?'), '').trim();
+          if (cleaned.isNotEmpty) result['productName'] = cleaned;
+        }
+      }
+      if ((result['supplierName'] ?? '').isEmpty &&
+          (line.contains('상호') || line.contains('공급자'))) {
+        final cleaned =
+            line.replaceAll(RegExp(r'.*(?:상\s*호|공\s*급\s*자)\s*[:：]?'), '').trim();
+        if (cleaned.isNotEmpty) {
+          result['supplierName'] = cleaned.split(' ').first;
+        }
+      }
+    }
+
+    final weightMatch = RegExp(
+      r'(?:합\s*계|중\s*량)?[^\d]*(\d{1,3}(?:,\d{3})+|\d+\.\d{2,3})\s*(?:MT|TON|KG|kg|t)?',
+    ).allMatches(fullText);
+    if (weightMatch.isNotEmpty) {
+      result['weight'] = weightMatch.last.group(1)!;
+    }
+
+    return result;
+  }
+
+  /// [병원비 / 약제비 영수증] 파서
   Map<String, String> _parseMedicalReceiptText(
     String fullText,
     List<String> lines,
   ) {
     final result = <String, String>{};
 
-    // 1) 사업자등록번호 (예: 276-63-00432, 840-78-00407)
     final bizMatch = RegExp(r'\b(\d{3})\s*-\s*(\d{2})\s*-\s*(\d{5})\b')
         .firstMatch(fullText);
     if (bizMatch != null) {
@@ -667,7 +1065,6 @@ class _HomeScreenState extends State<HomeScreen> {
           '${bizMatch.group(1)}-${bizMatch.group(2)}-${bizMatch.group(3)}';
     }
 
-    // 2) 발행일 / 조제일자 (예: 2026-10-01)
     final dateLabelMatch = RegExp(
       r'(?:발\s*행\s*일|조\s*제\s*일\s*자|진\s*료\s*일\s*자)[^\d]*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
     ).firstMatch(fullText);
@@ -685,7 +1082,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 3) 상호 (예: 맘온누리약국, 타워약국 등)
     final nameMatch = RegExp(
       r'([가-힣0-9]{2,15}(?:약국|병원|의원|치과|한의원|클리닉|메디컬|센터))',
     ).firstMatch(fullText);
@@ -705,7 +1101,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 4) 총수납금액 (합계 4,600 / 본인부담금 4,600 / 현금 4,600 / 카드 등)
     final amountPatterns = [
       RegExp(r'합\s*계[^\d\n]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
       RegExp(r'총\s*수\s*납\s*금\s*액[^\d]*([1-9]\d{0,2}(?:,\d{3})+|\d{3,7})'),
@@ -739,78 +1134,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
-  /// 자재송장 오프라인 OCR 파서
-  Map<String, String> _parseInvoiceText(String fullText, List<String> lines) {
-    final result = <String, String>{};
-    final dateMatch = RegExp(r'(\d{4})\s*[-./]\s*(\d{2})\s*[-./]\s*(\d{2})')
-        .firstMatch(fullText);
-    if (dateMatch != null) {
-      result['arrivalDate'] =
-          '${dateMatch.group(1)}-${dateMatch.group(2)}-${dateMatch.group(3)}';
-    }
-    final orderMatch =
-        RegExp(r'(?:주문번호|송장번호|NO|번호)\s*[:：]?\s*([A-Za-z0-9-]+)')
-            .firstMatch(fullText);
-    if (orderMatch != null) result['orderNumber'] = orderMatch.group(1)!;
-
-    for (final line in lines) {
-      if (line.contains('품명') || line.contains('제품명') || line.contains('품목')) {
-        result['productName'] =
-            line.replaceAll(RegExp(r'.*(?:품명|제품명|품목)\s*[:：]?'), '').trim();
-      } else if (line.contains('규격')) {
-        result['specName'] =
-            line.replaceAll(RegExp(r'.*규격\s*[:：]?'), '').trim();
-      } else if (line.contains('상호') || line.contains('공급자')) {
-        result['supplierName'] =
-            line.replaceAll(RegExp(r'.*(?:상호|공급자)\s*[:：]?'), '').trim();
-      }
-    }
-    return result;
-  }
-
-  /// 대외공문 오프라인 OCR 파서
-  Map<String, String> _parseOfficialDocText(
-    String fullText,
-    List<String> lines,
-  ) {
-    final result = <String, String>{};
-    final dateMatch =
-        RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
-            .firstMatch(fullText);
-    if (dateMatch != null) {
-      result['sentDate'] =
-          '${dateMatch.group(1)}-${dateMatch.group(2)!.padLeft(2, '0')}-${dateMatch.group(3)!.padLeft(2, '0')}';
-    }
-    for (final line in lines) {
-      if (line.contains('제목') && (result['title'] ?? '').isEmpty) {
-        result['title'] = line.replaceAll(RegExp(r'^.*제목\s*[:：]?'), '').trim();
-      } else if ((line.contains('시행') ||
-              line.contains('문서번호') ||
-              line.contains('공문번호')) &&
-          (result['docNumber'] ?? '').isEmpty) {
-        result['docNumber'] = line
-            .replaceAll(RegExp(r'^.*(?:시행|문서번호|공문번호)\s*[:：]?'), '')
-            .trim();
-      } else if ((line.contains('수신') ||
-              line.contains('발신') ||
-              line.contains('기관')) &&
-          (result['sender'] ?? '').isEmpty) {
-        result['sender'] = line.trim();
-      }
-    }
-    if ((result['title'] ?? '').isEmpty && lines.isNotEmpty) {
-      result['title'] = lines.first;
-    }
-    final bodyPreview = lines.take(5).join(' ');
-    if (bodyPreview.isNotEmpty) {
-      result['aiSummary'] = bodyPreview.length > 75
-          ? '${bodyPreview.substring(0, 75)}...'
-          : bodyPreview;
-    }
-    return result;
-  }
-
-  /// 출장비 영수증 오프라인 OCR 파서
+  /// [출장비 영수증] 파서
   Map<String, String> _parseTravelReceiptText(
     String fullText,
     List<String> lines,
@@ -834,7 +1158,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 2단계: Gemini AI 정밀 분석 (API 키 설정 시 선택 작동)
+  // 2단계: Gemini AI 문맥 추론 분석 (설정 시 작동)
   // ===========================================================================
   Future<Map<String, String>?> _analyzeDocumentWithAi({
     required String category,
@@ -845,31 +1169,34 @@ class _HomeScreenState extends State<HomeScreen> {
     String prompt;
     if (category == DocCategory.officialDoc) {
       prompt = '''
-이 대외공문 이미지를 읽고 반드시 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
+이 대외공문 이미지를 읽고 문맥을 파악해서 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘.
+특히 '공문번호'라는 글자가 없더라도 부서명-연도-호수(예: 제2026-15호, 공무-123 등)처럼 문맥상 문서번호에 해당하는 값을 찾아서 docNumber에 넣고,
+수신자('~귀하')나 인사말('귀사의 무궁한 발전을~')은 제목과 요약에서 절대 빼고 실제 공문의 핵심 안건과 요청사항만 한 문장으로 명확히 요약해줘:
 {
   "sentDate": "보낸날짜 (YYYY-MM-DD 형식)",
-  "sender": "보낸사람 (발신기관명)",
-  "docNumber": "공문번호",
-  "title": "공문 제목",
-  "aiSummary": "공문 핵심 내용을 명확하게 한 문장으로 요약",
+  "sender": "보낸사람 (발신기관/회사명)",
+  "docNumber": "문맥상 공문번호/문서번호",
+  "title": "공문 실제 제목/건명 (수신처 제외)",
+  "aiSummary": "인사말을 제외한 공문의 실제 핵심 요청/통보 내용을 한 문장으로 요약",
   "replyDeadline": "회신기한 (없으면 공란)"
 }''';
     } else if (category == DocCategory.invoice) {
       prompt = '''
-이 자재송장 이미지를 읽고 반드시 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
+이 자재송장/거래명세서 이미지를 읽고 문맥을 파악해서 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
 {
-  "arrivalDate": "도착일 (YYYY-MM-DD 형식)",
-  "orderNumber": "주문번호",
-  "productName": "제품명",
-  "specName": "규격명",
-  "unit": "단위 (예: EA, BOX, m, kg 등)",
+  "arrivalDate": "도착일/출하일 (YYYY-MM-DD 형식)",
+  "orderNumber": "송장번호 또는 주문번호",
+  "productName": "제품명/품명",
+  "specName": "규격명/강종",
+  "unit": "단위 (예: MT, TON, EA, kg 등)",
   "quantity": "수량 (숫자만)",
   "weight": "중량 (숫자만)",
-  "supplierName": "공급자상호"
+  "supplierName": "공급자상호",
+  "amount": "공급가액 또는 합계금액 (없으면 0)"
 }''';
     } else if (category == DocCategory.travel) {
       prompt = '''
-이 출장 영수증/하이패스 이미지를 읽고 반드시 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
+이 출장 영수증/하이패스 이미지를 읽고 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
 {
   "distanceKm": "출장거리 km (숫자만, 모르면 0)",
   "receiptTotal": "영수증 금액 합산 (숫자만)",
@@ -877,7 +1204,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }''';
     } else {
       prompt = '''
-이 병원비/약국 영수증 이미지를 읽고 반드시 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
+이 병원비/약국 영수증 이미지를 읽고 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
 {
   "clinicName": "병원 또는 약국 상호명",
   "bizRegNumber": "사업자등록번호 (000-00-00000)",
@@ -932,22 +1259,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 사진 촬영 → 4모서리 평평하게 스캔 → 오프라인 OCR & AI 자동 채우기 → 저장
+  // 사진 촬영 → 무왜곡 4모서리 스캔 → 세부 카테고리(갑상선/치질 등) 지정 & 저장
   // ===========================================================================
   Future<void> _addRecordDialog(ImageSource source) async {
     try {
       final XFile? picked = await _picker.pickImage(
         source: source,
-        maxWidth: 1600,
-        maxHeight: 1600,
-        imageQuality: 85,
+        maxWidth: 1800,
+        maxHeight: 1800,
+        imageQuality: 88,
       );
       if (picked == null) return;
 
       final rawBytes = await picked.readAsBytes();
       if (!mounted) return;
 
-      // 1) 4모서리 맞춰 평평하게 스캔하는 화면 먼저 띄우기
+      // 1) 원본 비율이 그대로 유지되는 4모서리 스캔 화면 띄우기
       final Uint8List? flattenedBytes = await Navigator.push<Uint8List>(
         context,
         MaterialPageRoute(
@@ -970,6 +1297,13 @@ class _HomeScreenState extends State<HomeScreen> {
           ? DocCategory.medical
           : _selectedCategoryFilter;
 
+      List<String> currentSubList =
+          List<String>.from(_subCategoriesMap[chosenCategory] ?? ['일반']);
+      String chosenSubCategory = (_selectedSubCategoryFilter != '전체' &&
+              currentSubList.contains(_selectedSubCategoryFilter))
+          ? _selectedSubCategoryFilter
+          : (currentSubList.isNotEmpty ? currentSubList.first : '일반');
+
       final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
 
       // 1. 대외공문 컨트롤러
@@ -979,16 +1313,18 @@ class _HomeScreenState extends State<HomeScreen> {
       final docTitleCtrl = TextEditingController();
       final aiSummaryCtrl = TextEditingController();
       final replyDeadlineCtrl = TextEditingController();
+      final docAmountCtrl = TextEditingController(text: '0');
 
       // 2. 자재송장 컨트롤러
       final arrivalDateCtrl = TextEditingController(text: todayStr);
       final orderNumberCtrl = TextEditingController();
       final productNameCtrl = TextEditingController();
       final specNameCtrl = TextEditingController();
-      final unitCtrl = TextEditingController(text: 'EA');
+      final unitCtrl = TextEditingController(text: 'MT');
       final quantityCtrl = TextEditingController();
       final weightCtrl = TextEditingController();
       final supplierNameCtrl = TextEditingController();
+      final invoiceAmountCtrl = TextEditingController(text: '0');
 
       // 3. 출장비 컨트롤러
       final distanceKmCtrl = TextEditingController(text: '0');
@@ -1068,6 +1404,9 @@ class _HomeScreenState extends State<HomeScreen> {
           if (extracted['supplierName']?.isNotEmpty == true) {
             supplierNameCtrl.text = extracted['supplierName']!;
           }
+          if (extracted['amount']?.isNotEmpty == true) {
+            invoiceAmountCtrl.text = extracted['amount']!;
+          }
         } else if (chosenCategory == DocCategory.travel) {
           if (extracted['distanceKm']?.isNotEmpty == true) {
             distanceKmCtrl.text = extracted['distanceKm']!;
@@ -1095,13 +1434,22 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // 2) 다이얼로그 띄우기 전에 온디바이스 한글 OCR을 즉시 수행하여 초기값 자동 채움!
+      // 2) 초기 자동 인식
       setState(() => _isBusy = true);
       final initialOcr = await _extractFieldsOfflineOcr(
         imagePath: savedFile.path,
         category: chosenCategory,
       );
       applyExtractedMap(initialOcr);
+      if (_geminiApiKey.trim().isNotEmpty) {
+        try {
+          final aiMap = await _analyzeDocumentWithAi(
+            category: chosenCategory,
+            base64Image: base64Str,
+          );
+          if (aiMap != null) applyExtractedMap(aiMap);
+        } catch (_) {}
+      }
       setState(() => _isBusy = false);
 
       if (!mounted) return;
@@ -1132,7 +1480,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       setDialogState(() => applyExtractedMap(aiMap));
                     }
                   }
-                  _showSnack('사진에서 문자/금액을 자동으로 읽어왔습니다.');
+                  _showSnack('문서 맥락 분석 및 항목 자동 인식이 완료되었습니다.');
                 } catch (e) {
                   _showSnack('문자 인식 완료: $e');
                 } finally {
@@ -1140,8 +1488,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
               }
 
+              final subListForDialog =
+                  _subCategoriesMap[chosenCategory] ?? ['일반'];
+
               return AlertDialog(
-                title: const Text('증빙서류 맞춤 정보 입력'),
+                title: const Text('증빙서류 세부 카테고리 & 정보 입력'),
                 content: SizedBox(
                   width: double.maxFinite,
                   child: SingleChildScrollView(
@@ -1149,50 +1500,138 @@ class _HomeScreenState extends State<HomeScreen> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        // 왜곡 없이 원본 비율 그대로 보여주는 스캔 미리보기
                         Container(
-                          height: 110,
+                          height: 140,
                           margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(6),
                           decoration: BoxDecoration(
-                            color: Colors.black87,
+                            color: const Color(0xFF0F172A),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
+                          child: Center(
                             child: Image.memory(
                               flattenedBytes,
                               fit: BoxFit.contain,
                             ),
                           ),
                         ),
+
+                        // 문서 종류(대분류) 선택
                         DropdownButtonFormField<String>(
                           value: chosenCategory,
                           decoration: const InputDecoration(
-                            labelText: '문서 종류 선택',
+                            labelText: '문서 종류 (대분류)',
                             border: OutlineInputBorder(),
+                            isDense: true,
                           ),
                           items: DocCategory.inputList
-                              .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                              .map((c) =>
+                                  DropdownMenuItem(value: c, child: Text(c)))
                               .toList(),
                           onChanged: (v) async {
-                            if (v != null) {
-                              setDialogState(() => chosenCategory = v);
+                            if (v != null && v != chosenCategory) {
+                              setDialogState(() {
+                                chosenCategory = v;
+                                final subs =
+                                    _subCategoriesMap[chosenCategory] ?? ['일반'];
+                                chosenSubCategory =
+                                    subs.isNotEmpty ? subs.first : '일반';
+                              });
                               await triggerOcrAndAiExtract();
                             }
                           },
                         ),
+                        const SizedBox(height: 12),
+
+                        // ★ 핵심: 세부 이력 카테고리 선택 및 [+ 직접 추가] (예: 병원비 내 갑상선, 치질 등)
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue.shade200),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    '[$chosenCategory] 세부 이력 카테고리 지정',
+                                    style: const TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1E3A8A),
+                                    ),
+                                  ),
+                                  TextButton.icon(
+                                    style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6),
+                                    ),
+                                    onPressed: () async {
+                                      final added =
+                                          await _promptAddNewSubCategory(
+                                              chosenCategory);
+                                      if (added != null && added.isNotEmpty) {
+                                        setDialogState(() {
+                                          chosenSubCategory = added;
+                                        });
+                                      }
+                                    },
+                                    icon: const Icon(Icons.add_circle_outline,
+                                        size: 16),
+                                    label: const Text(
+                                      '카테고리 직접 추가',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 6,
+                                children: subListForDialog.map((sub) {
+                                  final isSel = chosenSubCategory == sub;
+                                  return ChoiceChip(
+                                    visualDensity: VisualDensity.compact,
+                                    label: Text(sub),
+                                    selected: isSel,
+                                    selectedColor: Colors.indigo.shade100,
+                                    onSelected: (_) {
+                                      setDialogState(() {
+                                        chosenSubCategory = sub;
+                                      });
+                                    },
+                                  );
+                                }).toList(),
+                              ),
+                            ],
+                          ),
+                        ),
                         const SizedBox(height: 10),
+
                         FilledButton.tonalIcon(
-                          onPressed: isAiAnalyzing ? null : triggerOcrAndAiExtract,
+                          onPressed:
+                              isAiAnalyzing ? null : triggerOcrAndAiExtract,
                           icon: isAiAnalyzing
                               ? const SizedBox(
                                   width: 16,
                                   height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
                                 )
                               : const Icon(Icons.auto_awesome),
                           label: Text(
                             chosenCategory == DocCategory.officialDoc
-                                ? '한글 OCR & AI 공문 한문장 요약 다시 실행'
+                                ? '공문 맥락 분석 & 한문장 요약 다시 실행'
                                 : '사진 속 문자/금액 다시 자동 인식',
                           ),
                         ),
@@ -1200,36 +1639,56 @@ class _HomeScreenState extends State<HomeScreen> {
 
                         // 1. 대외공문 입력 폼
                         if (chosenCategory == DocCategory.officialDoc) ...[
-                          _buildField(sentDateCtrl, '보낸날짜', '예: 2026-10-26'),
-                          _buildField(senderCtrl, '보낸사람 (발신처)', '예: 국토교통부장관'),
-                          _buildField(docNumberCtrl, '공문번호', '예: 건설정책과-1234호'),
-                          _buildField(docTitleCtrl, '제목', '예: 현장 안전점검 결과 제출 요청'),
+                          _buildField(sentDateCtrl, '보낸날짜', '예: 2026-10-27'),
+                          _buildField(
+                              senderCtrl, '보낸사람 (발신처)', '예: 대림건설(주) 대표이사'),
+                          _buildField(
+                            docNumberCtrl,
+                            '공문번호 (문맥상 문서/분류번호 자동추출)',
+                            '예: 대림-2026-045호',
+                          ),
+                          _buildField(
+                            docTitleCtrl,
+                            '제목 (수신처 제외 본 안건)',
+                            '예: 현장 설계변경 승인 요청의 건',
+                          ),
                           _buildField(
                             aiSummaryCtrl,
-                            '주요내용 (AI 공문내용 한문장 요약)',
-                            '자동 요약 또는 직접 입력',
+                            '주요내용 (핵심 용건 1문장 요약)',
+                            '인사말을 제외한 핵심 본문 요약',
                             maxLines: 2,
                           ),
-                          _buildField(replyDeadlineCtrl, '회신기한', '예: 2026-11-05'),
+                          _buildField(
+                              replyDeadlineCtrl, '회신기한', '예: 2026-11-05'),
+                          _buildField(
+                            docAmountCtrl,
+                            '관련 금액 (원, 있을 경우 합계 반영)',
+                            '없으면 0',
+                            keyboardType: TextInputType.number,
+                          ),
                         ],
 
                         // 2. 자재송장 입력 폼
                         if (chosenCategory == DocCategory.invoice) ...[
-                          _buildField(arrivalDateCtrl, '도착일', '예: 2026-10-26'),
-                          _buildField(orderNumberCtrl, '주문번호', '예: PO-2026-0891'),
-                          _buildField(productNameCtrl, '제품명', '예: 고강도 철근 HD16'),
-                          _buildField(specNameCtrl, '규격명', '예: D16 x 8m'),
+                          _buildField(arrivalDateCtrl, '도착일', '예: 2026-10-27'),
+                          _buildField(orderNumberCtrl, '주문번호 / 송장번호',
+                              '예: 1200210908-00006'),
+                          _buildField(
+                              productNameCtrl, '제품명', '예: 이형봉강(철근)'),
+                          _buildField(
+                              specNameCtrl, '규격명', '예: KS D 3504 SD400 D16'),
                           Row(
                             children: [
                               Expanded(
-                                child: _buildField(unitCtrl, '단위', '예: TON, EA'),
+                                child: _buildField(
+                                    unitCtrl, '단위', '예: MT, TON, EA'),
                               ),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: _buildField(
                                   quantityCtrl,
                                   '수량',
-                                  '예: 25',
+                                  '예: 486',
                                   keyboardType: TextInputType.number,
                                 ),
                               ),
@@ -1237,11 +1696,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           _buildField(
                             weightCtrl,
-                            '중량 (kg/ton)',
-                            '예: 1,250',
+                            '중량 (kg/MT)',
+                            '예: 19,996',
                             keyboardType: TextInputType.number,
                           ),
-                          _buildField(supplierNameCtrl, '공급자상호', '예: (주)대한철강자재'),
+                          _buildField(
+                              supplierNameCtrl, '공급자상호', '예: 현대제철(주)'),
+                          _buildField(
+                            invoiceAmountCtrl,
+                            '송장 금액 (원, 입력 시 카테고리 합계 반영)',
+                            '없으면 0',
+                            keyboardType: TextInputType.number,
+                          ),
                         ],
 
                         // 3. 출장비 입력 폼
@@ -1283,8 +1749,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
                         // 4. 병원비 입력 폼
                         if (chosenCategory == DocCategory.medical) ...[
-                          _buildField(clinicNameCtrl, '상호 (병원/약국명)', '예: 맘온누리약국'),
-                          _buildField(bizRegNumberCtrl, '사업자등록번호', '예: 276-63-00432'),
+                          _buildField(
+                              clinicNameCtrl, '상호 (병원/약국명)', '예: 맘온누리약국'),
+                          _buildField(
+                              bizRegNumberCtrl, '사업자등록번호', '예: 276-63-00432'),
                           _buildField(issueDateCtrl, '발행일', '예: 2026-10-01'),
                           _buildField(
                             totalPaidCtrl,
@@ -1315,7 +1783,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (confirmed != true) return;
 
-      final Map<String, String> collectedFields = {};
+      final Map<String, String> collectedFields = {
+        'subCategory': chosenSubCategory,
+      };
       if (chosenCategory == DocCategory.officialDoc) {
         collectedFields['sentDate'] = sentDateCtrl.text.trim();
         collectedFields['sender'] = senderCtrl.text.trim();
@@ -1323,6 +1793,7 @@ class _HomeScreenState extends State<HomeScreen> {
         collectedFields['title'] = docTitleCtrl.text.trim();
         collectedFields['aiSummary'] = aiSummaryCtrl.text.trim();
         collectedFields['replyDeadline'] = replyDeadlineCtrl.text.trim();
+        collectedFields['amount'] = docAmountCtrl.text.trim();
       } else if (chosenCategory == DocCategory.invoice) {
         collectedFields['arrivalDate'] = arrivalDateCtrl.text.trim();
         collectedFields['orderNumber'] = orderNumberCtrl.text.trim();
@@ -1332,6 +1803,7 @@ class _HomeScreenState extends State<HomeScreen> {
         collectedFields['quantity'] = quantityCtrl.text.trim();
         collectedFields['weight'] = weightCtrl.text.trim();
         collectedFields['supplierName'] = supplierNameCtrl.text.trim();
+        collectedFields['amount'] = invoiceAmountCtrl.text.trim();
       } else if (chosenCategory == DocCategory.travel) {
         recalcTravelCost();
         collectedFields['distanceKm'] = distanceKmCtrl.text.trim();
@@ -1358,6 +1830,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       setState(() {
         _records.insert(0, newRecord);
+        _selectedCategoryFilter = chosenCategory;
         _selectedRecord = newRecord;
       });
       await _saveLocalRecords();
@@ -1455,7 +1928,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    '스마트폰에 깔려있는 원드라이브 앱 연동 폴더(내 문서함 내 특정 폴더)를 최초 1회 선택해 두면, 이후 상단 [업로드] 버튼 한 번으로 기존 HTML에 새 목록만 추가하여 자동 덮어씁니다.',
+                    '스마트폰에 깔려있는 원드라이브 앱 연동 폴더(내 문서함 내 특정 폴더)를 최초 1회 선택해 두면, 이후 상단 [HTML 내보내기] 버튼 한 번으로 기존 HTML에 새 목록만 추가하여 자동 덮어씁니다.',
                     style: TextStyle(fontSize: 12, color: Colors.black87),
                   ),
                   const SizedBox(height: 8),
@@ -1492,7 +1965,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const Divider(height: 24),
                   const Text(
-                    '2. Gemini AI 키 (선택 - 미입력 시에도 내장 한국어 OCR이 자동 작동합니다)',
+                    '2. Gemini AI 키 (대외공문 문맥 추론 & 한문장 요약 정밀도 향상)',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                   ),
                   const SizedBox(height: 6),
@@ -1500,7 +1973,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     controller: geminiKeyCtrl,
                     decoration: const InputDecoration(
                       labelText: 'Gemini API Key (선택)',
-                      hintText: 'AIzaSy... (대외공문 고도화 한문장 요약 등에 활용)',
+                      hintText: 'AIzaSy... (입력 시 촬영 직후 AI 문맥 추론 자동 실행)',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -1569,6 +2042,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ===========================================================================
+  // 원드라이브 누적 HTML 내보내기 (왼쪽: 리스트 + 세부 카테고리별/전체 합계, 오른쪽: 증빙사진)
+  // ===========================================================================
   Future<void> _oneClickSyncHtmlToOneDrive() async {
     setState(() => _isBusy = true);
     try {
@@ -1725,6 +2201,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// 좌-우 분할(왼쪽: 세부 카테고리별 합계·전체 합계·리스트 / 오른쪽: 증빙사진) 구조의 HTML 생성
   String _buildCumulativeHtmlDocument(
     List<DocRecord> records,
     Set<String> deletedIds,
@@ -1737,21 +2214,22 @@ class _HomeScreenState extends State<HomeScreen> {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>증빙서류 누적 아카이브 (대외공문·자재송장·출장비·병원비)</title>
+  <title>증빙서류 누적 아카이브</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", sans-serif;
-      background: #f3f4f6;
-      color: #1f2937;
+      background: #f1f5f9;
+      color: #1e293b;
       height: 100vh;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
     }
     header {
       background: #1e3a8a;
       color: #ffffff;
-      padding: 12px 18px;
+      padding: 10px 18px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -1769,12 +2247,62 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     .btn-save { background: #10b981; color: white; font-weight: 600; }
     .btn-save:hover { background: #059669; }
+    /* 상단 전체 합계 및 세부 카테고리(갑상선, 치질 등)별 합계 바 */
+    #totals-bar {
+      background: #ffffff;
+      border-bottom: 1px solid #cbd5e1;
+      padding: 8px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-size: 12.5px;
+    }
+    .total-chip {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 4px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .total-chip.active {
+      background: #dbeafe;
+      border-color: #2563eb;
+      color: #1e3a8a;
+      font-weight: 700;
+    }
+    .total-chip.grand {
+      background: #1e3a8a;
+      color: #ffffff;
+      border-color: #1e3a8a;
+      font-weight: 700;
+    }
+    /* 본문 좌(리스트) - 우(증빙사진) 2단 레이아웃 */
+    #main-split {
+      flex: 1;
+      display: flex;
+      flex-direction: row;
+      overflow: hidden;
+    }
     #list-pane {
-      height: 48vh;
+      width: 52%;
+      height: 100%;
       overflow-y: auto;
       background: #ffffff;
-      border-bottom: 2px solid #cbd5e1;
+      border-right: 2px solid #cbd5e1;
       padding: 12px;
+    }
+    #preview-pane {
+      width: 48%;
+      height: 100%;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 14px;
+      overflow-y: auto;
     }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td {
@@ -1787,11 +2315,21 @@ class _HomeScreenState extends State<HomeScreen> {
     tr.item-row { cursor: pointer; transition: background 0.15s; }
     tr.item-row:hover { background: #eff6ff; }
     tr.item-row.active { background: #dbeafe; font-weight: 600; }
-    .badge {
+    .badge-major {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      font-weight: 700;
+      background: #e2e8f0;
+      color: #334155;
+      margin-bottom: 3px;
+    }
+    .badge-sub {
       display: inline-block;
       padding: 3px 8px;
       border-radius: 9999px;
-      font-size: 11px;
+      font-size: 11.5px;
       font-weight: 700;
       background: #e0e7ff;
       color: #1e40af;
@@ -1800,37 +2338,25 @@ class _HomeScreenState extends State<HomeScreen> {
       background: #ef4444;
       color: white;
       border: none;
-      padding: 4px 10px;
+      padding: 4px 8px;
       border-radius: 4px;
       cursor: pointer;
-      font-size: 12px;
-    }
-    #preview-pane {
-      flex: 1;
-      background: #0f172a;
-      color: #f8fafc;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: flex-start;
-      padding: 12px;
-      overflow: auto;
+      font-size: 11px;
     }
     #preview-info {
-      margin-bottom: 8px;
+      margin-bottom: 10px;
       font-size: 13px;
       line-height: 1.5;
       background: #1e293b;
-      padding: 8px 14px;
-      border-radius: 6px;
+      padding: 10px 14px;
+      border-radius: 8px;
       width: 100%;
-      max-width: 900px;
     }
     #preview-img {
-      max-width: 95%;
-      max-height: 36vh;
+      max-width: 100%;
+      max-height: calc(100vh - 210px);
       object-fit: contain;
-      border-radius: 8px;
+      border-radius: 6px;
       box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     }
   </style>
@@ -1839,52 +2365,74 @@ class _HomeScreenState extends State<HomeScreen> {
   <header>
     <h1>증빙서류 누적 아카이브 (<span id="count-label">0</span>건)</h1>
     <div class="toolbar">
-      <select id="category-filter" onchange="renderList()">
-        <option value="전체">전체 분류</option>
-        <option value="대외공문">1. 대외공문</option>
-        <option value="자재송장">2. 자재송장</option>
-        <option value="출장비">3. 출장비</option>
-        <option value="병원비">4. 병원비</option>
+      <select id="category-filter" onchange="onMajorFilterChange()">
+        <option value="전체">전체 문서종류</option>
+        <option value="병원비">병원비</option>
+        <option value="출장비">출장비</option>
+        <option value="자재송장">자재송장</option>
+        <option value="대외공문">대외공문</option>
       </select>
-      <button class="btn-save" onclick="downloadUpdatedHtml()">삭제 반영된 HTML 파일 저장</button>
+      <button class="btn-save" onclick="downloadUpdatedHtml()">삭제/변경 반영된 HTML 저장</button>
     </div>
   </header>
 
-  <div id="list-pane">
-    <table>
-      <thead>
-        <tr>
-          <th style="width: 95px;">분류</th>
-          <th style="width: 220px;">대표 제목 / 건명</th>
-          <th>문서별 세부 입력 항목</th>
-          <th style="width: 145px;">등록일시</th>
-          <th style="width: 70px;">삭제</th>
-        </tr>
-      </thead>
-      <tbody id="list-body"></tbody>
-    </table>
-  </div>
+  <div id="totals-bar"></div>
 
-  <div id="preview-pane">
-    <div id="preview-info">상단 목록을 클릭하면 문서별 상세 필드와 평평하게 스캔된 사진이 아래에 표시됩니다.</div>
-    <img id="preview-img" style="display:none;" alt="증빙서류 사진" />
+  <div id="main-split">
+    <!-- 왼쪽: 목록 리스트 -->
+    <div id="list-pane">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 95px;">세부 카테고리</th>
+            <th style="width: 165px;">제목 / 상호 / 건명</th>
+            <th>세부 항목 요약</th>
+            <th style="width: 95px; text-align:right;">금액</th>
+            <th style="width: 55px;">삭제</th>
+          </tr>
+        </thead>
+        <tbody id="list-body"></tbody>
+      </table>
+    </div>
+
+    <!-- 오른쪽: 선택한 항목의 증빙사진 -->
+    <div id="preview-pane">
+      <div id="preview-info">왼쪽 리스트에서 항목을 클릭하면 오른쪽에 증빙사진이 표시됩니다.</div>
+      <img id="preview-img" style="display:none;" alt="증빙서류 사진" />
+    </div>
   </div>
 
   <script>
     let archiveRecords = /*ARCHIVE_DATA_START*/ $recordsJson /*ARCHIVE_DATA_END*/;
     let deletedIds = /*DELETED_IDS_START*/ $deletedIdsJson /*DELETED_IDS_END*/;
+    let selectedSubCat = '전체';
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
+
+    function getSubCat(item) {
+      const f = item.fields || {};
+      return (f.subCategory && f.subCategory.trim() !== '') ? f.subCategory.trim() : '미분류';
+    }
+
+    function getAmount(item) {
+      const f = item.fields || {};
+      let raw = '0';
+      if (item.category === '출장비') raw = f.totalAmount || '0';
+      else if (item.category === '병원비') raw = f.totalPaid || '0';
+      else raw = f.amount || '0';
+      const num = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
+      return isNaN(num) ? 0 : num;
+    }
 
     function formatFieldsSummary(item) {
       const f = item.fields || {};
       if (item.category === '대외공문') {
-        return `<b>보낸날짜:</b> \${escapeHtml(f.sentDate || '-')} | <b>보낸사람:</b> \${escapeHtml(f.sender || '-')} | <b>공문번호:</b> \${escapeHtml(f.docNumber || '-')} | <b>회신기한:</b> \${escapeHtml(f.replyDeadline || '-')}<br/><b>주요내용(AI요약):</b> \${escapeHtml(f.aiSummary || '-')}`;
+        return `<b>보낸날짜:</b> \${escapeHtml(f.sentDate || '-')} | <b>발신:</b> \${escapeHtml(f.sender || '-')} | <b>공문번호:</b> \${escapeHtml(f.docNumber || '-')} | <b>기한:</b> \${escapeHtml(f.replyDeadline || '-')}<br/><b>요약:</b> \${escapeHtml(f.aiSummary || '-')}`;
       } else if (item.category === '자재송장') {
-        return `<b>도착일:</b> \${escapeHtml(f.arrivalDate || '-')} | <b>주문번호:</b> \${escapeHtml(f.orderNumber || '-')} | <b>제품/규격:</b> \${escapeHtml(f.productName || '-')} (\${escapeHtml(f.specName || '-')}) | <b>수량/단위:</b> \${escapeHtml(f.quantity || '-')}\${escapeHtml(f.unit || '')} | <b>중량:</b> \${escapeHtml(f.weight || '-')} | <b>공급자:</b> \${escapeHtml(f.supplierName || '-')}`;
+        return `<b>도착일:</b> \${escapeHtml(f.arrivalDate || '-')} | <b>송장번호:</b> \${escapeHtml(f.orderNumber || '-')} | <b>품명/규격:</b> \${escapeHtml(f.productName || '-')} (\${escapeHtml(f.specName || '-')})<br/><b>수량/중량:</b> \${escapeHtml(f.quantity || '-')}\${escapeHtml(f.unit || '')} / \${escapeHtml(f.weight || '-')} | <b>공급자:</b> \${escapeHtml(f.supplierName || '-')}`;
       } else if (item.category === '출장비') {
-        return `<b>출장거리:</b> \${escapeHtml(f.distanceKm || '0')}km | <b>교통비(자가용 왕복):</b> \${Number(f.carFare || 0).toLocaleString()}원 | <b>영수증합산:</b> \${Number(f.receiptTotal || 0).toLocaleString()}원 | <b>하이패스합산:</b> \${Number(f.hipassTotal || 0).toLocaleString()}원 | <b>총합계:</b> \${Number(f.totalAmount || 0).toLocaleString()}원`;
+        return `<b>거리:</b> \${escapeHtml(f.distanceKm || '0')}km (교통비 \${Number(f.carFare || 0).toLocaleString()}원) | <b>영수증:</b> \${Number(f.receiptTotal || 0).toLocaleString()}원 | <b>하이패스:</b> \${Number(f.hipassTotal || 0).toLocaleString()}원`;
       } else if (item.category === '병원비') {
-        return `<b>상호:</b> \${escapeHtml(f.clinicName || '-')} | <b>사업자등록번호:</b> \${escapeHtml(f.bizRegNumber || '-')} | <b>발행일:</b> \${escapeHtml(f.issueDate || '-')} | <b>총수납금액:</b> \${Number(f.totalPaid || 0).toLocaleString()}원`;
+        return `<b>상호:</b> \${escapeHtml(f.clinicName || '-')} | <b>사업자번호:</b> \${escapeHtml(f.bizRegNumber || '-')} | <b>발행일:</b> \${escapeHtml(f.issueDate || '-')}`;
       }
       return '';
     }
@@ -1893,29 +2441,66 @@ class _HomeScreenState extends State<HomeScreen> {
       const f = item.fields || {};
       if (item.category === '대외공문') return f.title || '대외공문';
       if (item.category === '자재송장') return (f.productName || '자재송장') + (f.supplierName ? ' (' + f.supplierName + ')' : '');
-      if (item.category === '출장비') return '왕복 ' + (f.distanceKm || '0') + 'km 출장 (' + Number(f.totalAmount || 0).toLocaleString() + '원)';
-      if (item.category === '병원비') return (f.clinicName || '병원비') + ' (' + Number(f.totalPaid || 0).toLocaleString() + '원)';
+      if (item.category === '출장비') return '왕복 ' + (f.distanceKm || '0') + 'km 출장';
+      if (item.category === '병원비') return f.clinicName || '병원비';
       return item.category;
     }
 
+    function onMajorFilterChange() {
+      selectedSubCat = '전체';
+      renderList();
+    }
+
+    function selectSubCat(sub) {
+      selectedSubCat = sub;
+      renderList();
+    }
+
+    function renderTotals(majorFiltered) {
+      const grandSum = majorFiltered.reduce((acc, r) => acc + getAmount(r), 0);
+      const subMap = {};
+      majorFiltered.forEach(r => {
+        const sc = getSubCat(r);
+        if (!subMap[sc]) subMap[sc] = { count: 0, sum: 0 };
+        subMap[sc].count += 1;
+        subMap[sc].sum += getAmount(r);
+      });
+
+      let html = `<div class="total-chip \${selectedSubCat === '전체' ? 'grand' : ''}" onclick="selectSubCat('전체')">전체 합계 금액 (\${majorFiltered.length}건): \${grandSum.toLocaleString()}원</div>`;
+      Object.keys(subMap).forEach(sc => {
+        const info = subMap[sc];
+        const activeCls = selectedSubCat === sc ? 'active' : '';
+        html += `<div class="total-chip \${activeCls}" onclick="selectSubCat('\${escapeHtml(sc)}')"><b>\${escapeHtml(sc)}</b> (\${info.count}건): \${info.sum.toLocaleString()}원</div>`;
+      });
+      document.getElementById('totals-bar').innerHTML = html;
+    }
+
     function renderList() {
-      const filter = document.getElementById('category-filter').value;
+      const majorFilter = document.getElementById('category-filter').value;
+      const majorFiltered = archiveRecords.filter(r => majorFilter === '전체' || r.category === majorFilter);
+      renderTotals(majorFiltered);
+
+      const filtered = majorFiltered.filter(r => selectedSubCat === '전체' || getSubCat(r) === selectedSubCat);
+      document.getElementById('count-label').textContent = filtered.length;
+
       const tbody = document.getElementById('list-body');
       tbody.innerHTML = '';
-
-      const filtered = archiveRecords.filter(r => filter === '전체' || r.category === filter);
-      document.getElementById('count-label').textContent = filtered.length;
 
       filtered.forEach(item => {
         const tr = document.createElement('tr');
         tr.className = 'item-row' + (item.id === selectedId ? ' active' : '');
         tr.onclick = () => { selectedId = item.id; renderList(); };
+        const amt = getAmount(item);
+        const sc = getSubCat(item);
 
         tr.innerHTML = `
-          <td><span class="badge">\${escapeHtml(item.category)}</span></td>
+          <td>
+            <div class="badge-major">\${escapeHtml(item.category)}</div><br/>
+            <span class="badge-sub">\${escapeHtml(sc)}</span>
+          </td>
           <td>\${escapeHtml(getTitle(item))}</td>
           <td>\${formatFieldsSummary(item)}</td>
-          <td>\${escapeHtml(item.createdAt)}</td>
+          <td style="text-align:right; font-weight:600;">\${amt > 0 ? amt.toLocaleString() + '원' : '-'}</td>
           <td><button class="btn-del" onclick="deleteRecord(event, '\${item.id}')">삭제</button></td>
         `;
         tbody.appendChild(tr);
@@ -1935,7 +2520,9 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      infoEl.innerHTML = `<div><b>[\${escapeHtml(item.category)}] \${escapeHtml(getTitle(item))}</b></div><div style="margin-top:4px;">\${formatFieldsSummary(item)}</div>`;
+      const amt = getAmount(item);
+      const sc = getSubCat(item);
+      infoEl.innerHTML = `<div><b>[\${escapeHtml(item.category)} &gt; \${escapeHtml(sc)}] \${escapeHtml(getTitle(item))}</b> \${amt > 0 ? '(' + amt.toLocaleString() + '원)' : ''}</div><div style="margin-top:4px;">\${formatFieldsSummary(item)}</div>`;
       imgEl.src = 'data:image/jpeg;base64,' + item.base64Image;
       imgEl.style.display = 'block';
     }
@@ -1982,10 +2569,13 @@ class _HomeScreenState extends State<HomeScreen> {
 </html>''';
   }
 
+  // ===========================================================================
+  // PDF 내보내기 (증빙사진으로만 페이지 구성)
+  // ===========================================================================
   Future<void> _exportAndSharePdf() async {
     final targetRecords = _filteredRecords;
     if (targetRecords.isEmpty) {
-      _showSnack('내보낼 증빙서류 항목이 없습니다.');
+      _showSnack('내보낼 증빙서류 사진이 없습니다.');
       return;
     }
 
@@ -1995,205 +2585,47 @@ class _HomeScreenState extends State<HomeScreen> {
       final koreanBoldFont = await PdfGoogleFonts.nanumGothicBold();
 
       final pdf = pw.Document();
-      final nowDateStr = DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now());
-
-      int totalTravelSum = 0;
-      int totalMedicalSum = 0;
-      for (final r in targetRecords) {
-        if (r.category == DocCategory.travel) {
-          totalTravelSum += int.tryParse(
-                (r.fields['totalAmount'] ?? '0').replaceAll(RegExp(r'[^0-9]'), ''),
-              ) ??
-              0;
-        } else if (r.category == DocCategory.medical) {
-          totalMedicalSum += int.tryParse(
-                (r.fields['totalPaid'] ?? '0').replaceAll(RegExp(r'[^0-9]'), ''),
-              ) ??
-              0;
-        }
-      }
-
-      pdf.addPage(
-        pw.MultiPage(
-          pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.all(28),
-          build: (pw.Context ctx) {
-            return [
-              pw.Container(
-                padding: const pw.EdgeInsets.all(12),
-                decoration: pw.BoxDecoration(
-                  color: PdfColors.indigo900,
-                  borderRadius: pw.BorderRadius.circular(6),
-                ),
-                child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Text(
-                          '증빙서류 종합 요약표 ($_selectedCategoryFilter)',
-                          style: pw.TextStyle(
-                            font: koreanBoldFont,
-                            fontSize: 16,
-                            color: PdfColors.white,
-                          ),
-                        ),
-                        pw.SizedBox(height: 4),
-                        pw.Text(
-                          '출력일시: $nowDateStr  |  총 ${targetRecords.length}건',
-                          style: pw.TextStyle(
-                            font: koreanFont,
-                            fontSize: 10,
-                            color: PdfColors.grey200,
-                          ),
-                        ),
-                      ],
-                    ),
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.end,
-                      children: [
-                        if (totalTravelSum > 0)
-                          pw.Text(
-                            '출장비 합계: ${NumberFormat('#,###').format(totalTravelSum)}원',
-                            style: pw.TextStyle(
-                              font: koreanBoldFont,
-                              fontSize: 10,
-                              color: PdfColors.amber200,
-                            ),
-                          ),
-                        if (totalMedicalSum > 0)
-                          pw.Text(
-                            '병원비 합계: ${NumberFormat('#,###').format(totalMedicalSum)}원',
-                            style: pw.TextStyle(
-                              font: koreanBoldFont,
-                              fontSize: 10,
-                              color: PdfColors.green200,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              pw.SizedBox(height: 14),
-              pw.TableHelper.fromTextArray(
-                headers: ['순번', '분류', '기준일자', '제목 / 상호 / 품명', '핵심 세부내역 (요약)', '금액 / 수량 / 기한'],
-                headerStyle: pw.TextStyle(
-                  font: koreanBoldFont,
-                  fontSize: 9.5,
-                  color: PdfColors.white,
-                ),
-                headerDecoration: const pw.BoxDecoration(
-                  color: PdfColors.blueGrey800,
-                ),
-                cellStyle: pw.TextStyle(
-                  font: koreanFont,
-                  fontSize: 8.5,
-                ),
-                cellPadding: const pw.EdgeInsets.symmetric(
-                  horizontal: 6,
-                  vertical: 6,
-                ),
-                columnWidths: {
-                  0: const pw.FixedColumnWidth(28),
-                  1: const pw.FixedColumnWidth(48),
-                  2: const pw.FixedColumnWidth(58),
-                  3: const pw.FlexColumnWidth(1.4),
-                  4: const pw.FlexColumnWidth(2.3),
-                  5: const pw.FixedColumnWidth(75),
-                },
-                data: List.generate(targetRecords.length, (index) {
-                  final r = targetRecords[index];
-                  return [
-                    '${index + 1}',
-                    r.category,
-                    r.referenceDate,
-                    r.displayTitle,
-                    r.summaryKeyDetails,
-                    r.summaryAmountOrMetric,
-                  ];
-                }),
-              ),
-            ];
-          },
-        ),
-      );
 
       for (int i = 0; i < targetRecords.length; i++) {
         final rec = targetRecords[i];
         final imgBytes = base64Decode(rec.base64Image);
         final pdfImage = pw.MemoryImage(imgBytes);
-        final detailPairs = _getCategoryFieldPairs(rec);
 
         pdf.addPage(
           pw.Page(
             pageFormat: PdfPageFormat.a4,
-            margin: const pw.EdgeInsets.all(24),
+            margin: const pw.EdgeInsets.all(18),
             build: (pw.Context ctx) {
               return pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.stretch,
                 children: [
-                  pw.Container(
-                    padding: const pw.EdgeInsets.all(10),
-                    decoration: pw.BoxDecoration(
-                      color: PdfColors.blue50,
-                      borderRadius: pw.BorderRadius.circular(6),
-                      border: pw.Border.all(color: PdfColors.blue200),
-                    ),
-                    child: pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.only(bottom: 6),
+                    child: pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                       children: [
                         pw.Text(
-                          '[#${i + 1} ${rec.category}] ${rec.displayTitle}',
+                          '[${rec.category} · ${rec.subCategory}] ${rec.displayTitle}',
                           style: pw.TextStyle(
                             font: koreanBoldFont,
-                            fontSize: 14,
-                            color: PdfColors.blue900,
+                            fontSize: 11,
+                            color: PdfColors.blueGrey800,
                           ),
                         ),
-                        pw.SizedBox(height: 6),
-                        pw.Wrap(
-                          spacing: 14,
-                          runSpacing: 4,
-                          children: detailPairs.map((pair) {
-                            return pw.RichText(
-                              text: pw.TextSpan(
-                                children: [
-                                  pw.TextSpan(
-                                    text: '${pair.key}: ',
-                                    style: pw.TextStyle(
-                                      font: koreanBoldFont,
-                                      fontSize: 10,
-                                      color: PdfColors.blueGrey800,
-                                    ),
-                                  ),
-                                  pw.TextSpan(
-                                    text: pair.value,
-                                    style: pw.TextStyle(
-                                      font: koreanFont,
-                                      fontSize: 10,
-                                      color: PdfColors.black,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          }).toList(),
+                        pw.Text(
+                          rec.createdAt.split(' ').first,
+                          style: pw.TextStyle(
+                            font: koreanFont,
+                            fontSize: 10,
+                            color: PdfColors.grey700,
+                          ),
                         ),
                       ],
                     ),
                   ),
-                  pw.SizedBox(height: 10),
                   pw.Expanded(
-                    child: pw.Container(
-                      padding: const pw.EdgeInsets.all(4),
-                      decoration: pw.BoxDecoration(
-                        border: pw.Border.all(color: PdfColors.grey400, width: 0.8),
-                      ),
-                      child: pw.Center(
-                        child: pw.Image(pdfImage, fit: pw.BoxFit.contain),
-                      ),
+                    child: pw.Center(
+                      child: pw.Image(pdfImage, fit: pw.BoxFit.contain),
                     ),
                   ),
                 ],
@@ -2207,13 +2639,16 @@ class _HomeScreenState extends State<HomeScreen> {
       final tempDir = await getTemporaryDirectory();
       final timestamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
       final pdfFile = File(
-        p.join(tempDir.path, '증빙서류_스캔PDF_${_selectedCategoryFilter}_$timestamp.pdf'),
+        p.join(
+          tempDir.path,
+          '증빙사진_${_selectedCategoryFilter}_${_selectedSubCategoryFilter}_$timestamp.pdf',
+        ),
       );
       await pdfFile.writeAsBytes(pdfBytes, flush: true);
 
       await Share.shareXFiles(
         [XFile(pdfFile.path, mimeType: 'application/pdf')],
-        text: '증빙서류 스캔 PDF (${targetRecords.length}건)',
+        text: '증빙사진 PDF (${targetRecords.length}건)',
       );
     } catch (e) {
       _showSnack('PDF 생성 중 오류가 발생했습니다: $e');
@@ -2227,17 +2662,19 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (rec.category) {
       case DocCategory.officialDoc:
         return [
+          MapEntry('세부카테고리', rec.subCategory),
           MapEntry('보낸날짜', f['sentDate'] ?? '-'),
           MapEntry('보낸사람', f['sender'] ?? '-'),
           MapEntry('공문번호', f['docNumber'] ?? '-'),
           MapEntry('제목', f['title'] ?? '-'),
           MapEntry('회신기한', f['replyDeadline'] ?? '-'),
-          MapEntry('주요내용(AI 1문장 요약)', f['aiSummary'] ?? '-'),
+          MapEntry('주요내용(1문장 요약)', f['aiSummary'] ?? '-'),
         ];
       case DocCategory.invoice:
         return [
+          MapEntry('세부카테고리', rec.subCategory),
           MapEntry('도착일', f['arrivalDate'] ?? '-'),
-          MapEntry('주문번호', f['orderNumber'] ?? '-'),
+          MapEntry('주문/송장번호', f['orderNumber'] ?? '-'),
           MapEntry('제품명', f['productName'] ?? '-'),
           MapEntry('규격명', f['specName'] ?? '-'),
           MapEntry('단위', f['unit'] ?? '-'),
@@ -2247,14 +2684,20 @@ class _HomeScreenState extends State<HomeScreen> {
         ];
       case DocCategory.travel:
         return [
+          MapEntry('세부카테고리', rec.subCategory),
           MapEntry('출장거리(편도)', '${f['distanceKm'] ?? '0'} km'),
-          MapEntry('교통비(자가용=거리×300×2)', '${DocRecord._formatCurrency(f['carFare'])}원'),
-          MapEntry('영수증금액합산', '${DocRecord._formatCurrency(f['receiptTotal'])}원'),
-          MapEntry('하이패스금액합산', '${DocRecord._formatCurrency(f['hipassTotal'])}원'),
-          MapEntry('총 출장비 합계', '${DocRecord._formatCurrency(f['totalAmount'])}원'),
+          MapEntry('교통비(자가용=거리×300×2)',
+              '${DocRecord._formatCurrency(f['carFare'])}원'),
+          MapEntry(
+              '영수증금액합산', '${DocRecord._formatCurrency(f['receiptTotal'])}원'),
+          MapEntry(
+              '하이패스금액합산', '${DocRecord._formatCurrency(f['hipassTotal'])}원'),
+          MapEntry(
+              '총 출장비 합계', '${DocRecord._formatCurrency(f['totalAmount'])}원'),
         ];
       case DocCategory.medical:
         return [
+          MapEntry('세부카테고리(진료이력)', rec.subCategory),
           MapEntry('상호', f['clinicName'] ?? '-'),
           MapEntry('사업자등록번호', f['bizRegNumber'] ?? '-'),
           MapEntry('발행일', f['issueDate'] ?? '-'),
@@ -2273,12 +2716,15 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final items = _filteredRecords;
+    final subCategories = _availableSubCategoriesForCurrentTab;
+    final majorTotalSum = _sumByMajorCategory(_selectedCategoryFilter);
+    final currentSubTotalSum = _sumBySubCategory(_selectedSubCategoryFilter);
 
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 (공문·송장·출장·병원)'),
+        title: const Text('증빙서류 스냅'),
         actions: [
           IconButton(
             tooltip: '원드라이브 폴더 & AI 설정',
@@ -2289,15 +2735,33 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             onPressed: _openSettingsDialog,
           ),
-          IconButton(
-            tooltip: '원드라이브 특정 폴더에 HTML 자동 덮어쓰기',
-            icon: const Icon(Icons.cloud_upload),
+          TextButton.icon(
             onPressed: _isBusy ? null : _oneClickSyncHtmlToOneDrive,
+            icon: const Icon(Icons.cloud_upload, color: Colors.white, size: 18),
+            label: const Text(
+              'HTML 내보내기',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 12.5,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ),
-          IconButton(
-            tooltip: '요약표 포함 PDF 내보내기 및 공유',
-            icon: const Icon(Icons.picture_as_pdf),
+          TextButton.icon(
             onPressed: _isBusy ? null : _exportAndSharePdf,
+            icon: const Icon(
+              Icons.picture_as_pdf,
+              color: Colors.amberAccent,
+              size: 18,
+            ),
+            label: const Text(
+              'PDF 내보내기',
+              style: TextStyle(
+                color: Colors.amberAccent,
+                fontSize: 12.5,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ),
         ],
       ),
@@ -2305,27 +2769,38 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Column(
             children: [
+              // 1) 상단 1줄: 문서 종류(대외공문 / 자재송장 / 출장비 / 병원비 / 전체) 선택 탭
               Container(
-                height: 48,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+                height: 44,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
                 color: Colors.grey.shade100,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   itemCount: DocCategory.filterList.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  separatorBuilder: (_, __) => const SizedBox(width: 6),
                   itemBuilder: (ctx, idx) {
                     final cat = DocCategory.filterList[idx];
                     final selected = cat == _selectedCategoryFilter;
                     return ChoiceChip(
-                      label: Text(cat),
+                      visualDensity: VisualDensity.compact,
+                      label: Text(
+                        cat,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                       selected: selected,
                       onSelected: (_) {
                         setState(() {
                           _selectedCategoryFilter = cat;
+                          _selectedSubCategoryFilter = '전체';
                           final currentList = _filteredRecords;
-                          if (!currentList.any((r) => r.id == _selectedRecord?.id)) {
-                            _selectedRecord =
-                                currentList.isNotEmpty ? currentList.first : null;
+                          if (!currentList
+                              .any((r) => r.id == _selectedRecord?.id)) {
+                            _selectedRecord = currentList.isNotEmpty
+                                ? currentList.first
+                                : null;
                           }
                         });
                       },
@@ -2333,6 +2808,108 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
               ),
+
+              // 2) 상단 2줄: 세부 이력 카테고리별 합계 & 전체 합계 대시보드 (예: 병원비 내 '갑상선 17,100원', '치질 4,600원')
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  border: Border(
+                    bottom: BorderSide(color: Colors.blue.shade200),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '$_selectedCategoryFilter 전체 합계 (${_recordsInSelectedMajorCategory.length}건): ${NumberFormat('#,###').format(majorTotalSum)}원',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13.5,
+                            color: Color(0xFF1E3A8A),
+                          ),
+                        ),
+                        if (_selectedSubCategoryFilter != '전체')
+                          Text(
+                            '[$_selectedSubCategoryFilter 합계: ${NumberFormat('#,###').format(currentSubTotalSum)}원]',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                              color: Colors.indigo,
+                            ),
+                          )
+                        else if (_selectedCategoryFilter != DocCategory.all)
+                          InkWell(
+                            onTap: () => _promptAddNewSubCategory(
+                                _selectedCategoryFilter),
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 4),
+                              child: Text(
+                                '+ 새 카테고리 추가',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.blueAccent,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      height: 34,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: subCategories.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 6),
+                        itemBuilder: (ctx, idx) {
+                          final subCat = subCategories[idx];
+                          final selected = subCat == _selectedSubCategoryFilter;
+                          final cnt = _countBySubCategory(subCat);
+                          final sum = _sumBySubCategory(subCat);
+                          final labelText = subCat == '전체'
+                              ? '전체 ($cnt건 · ${NumberFormat('#,###').format(sum)}원)'
+                              : '$subCat ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
+                          return ChoiceChip(
+                            visualDensity: VisualDensity.compact,
+                            selectedColor: Colors.indigo.shade100,
+                            label: Text(
+                              labelText,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: selected
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                            selected: selected,
+                            onSelected: (_) {
+                              setState(() {
+                                _selectedSubCategoryFilter = subCat;
+                                final currentList = _filteredRecords;
+                                if (!currentList
+                                    .any((r) => r.id == _selectedRecord?.id)) {
+                                  _selectedRecord = currentList.isNotEmpty
+                                      ? currentList.first
+                                      : null;
+                                }
+                              });
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // 3) 화면 상단 1/2: 문서 목록 리스트 (배지를 눌러 언제든 갑상선/치질 등 세부 카테고리 지정·변경 가능)
               Expanded(
                 flex: 1,
                 child: items.isEmpty
@@ -2349,17 +2926,70 @@ class _HomeScreenState extends State<HomeScreen> {
                         itemBuilder: (ctx, idx) {
                           final rec = items[idx];
                           final isSelected = _selectedRecord?.id == rec.id;
+                          final subOptions =
+                              _subCategoriesMap[rec.category] ?? ['일반'];
+
                           return ListTile(
+                            dense: true,
                             selected: isSelected,
                             selectedTileColor: Colors.blue.shade50,
-                            leading: CircleAvatar(
-                              backgroundColor: Colors.indigo.shade100,
-                              child: Text(
-                                rec.category.substring(0, 2),
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.indigo,
+                            // 사진 왼쪽 배지를 누르면 해당 사진의 세부 카테고리(예: 갑상선, 치질 등)를 즉시 변경하거나 새로 추가 가능!
+                            leading: PopupMenuButton<String>(
+                              tooltip: '세부 카테고리 지정/변경',
+                              onSelected: (newSub) =>
+                                  _changeRecordSubCategory(rec, newSub),
+                              itemBuilder: (_) => [
+                                ...subOptions.map(
+                                  (sc) => PopupMenuItem(
+                                    value: sc,
+                                    child: Text('[$sc] 카테고리로 지정'),
+                                  ),
+                                ),
+                                const PopupMenuDivider(),
+                                const PopupMenuItem(
+                                  value: '__ADD_NEW__',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.add,
+                                          size: 16, color: Colors.blueAccent),
+                                      SizedBox(width: 6),
+                                      Text(
+                                        '새 카테고리 직접 입력...',
+                                        style: TextStyle(
+                                          color: Colors.blueAccent,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.indigo.shade100,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      rec.subCategory,
+                                      style: const TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.indigo,
+                                      ),
+                                    ),
+                                    const Icon(
+                                      Icons.arrow_drop_down,
+                                      size: 14,
+                                      color: Colors.indigo,
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
@@ -2367,13 +2997,14 @@ class _HomeScreenState extends State<HomeScreen> {
                               rec.displayTitle,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.w600),
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w600),
                             ),
                             subtitle: Text(
                               rec.displaySubtitle,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12),
+                              style: const TextStyle(fontSize: 11.5),
                             ),
                             trailing: IconButton(
                               icon: const Icon(
@@ -2387,7 +3018,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         },
                       ),
               ),
+
               const Divider(height: 2, thickness: 2),
+
+              // 4) 화면 하단 1/2: 선택한 항목의 세부 내용 및 정비율(무왜곡) 증빙사진
               Expanded(
                 flex: 1,
                 child: Container(
@@ -2396,7 +3030,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: _selectedRecord == null
                       ? const Center(
                           child: Text(
-                            '위 목록에서 항목을 선택하면\n문서별 세부 항목과 평평하게 스캔된 사진이 여기에 표시됩니다.',
+                            '위 목록에서 항목을 선택하면\n문서별 세부 항목과 증빙사진이 여기에 표시됩니다.',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: Colors.white70),
                           ),
@@ -2414,7 +3048,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '[${_selectedRecord!.category}] ${_selectedRecord!.displayTitle}',
+                                    '[${_selectedRecord!.category} > ${_selectedRecord!.subCategory}] ${_selectedRecord!.displayTitle}',
                                     style: const TextStyle(
                                       color: Colors.amberAccent,
                                       fontWeight: FontWeight.bold,
@@ -2427,17 +3061,18 @@ class _HomeScreenState extends State<HomeScreen> {
                                   Wrap(
                                     spacing: 10,
                                     runSpacing: 2,
-                                    children: _getCategoryFieldPairs(_selectedRecord!)
-                                        .map(
-                                          (e) => Text(
-                                            '${e.key}: ${e.value}',
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 11.5,
-                                            ),
-                                          ),
-                                        )
-                                        .toList(),
+                                    children:
+                                        _getCategoryFieldPairs(_selectedRecord!)
+                                            .map(
+                                              (e) => Text(
+                                                '${e.key}: ${e.value}',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 11.5,
+                                                ),
+                                              ),
+                                            )
+                                            .toList(),
                                   ),
                                 ],
                               ),
