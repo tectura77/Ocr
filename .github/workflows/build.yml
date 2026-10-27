@@ -30,7 +30,7 @@ jobs:
           cache: true
 
       - name: Backup Custom Files Before Scaffold
-        run: "cp pubspec.yaml /tmp/pubspec.yaml.bak && if [ -f lib/main.dart ] && [ -f main.dart ]; then if [ main.dart -nt lib/main.dart ]; then cp main.dart /tmp/main.dart.bak; else cp lib/main.dart /tmp/main.dart.bak; fi; elif [ -f main.dart ]; then cp main.dart /tmp/main.dart.bak; elif [ -f lib/main.dart ]; then cp lib/main.dart /tmp/main.dart.bak; fi && if [ -f android/app/src/main/AndroidManifest.xml ]; then cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak; elif [ -f AndroidManifest.xml ]; then cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak; fi"
+        run: "cp pubspec.yaml /tmp/pubspec.yaml.bak && if [ -f lib/main.dart ]; then cp lib/main.dart /tmp/main.dart.bak && echo 'Picked lib/main.dart'; elif [ -f main.dart ]; then cp main.dart /tmp/main.dart.bak && echo 'Picked root main.dart'; fi && if [ -f android/app/src/main/AndroidManifest.xml ]; then cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak; elif [ -f AndroidManifest.xml ]; then cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak; fi"
 
       - name: Create Flutter Platform Scaffold
         run: "flutter create --org com.example --project-name doc_snap_archive ."
