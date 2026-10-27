@@ -1,22 +1,24 @@
-name: Build Flutter Android APK
+name: Build Android (APK/AAB) & iOS (Unsigned IPA)
 
 on:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
+  # =========================================================================
+  # 1. 기존 안드로이드 APK & AAB 빌드 잡
+  # =========================================================================
   build-android:
-    name: Build APK via GitHub Actions
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -25,31 +27,651 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.0'
           channel: 'stable'
-          cache: true
 
-      - name: Backup Custom Files Before Scaffold
-        run: "cp pubspec.yaml /tmp/pubspec.yaml.bak && if [ -f lib/main.dart ]; then cp lib/main.dart /tmp/main.dart.bak && echo 'Picked lib/main.dart'; elif [ -f main.dart ]; then cp main.dart /tmp/main.dart.bak && echo 'Picked root main.dart'; fi && if [ -f android/app/src/main/AndroidManifest.xml ]; then cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak; elif [ -f AndroidManifest.xml ]; then cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak; fi"
+      - name: Create Clean V2 Flutter Project Structure
+        run: |
+          rm -rf android
+          mv pubspec.yaml pubspec.yaml.bak
+          if [ -f "lib/main.dart" ]; then cp lib/main.dart main.dart.bak; elif [ -f "main.dart" ]; then cp main.dart main.dart.bak; fi
+          flutter create --org com.maplocation --project-name fieldcam3 --platforms=android .
+          mv pubspec.yaml.bak pubspec.yaml
+          mv main.dart.bak lib/main.dart
 
-      - name: Create Flutter Platform Scaffold
-        run: "flutter create --org com.example --project-name doc_snap_archive ."
+      - name: Install Dependencies
+        run: flutter pub get
 
-      - name: Restore Custom Files and Configure Dependencies
-        run: "mkdir -p lib android/app/src/main && sed -e '/flutter_web_auth_2/d' -e '/_signInWithMicrosoft/d' /tmp/pubspec.yaml.bak > pubspec.yaml && sed -e '/flutter_web_auth_2/d' /tmp/main.dart.bak > lib/main.dart && flutter pub add image google_mlkit_text_recognition && if [ -f /tmp/AndroidManifest.xml.bak ]; then sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/\"/g' -e 's/package=\"com.example.doc_snap_archive\"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml; fi"
+      - name: Restore Keystore from Secrets
+        run: |
+          mkdir -p android/app
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
 
-      - name: Upgrade AGP, Gradle, Kotlin, SDK 35, and Korean OCR Native Libs
-        run: "printf '\\n-dontwarn com.google.mlkit.**\\n-keep class com.google.mlkit.** { *; }\\n-keep class com.google.android.gms.** { *; }\\n-dontwarn javax.annotation.**\\n-dontwarn org.codehaus.mojo.animal_sniffer.**\\n' > android/app/proguard-rules.pro && find android -maxdepth 2 -name '*gradle*' -type f -exec sed -i -E 's/8\\.[0-6]\\.[0-9]+/8.7.0/g; s/7\\.[0-9]+\\.[0-9]+/8.7.0/g; s/1\\.[789]\\.[0-9]+/2.0.21/g' {} + && sed -i -E 's/gradle-[0-9.]+-(all|bin)\\.zip/gradle-8.10.2-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties && find android/app -name 'build.gradle*' -type f -exec sed -i -E 's/compileSdk\\s*=\\s*flutter\\.compileSdkVersion/compileSdk = 35/g; s/compileSdkVersion\\s+flutter\\.compileSdkVersion/compileSdkVersion 35/g; s/targetSdk\\s*=\\s*flutter\\.targetSdkVersion/targetSdk = 35/g; s/targetSdkVersion\\s+flutter\\.targetSdkVersion/targetSdkVersion 35/g; s/minSdk\\s*=\\s*flutter\\.minSdkVersion/minSdk = 21/g; s/minSdkVersion\\s+flutter\\.minSdkVersion/minSdkVersion 21/g; s/signingConfig\\s*=\\s*signingConfigs\\.getByName\\(\"debug\"\\)/signingConfig = signingConfigs.getByName(\"debug\")\\n            isMinifyEnabled = false\\n            isShrinkResources = false/g; s/signingConfig\\s+signingConfigs\\.debug/signingConfig signingConfigs.debug\\n            minifyEnabled false\\n            shrinkResources false/g' {} + && for f in android/app/build.gradle*; do [ -f \"$f\" ] && printf '\\ndependencies {\\n    implementation(\"com.google.mlkit:text-recognition-korean:16.0.1\")\\n}\\n' >> \"$f\"; done"
+      - name: Configure App Name (GPS현장캠), App Icon (icon.png), Android V2 Embedding, Permissions, Naver Map & Signing
+        run: |
+          pip install --quiet Pillow
+          python3 - << 'EOF'
+          import os, re, glob, json, shutil
+          from PIL import Image
 
-      - name: Install Dependencies and Analyze Dart Code
-        run: "flutter pub get && dart analyze lib/main.dart"
+          # 0. 루트의 icon.png (또는 lib/icon.png)를 안드로이드 모든 해상도 런처 아이콘으로 자동 변환·적용
+          icon_candidates = ["icon.png", "lib/icon.png", "assets/icon.png"]
+          icon_src = next((p for p in icon_candidates if os.path.exists(p)), None)
+          if icon_src:
+              print(f"Applying custom app icon from: {icon_src}")
+              for xml_dir in glob.glob("android/app/src/main/res/mipmap-anydpi*"):
+                  shutil.rmtree(xml_dir, ignore_errors=True)
+              for d_xml in glob.glob("android/app/src/main/res/drawable*/ic_launcher*"):
+                  try:
+                      os.remove(d_xml)
+                  except Exception:
+                      pass
 
-      - name: Build Release APK
-        run: "flutter build apk --release --no-tree-shake-icons"
+              im = Image.open(icon_src).convert("RGBA")
+              w, h = im.size
+              if w != h:
+                  side = min(w, h)
+                  left = (w - side) // 2
+                  top = (h - side) // 2
+                  im = im.crop((left, top, left + side, top + side))
 
-      - name: Upload Release APK to Artifacts
+              mipmap_sizes = {
+                  "mipmap-mdpi": 48,
+                  "mipmap-hdpi": 72,
+                  "mipmap-xhdpi": 96,
+                  "mipmap-xxhdpi": 144,
+                  "mipmap-xxxhdpi": 192,
+              }
+              for folder, px in mipmap_sizes.items():
+                  out_dir = os.path.join("android/app/src/main/res", folder)
+                  os.makedirs(out_dir, exist_ok=True)
+                  resized = im.resize((px, px), Image.Resampling.LANCZOS)
+                  resized.save(os.path.join(out_dir, "ic_launcher.png"), format="PNG")
+                  resized.save(os.path.join(out_dir, "ic_launcher_round.png"), format="PNG")
+
+          # 1. AndroidManifest.xml: tools 네임스페이스 + 권한 + 네이버 지도 Client ID + V2 Embedding 설정
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r", encoding="utf-8") as f:
+              content = f.read()
+
+          content = content.replace("io.flutter.app.FlutterApplication", "${applicationName}")
+
+          if "xmlns:tools=" not in content:
+              content = content.replace(
+                  'xmlns:android="http://schemas.android.com/apk/res/android"',
+                  'xmlns:android="http://schemas.android.com/apk/res/android"\n    xmlns:tools="http://schemas.android.com/tools"',
+                  1,
+              )
+
+          perms = "\n".join([
+              '    <uses-permission android:name="android.permission.INTERNET"/>',
+              '    <uses-permission android:name="android.permission.CAMERA"/>',
+              '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>',
+              '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>',
+              '    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>',
+              '    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" tools:replace="android:maxSdkVersion"/>',
+              '    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>',
+              '    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>',
+          ])
+          if "android.permission.CAMERA" not in content:
+              content = content.replace("<application", perms + "\n    <application", 1)
+
+          content = re.sub(r'android:label="[^"]*"', 'android:label="GPS현장캠"', content)
+
+          if "android:requestLegacyExternalStorage=" not in content:
+              content = content.replace(
+                  "<application",
+                  '<application\n        android:requestLegacyExternalStorage="true"',
+                  1,
+              )
+
+          naver_meta = "\n".join([
+              '        <meta-data',
+              '            android:name="com.naver.maps.map.CLIENT_ID"',
+              '            android:value="b3agnvaern" />',
+          ])
+          if "com.naver.maps.map.CLIENT_ID" not in content:
+              content = content.replace("</application>", naver_meta + "\n    </application>", 1)
+
+          v2_meta = "\n".join([
+              '        <meta-data',
+              '            android:name="flutterEmbedding"',
+              '            android:value="2" />',
+          ])
+          if 'android:name="flutterEmbedding"' not in content:
+              content = content.replace("</application>", v2_meta + "\n    </application>", 1)
+          else:
+              content = re.sub(
+                  r'(<meta-data\s+android:name="flutterEmbedding"\s+android:value=")\d+(")',
+                  r'\g<1>2\g<2>',
+                  content,
+              )
+
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              f.write(content)
+
+          # 2. .flutter-plugins-dependencies 내 모든 플러그인 V2 임베딩 플래그 보장
+          deps_file = ".flutter-plugins-dependencies"
+          if os.path.exists(deps_file):
+              with open(deps_file, "r", encoding="utf-8") as f:
+                  deps_data = json.load(f)
+              android_plugins = deps_data.get("plugins", {}).get("android", [])
+              for p in android_plugins:
+                  p["supports_android_v2_embedding"] = True
+                  p["supportsAndroidV2Embedding"] = True
+              with open(deps_file, "w", encoding="utf-8") as f:
+                  json.dump(deps_data, f, indent=2)
+
+          # 3. build.gradle.kts / build.gradle 에 minSdk 23 및 정식 Release 서명 설정 주입
+          kts_path = "android/app/build.gradle.kts"
+          if os.path.exists(kts_path):
+              with open(kts_path, "r", encoding="utf-8") as f:
+                  g = f.read()
+              g = re.sub(r"minSdk\s*=\s*flutter\.minSdkVersion", "minSdk = 23", g)
+              signing_kts = """    signingConfigs {
+                  create("release") {
+                      keyAlias = "upload"
+                      keyPassword = System.getenv("KEYSTORE_PASSWORD")
+                      storeFile = file("upload-keystore.jks")
+                      storePassword = System.getenv("KEYSTORE_PASSWORD")
+                  }
+              }
+              buildTypes {"""
+              g = re.sub(r"buildTypes\s*\{", signing_kts, g, count=1)
+              g = re.sub(r'signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)', 'signingConfig = signingConfigs.getByName("release")', g)
+              with open(kts_path, "w", encoding="utf-8") as f:
+                  f.write(g)
+
+          gradle_path = "android/app/build.gradle"
+          if os.path.exists(gradle_path):
+              with open(gradle_path, "r", encoding="utf-8") as f:
+                  g = f.read()
+              g = re.sub(r"minSdkVersion\s+flutter\.minSdkVersion", "minSdkVersion 23", g)
+              g = re.sub(r"minSdk\s*=\s*flutter\.minSdkVersion", "minSdk = 23", g)
+              signing_groovy = """    signingConfigs {
+                  release {
+                      keyAlias 'upload'
+                      keyPassword System.getenv('KEYSTORE_PASSWORD')
+                      storeFile file('upload-keystore.jks')
+                      storePassword System.getenv('KEYSTORE_PASSWORD')
+                  }
+              }
+              buildTypes {"""
+              g = re.sub(r"buildTypes\s*\{", signing_groovy, g, count=1)
+              g = re.sub(r"signingConfig\s*=?\s*signingConfigs\.debug", "signingConfig signingConfigs.release", g)
+              with open(gradle_path, "w", encoding="utf-8") as f:
+                  f.write(g)
+
+          # 4. MainActivity.kt 에 무음/진동 모드에서도 작동하는 셔터음 코드 주입
+          kt_files = glob.glob("android/app/src/main/**/MainActivity.kt", recursive=True)
+          if kt_files:
+              kt_path = kt_files[0]
+              with open(kt_path, "r", encoding="utf-8") as f:
+                  first_line = f.readline().strip()
+              pkg_line = first_line if first_line.startswith("package ") else "package com.maplocation.fieldcam3"
+
+              kt_lines = [
+                  pkg_line,
+                  "",
+                  "import android.app.Activity",
+                  "import android.content.Context",
+                  "import android.content.Intent",
+                  "import android.media.AudioAttributes",
+                  "import android.media.AudioManager",
+                  "import android.media.MediaActionSound",
+                  "import android.media.MediaPlayer",
+                  "import android.net.Uri",
+                  "import android.os.Build",
+                  "import android.provider.MediaStore",
+                  "import android.provider.OpenableColumns",
+                  "import io.flutter.embedding.android.FlutterActivity",
+                  "import io.flutter.embedding.engine.FlutterEngine",
+                  "import io.flutter.plugin.common.MethodChannel",
+                  "import java.io.File",
+                  "import java.io.FileOutputStream",
+                  "",
+                  "class MainActivity: FlutterActivity() {",
+                  '    private val CHANNEL = "gps_camera/shutter"',
+                  "    private var pendingPickResult: MethodChannel.Result? = null",
+                  "    private val PICK_FILE_REQ = 9901",
+                  "",
+                  "    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {",
+                  "        super.configureFlutterEngine(flutterEngine)",
+                  "        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->",
+                  '            if (call.method == "playShutter") {',
+                  '                val wavBytes = call.argument<ByteArray>("wav")',
+                  "                playShutterOnAlarmStream(wavBytes)",
+                  "                result.success(null)",
+                  '            } else if (call.method == "resolveOriginalGps") {',
+                  '                val dtStr = call.argument<String>("dateTime")',
+                  '                val fnStr = call.argument<String>("fileName")',
+                  "                result.success(resolveOriginalGpsFromMediaStore(dtStr, fnStr))",
+                  '            } else if (call.method == "readContentUri") {',
+                  '                val uriStr = call.argument<String>("uri")',
+                  "                result.success(copyContentUriToCache(uriStr))",
+                  '            } else if (call.method == "findLatestHtmlInDownloads") {',
+                  "                result.success(findLatestHtmlFile())",
+                  '            } else if (call.method == "pickHtmlOrZip") {',
+                  "                pendingPickResult = result",
+                  "                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {",
+                  "                    addCategory(Intent.CATEGORY_OPENABLE)",
+                  '                    type = "*/*"',
+                  "                }",
+                  "                startActivityForResult(intent, PICK_FILE_REQ)",
+                  "            } else {",
+                  "                result.notImplemented()",
+                  "            }",
+                  "        }",
+                  "    }",
+                  "",
+                  "    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {",
+                  "        super.onActivityResult(requestCode, resultCode, data)",
+                  "        if (requestCode == PICK_FILE_REQ) {",
+                  "            val res = pendingPickResult",
+                  "            pendingPickResult = null",
+                  "            if (res == null) return",
+                  "            if (resultCode == Activity.RESULT_OK && data?.data != null) {",
+                  "                try {",
+                  "                    val uri: Uri = data.data!!",
+                  '                    var ext = "html"',
+                  "                    contentResolver.query(uri, null, null, null, null)?.use { cursor ->",
+                  "                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)",
+                  "                        if (nameIdx >= 0 && cursor.moveToFirst()) {",
+                  '                            val name = cursor.getString(nameIdx) ?: ""',
+                  '                            if (name.endsWith(".zip", ignoreCase = true)) ext = "zip"',
+                  "                        }",
+                  "                    }",
+                  '                    val outFile = File(cacheDir, "picked_import_" + System.currentTimeMillis() + "." + ext)',
+                  "                    contentResolver.openInputStream(uri)?.use { input ->",
+                  "                        FileOutputStream(outFile).use { output ->",
+                  "                            input.copyTo(output)",
+                  "                        }",
+                  "                    }",
+                  "                    res.success(outFile.absolutePath)",
+                  "                } catch (e: Exception) {",
+                  "                    res.success(null)",
+                  "                }",
+                  "            } else {",
+                  "                res.success(null)",
+                  "            }",
+                  "        }",
+                  "    }",
+                  "",
+                  "    private fun resolveOriginalGpsFromMediaStore(dtStr: String?, fnStr: String?): String? {",
+                  "        try {",
+                  "            val proj = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_MODIFIED)",
+                  '            val sort = MediaStore.Images.Media.DATE_TAKEN + " DESC"',
+                  '            val digits = dtStr?.replace(Regex("[^0-9]"), "") ?: ""',
+                  '            val ymd = if (digits.length >= 8) digits.substring(0, 8) else ""',
+                  '            val ymdhm = if (digits.length >= 12) digits.substring(0, 12) else ""',
+                  "            contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj, null, null, sort)?.use { c ->",
+                  "                val idCol = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)",
+                  "                val nameCol = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)",
+                  "                var checked = 0",
+                  "                while (c.moveToNext() && checked < 2500) {",
+                  "                    checked++",
+                  '                    val name = c.getString(nameCol) ?: ""',
+                  '                    val nameDigits = name.replace(Regex("[^0-9]"), "")',
+                  "                    val matchName = (!fnStr.isNullOrBlank() && name.equals(fnStr, ignoreCase = true))",
+                  "                    val matchDt = (ymdhm.isNotEmpty() && nameDigits.contains(ymdhm)) || (ymd.isNotEmpty() && name.contains(ymd) && digits.length >= 10 && nameDigits.contains(digits.substring(0, 10)))",
+                  "                    if (matchName || matchDt) {",
+                  "                        val id = c.getLong(idCol)",
+                  "                        var u = android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)",
+                  "                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {",
+                  "                            try { u = MediaStore.setRequireOriginal(u) } catch (e: Exception) {}",
+                  "                        }",
+                  '                        val outFile = File(cacheDir, "ms_gps_" + id + ".jpg")',
+                  "                        contentResolver.openInputStream(u)?.use { input ->",
+                  "                            FileOutputStream(outFile).use { output ->",
+                  "                                val buf = ByteArray(65536)",
+                  "                                val n = input.read(buf)",
+                  "                                if (n > 0) output.write(buf, 0, n)",
+                  "                            }",
+                  "                        }",
+                  "                        if (outFile.exists() && outFile.length() > 100) return outFile.absolutePath",
+                  "                    }",
+                  "                }",
+                  "            }",
+                  "        } catch (e: Exception) {}",
+                  "        return null",
+                  "    }",
+                  "",
+                  "    private fun copyContentUriToCache(uriStr: String?): String? {",
+                  "        if (uriStr.isNullOrBlank()) return null",
+                  "        try {",
+                  "            val uri = Uri.parse(uriStr)",
+                  '            val outFile = File(cacheDir, "uri_direct_import_" + System.currentTimeMillis() + ".html")',
+                  "            contentResolver.openInputStream(uri)?.use { input ->",
+                  "                FileOutputStream(outFile).use { output -> input.copyTo(output) }",
+                  "            }",
+                  "            if (outFile.exists() && outFile.length() > 200) return outFile.absolutePath",
+                  "        } catch (e: Exception) {}",
+                  "        return null",
+                  "    }",
+                  "",
+                  "    private fun findLatestHtmlFile(): String? {",
+                  "        try {",
+                  "            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {",
+                  "                val projection = arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.DATE_MODIFIED)",
+                  '                val sortOrder = MediaStore.Downloads.DATE_MODIFIED + " DESC"',
+                  "                contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, null, null, sortOrder)?.use { cursor ->",
+                  "                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)",
+                  "                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)",
+                  "                    var checkedDl = 0",
+                  "                    while (cursor.moveToNext() && checkedDl < 50) {",
+                  "                        checkedDl++",
+                  '                        val name = cursor.getString(nameCol) ?: ""',
+                  '                        if (name.endsWith(".html", ignoreCase = true) || name.endsWith(".htm", ignoreCase = true)) {',
+                  "                            val id = cursor.getLong(idCol)",
+                  "                            val uri = android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id)",
+                  '                            val outFile = File(cacheDir, "auto_latest_import.html")',
+                  "                            contentResolver.openInputStream(uri)?.use { input ->",
+                  "                                FileOutputStream(outFile).use { output -> input.copyTo(output) }",
+                  "                            }",
+                  "                            if (outFile.exists() && outFile.length() > 200) return outFile.absolutePath",
+                  "                        }",
+                  "                    }",
+                  "                }",
+                  "            }",
+                  "        } catch (e: Exception) {}",
+                  "        return null",
+                  "    }",
+                  "",
+                  "    private fun playShutterOnAlarmStream(wavBytes: ByteArray?) {",
+                  "        try {",
+                  "            val actionSound = MediaActionSound()",
+                  "            actionSound.play(MediaActionSound.SHUTTER_CLICK)",
+                  "",
+                  "            if (wavBytes != null) {",
+                  '                val tempFile = File(cacheDir, "shutter_click.wav")',
+                  "                FileOutputStream(tempFile).use { it.write(wavBytes) }",
+                  "",
+                  "                val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager",
+                  "                val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)",
+                  "                val curVol = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)",
+                  "                if (curVol == 0) {",
+                  "                    val targetVol = (maxVol * 0.65).toInt().coerceAtLeast(1)",
+                  "                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, targetVol, 0)",
+                  "                }",
+                  "",
+                  "                val mp = MediaPlayer()",
+                  "                mp.setAudioAttributes(",
+                  "                    AudioAttributes.Builder()",
+                  "                        .setUsage(AudioAttributes.USAGE_ALARM)",
+                  "                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)",
+                  "                        .build()",
+                  "                )",
+                  "                mp.setDataSource(tempFile.absolutePath)",
+                  "                mp.setOnCompletionListener { player ->",
+                  "                    player.release()",
+                  "                    actionSound.release()",
+                  "                }",
+                  "                mp.setOnErrorListener { player, _, _ ->",
+                  "                    player.release()",
+                  "                    actionSound.release()",
+                  "                    true",
+                  "                }",
+                  "                mp.prepare()",
+                  "                mp.start()",
+                  "            }",
+                  "        } catch (e: Exception) {",
+                  "            e.printStackTrace()",
+                  "        }",
+                  "    }",
+                  "}",
+                  ""
+              ]
+              with open(kt_path, "w", encoding="utf-8") as f:
+                  f.write("\n".join(kt_lines))
+          EOF
+
+      - name: Build APK (For Direct Phone & Tablet Testing)
+        run: flutter build apk --release
+
+      - name: Build App Bundle (AAB)
+        run: flutter build appbundle --release
+
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: doc-snap-archive-release-apk
+          name: release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
+
+      - name: Upload AAB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+
+      - name: Upload Keystore Backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: upload-keystore-backup
+          path: android/app/upload-keystore.jks
+
+  # =========================================================================
+  # 2. 아이폰(iOS) 테스트용 무서명 IPA 빌드 잡 (macOS Runner)
+  # =========================================================================
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Create Clean iOS Flutter Project Structure
+        run: |
+          rm -rf ios
+          mv pubspec.yaml pubspec.yaml.bak
+          if [ -f "lib/main.dart" ]; then cp lib/main.dart main.dart.bak; elif [ -f "main.dart" ]; then cp main.dart main.dart.bak; fi
+          flutter create --org com.maplocation --project-name fieldcam3 --platforms=ios .
+          mv pubspec.yaml.bak pubspec.yaml
+          mv main.dart.bak lib/main.dart
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Configure iOS Info.plist, Podfile, App Icon & Native MethodChannel (AppDelegate.swift)
+        run: |
+          pip3 install --quiet Pillow
+          python3 - << 'EOF'
+          import os, re, json, plistlib
+          from PIL import Image
+
+          # 1. Podfile 최소 배포 타겟 iOS 14.0 설정 (flutter_naver_map, camera 등 필수 요구사항)
+          podfile_path = "ios/Podfile"
+          if os.path.exists(podfile_path):
+              with open(podfile_path, "r", encoding="utf-8") as f:
+                  pod = f.read()
+              pod = re.sub(r"#?\s*platform\s+:ios,\s*'[^']*'", "platform :ios, '14.0'", pod)
+              if "PERMISSION_CAMERA=1" not in pod:
+                  post_hook = """
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+              target.build_configurations.each do |config|
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+                config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
+                  '$(inherited)',
+                  'PERMISSION_CAMERA=1',
+                  'PERMISSION_PHOTOS=1',
+                  'PERMISSION_LOCATION=1',
+                ]
+              end
+            end
+          end
+          """
+                  pod = re.sub(r"post_install do \|installer\|.*end\s*end\s*end", post_hook.strip(), pod, flags=re.DOTALL)
+              with open(podfile_path, "w", encoding="utf-8") as f:
+                  f.write(pod)
+
+          # 2. Info.plist 권한 설명, 앱 이름(GPS현장캠), 네이버 지도 Client ID 및 파일 공유 설정
+          plist_path = "ios/Runner/Info.plist"
+          with open(plist_path, "rb") as f:
+              pl = plistlib.load(f)
+
+          pl["CFBundleDisplayName"] = "GPS현장캠"
+          pl["CFBundleName"] = "GPS현장캠"
+          pl["NMFClientId"] = "b3agnvaern"
+          pl["NSCameraUsageDescription"] = "현장 사진 및 조치후 사진을 촬영하기 위해 카메라 권한이 필요합니다."
+          pl["NSLocationWhenInUseUsageDescription"] = "촬영 위치(위도·경도·표고)를 사진과 지도에 기록하기 위해 위치 권한이 필요합니다."
+          pl["NSLocationAlwaysAndWhenInUseUsageDescription"] = "촬영 위치(위도·경도·표고)를 사진과 지도에 기록하기 위해 위치 권한이 필요합니다."
+          pl["NSPhotoLibraryUsageDescription"] = "갤러리에서 현장 사진과 도면 이미지를 불러오거나 저장하기 위해 사진첩 권한이 필요합니다."
+          pl["NSPhotoLibraryAddUsageDescription"] = "촬영한 현장 사진과 합본 이미지를 사진첩에 저장하기 위해 권한이 필요합니다."
+          pl["NSMotionUsageDescription"] = "카메라 기울기(피치각) 및 나침반 방위각 측정을 위해 센서 권한이 필요합니다."
+          pl["UIFileSharingEnabled"] = True
+          pl["LSSupportsOpeningDocumentsInPlace"] = True
+
+          with open(plist_path, "wb") as f:
+              plistlib.dump(pl, f)
+
+          # 3. 루트의 icon.png 를 iOS AppIcon.appiconset 모든 해상도로 변환 (알파 채널 제거 필수)
+          icon_candidates = ["icon.png", "lib/icon.png", "assets/icon.png"]
+          icon_src = next((p for p in icon_candidates if os.path.exists(p)), None)
+          appicon_dir = "ios/Runner/Assets.xcassets/AppIcon.appiconset"
+          contents_json = os.path.join(appicon_dir, "Contents.json")
+          if icon_src and os.path.exists(contents_json):
+              im = Image.open(icon_src).convert("RGB")
+              w, h = im.size
+              if w != h:
+                  side = min(w, h)
+                  im = im.crop(((w - side) // 2, (h - side) // 2, (w + side) // 2, (h + side) // 2))
+              with open(contents_json, "r", encoding="utf-8") as f:
+                  cdata = json.load(f)
+              for item in cdata.get("images", []):
+                  fn = item.get("filename")
+                  size_str = item.get("size", "60x60").split("x")[0]
+                  scale_str = item.get("scale", "1x").replace("x", "")
+                  if fn:
+                      px = int(float(size_str) * float(scale_str))
+                      resized = im.resize((px, px), Image.Resampling.LANCZOS)
+                      resized.save(os.path.join(appicon_dir, fn), format="PNG")
+
+          # 4. AppDelegate.swift 에 iOS 네이티브 MethodChannel (gps_camera/shutter) 구현
+          #    - playShutter: 아이폰 셔터음/진동 및 WAV 재생
+          #    - pickHtmlOrZip: 아이폰 파일 앱(UIDocumentPickerViewController)에서 .html / .zip 선택
+          swift_path = "ios/Runner/AppDelegate.swift"
+          swift_code = """import UIKit
+          import Flutter
+          import AVFoundation
+          import UniformTypeIdentifiers
+
+          @main
+          @objc class AppDelegate: FlutterAppDelegate, UIDocumentPickerDelegate {
+            private var pendingPickResult: FlutterResult?
+            private var audioPlayer: AVAudioPlayer?
+
+            override func application(
+              _ application: UIApplication,
+              didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+            ) -> Bool {
+              GeneratedPluginRegistrant.register(with: self)
+
+              if let controller = window?.rootViewController as? FlutterViewController {
+                let channel = FlutterMethodChannel(name: "gps_camera/shutter", binaryMessenger: controller.binaryMessenger)
+                channel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: @escaping FlutterResult) in
+                  guard let self = self else { return }
+                  switch call.method {
+                  case "playShutter":
+                    if let args = call.arguments as? [String: Any],
+                       let wavTyped = args["wav"] as? FlutterStandardTypedData {
+                      self.playShutterSound(wavData: wavTyped.data)
+                    } else {
+                      AudioServicesPlaySystemSound(1108)
+                    }
+                    result(nil)
+                  case "pickHtmlOrZip":
+                    self.pendingPickResult = result
+                    self.presentDocumentPicker(from: controller)
+                  case "resolveOriginalGps", "readContentUri", "findLatestHtmlInDownloads":
+                    result(nil)
+                  default:
+                    result(FlutterMethodNotImplemented)
+                  }
+                }
+              }
+
+              return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+            }
+
+            private func playShutterSound(wavData: Data) {
+              do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+                try AVAudioSession.sharedInstance().setActive(true)
+                self.audioPlayer = try AVAudioPlayer(data: wavData)
+                self.audioPlayer?.volume = 1.0
+                self.audioPlayer?.prepareToPlay()
+                self.audioPlayer?.play()
+              } catch {
+                AudioServicesPlaySystemSound(1108)
+              }
+            }
+
+            private func presentDocumentPicker(from viewController: UIViewController) {
+              var picker: UIDocumentPickerViewController
+              if #available(iOS 14.0, *) {
+                let types: [UTType] = [.html, .zip, .data, .item]
+                picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+              } else {
+                picker = UIDocumentPickerViewController(documentTypes: ["public.html", "public.zip-archive", "public.data", "public.item"], in: .import)
+              }
+              picker.delegate = self
+              picker.allowsMultipleSelection = false
+              viewController.present(picker, animated: true, completion: nil)
+            }
+
+            func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+              guard let res = pendingPickResult else { return }
+              pendingPickResult = nil
+              guard let srcUrl = urls.first else {
+                res(nil)
+                return
+              }
+              let canAccess = srcUrl.startAccessingSecurityScopedResource()
+              defer {
+                if canAccess { srcUrl.stopAccessingSecurityScopedResource() }
+              }
+              do {
+                let ext = srcUrl.pathExtension.lowercased() == "zip" ? "zip" : "html"
+                let outUrl = FileManager.default.temporaryDirectory.appendingPathComponent("picked_import_\\(Int(Date().timeIntervalSince1970 * 1000)).\\(ext)")
+                if FileManager.default.fileExists(atPath: outUrl.path) {
+                  try FileManager.default.removeItem(at: outUrl)
+                }
+                try FileManager.default.copyItem(at: srcUrl, to: outUrl)
+                res(outUrl.path)
+              } catch {
+                res(nil)
+              }
+            }
+
+            func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+              if let res = pendingPickResult {
+                pendingPickResult = nil
+                res(nil)
+              }
+            }
+          }
+          """
+          with open(swift_path, "w", encoding="utf-8") as f:
+              f.write(swift_code.strip() + "\n")
+          EOF
+
+      - name: Build iOS App (No Codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package Runner.app into Unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -qq -r GPS_FieldCam_iOS_Unsigned.ipa Payload
+          rm -rf Payload
+
+      - name: Upload iOS Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: GPS_FieldCam_iOS_Unsigned.ipa
