@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 아카이브',
+      title: '증빙서류 스냅 v13',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -68,18 +68,19 @@ class DocCategory {
 }
 
 // =============================================================================
-// 백그라운드 Isolate에서 실행되는 초고화질(무손실급) 4점 모서리 평탄화 함수
-// (모서리를 움직이지 않았고 선명화도 안 켰다면 원본 바이트 100% 그대로 반환하여 화질 저하 원천 차단!)
+// 백그라운드 Isolate에서 실행되는 초고화질 + 회전 지원(가로/세로 완벽 대응) 4점 평탄화 함수
 // =============================================================================
 class WarpRequest {
   final Uint8List originalBytes;
   final List<double> cornerCoords; // [x0, y0, x1, y1, x2, y2, x3, y3]
   final bool enhanceContrast;
+  final int rotationQuarterTurns; // 0, 1(90도), 2(180도), 3(270도)
 
   WarpRequest({
     required this.originalBytes,
     required this.cornerCoords,
     required this.enhanceContrast,
+    required this.rotationQuarterTurns,
   });
 }
 
@@ -94,13 +95,27 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
       c[6] <= 0.03 &&
       c[7] >= 0.97);
 
-  if (isFullEdge && !req.enhanceContrast) {
+  if (isFullEdge && !req.enhanceContrast && req.rotationQuarterTurns % 4 == 0) {
     return req.originalBytes;
   }
 
   final decoded = img.decodeImage(req.originalBytes);
   if (decoded == null) return req.originalBytes;
-  final src = img.bakeOrientation(decoded);
+  img.Image src = img.bakeOrientation(decoded);
+
+  // 사용자가 회전 버튼을 누른 경우 먼저 회전 적용 (가로 문서 왜곡 완벽 해결!)
+  final int turns = req.rotationQuarterTurns % 4;
+  if (turns == 1) {
+    src = img.copyRotate(src, angle: 90);
+  } else if (turns == 2) {
+    src = img.copyRotate(src, angle: 180);
+  } else if (turns == 3) {
+    src = img.copyRotate(src, angle: 270);
+  }
+
+  if (isFullEdge && !req.enhanceContrast) {
+    return Uint8List.fromList(img.encodeJpg(src, quality: 96));
+  }
 
   final p0x = c[0] * src.width;
   final p0y = c[1] * src.height;
@@ -164,7 +179,7 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
 }
 
 // =============================================================================
-// 4점 모서리 지정 및 고화질 원본 비율 스캔 다이얼로그
+// 4점 모서리 지정 + 가로/세로 회전 + 원본 비율 100% 보존 스캔 다이얼로그
 // =============================================================================
 class PerspectiveCropDialog extends StatefulWidget {
   final Uint8List originalBytes;
@@ -177,16 +192,17 @@ class PerspectiveCropDialog extends StatefulWidget {
 
 class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
   List<Offset> _corners = const [
-    Offset(0.01, 0.01),
-    Offset(0.99, 0.01),
-    Offset(0.99, 0.99),
-    Offset(0.01, 0.99),
+    Offset(0.02, 0.02),
+    Offset(0.98, 0.02),
+    Offset(0.98, 0.98),
+    Offset(0.02, 0.98),
   ];
 
   bool _enhanceScanContrast = false;
   bool _isProcessing = false;
   int? _activeCornerIndex;
-  double _imageAspectRatio = 0.75;
+  double _baseAspectRatio = 0.75;
+  int _rotationQuarterTurns = 0; // 가로 문서를 바로 돌릴 수 있는 90도 회전 상태
 
   @override
   void initState() {
@@ -201,9 +217,28 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       final w = frame.image.width.toDouble();
       final h = frame.image.height.toDouble();
       if (w > 0 && h > 0 && mounted) {
-        setState(() => _imageAspectRatio = w / h);
+        setState(() => _baseAspectRatio = w / h);
       }
     } catch (_) {}
+  }
+
+  double get _effectiveAspectRatio {
+    if (_rotationQuarterTurns % 2 == 1) {
+      return 1.0 / _baseAspectRatio;
+    }
+    return _baseAspectRatio;
+  }
+
+  void _rotate90() {
+    setState(() {
+      _rotationQuarterTurns = (_rotationQuarterTurns + 1) % 4;
+      _corners = const [
+        Offset(0.02, 0.02),
+        Offset(0.98, 0.02),
+        Offset(0.98, 0.98),
+        Offset(0.02, 0.98),
+      ];
+    });
   }
 
   Future<void> _applyPerspectiveFlatten() async {
@@ -227,6 +262,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
           originalBytes: widget.originalBytes,
           cornerCoords: flatCoords,
           enhanceContrast: _enhanceScanContrast,
+          rotationQuarterTurns: _rotationQuarterTurns,
         ),
       );
 
@@ -243,14 +279,19 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('영역 지정 / 원본 고화질 스캔'),
+        title: const Text('가로/세로 정비율 고화질 스캔 (v13)'),
         actions: [
+          IconButton(
+            tooltip: '90도 회전 (가로 문서 방향 맞추기)',
+            onPressed: _isProcessing ? null : _rotate90,
+            icon: const Icon(Icons.rotate_right, color: Colors.amberAccent),
+          ),
           TextButton(
             onPressed: _isProcessing
                 ? null
                 : () => Navigator.pop(context, widget.originalBytes),
             child: const Text(
-              '원본 100% 그대로 사용',
+              '원본 100%',
               style: TextStyle(
                 color: Colors.amberAccent,
                 fontWeight: FontWeight.bold,
@@ -270,7 +311,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
               children: [
                 const Expanded(
                   child: Text(
-                    '점 4개를 서류 모서리에 맞추거나, 그대로 하단 버튼을 누르면 원본 화질이 유지됩니다.',
+                    '가로 문서는 상단 회전(↻) 버튼을 눌러 방향을 맞출 수 있습니다. 원본 비율이 그대로 유지됩니다.',
                     style: TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ),
@@ -295,8 +336,9 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Center(
+                // ★ 가로/세로 어떤 문서든 원본 가로:세로 비율과 똑같은 크기의 캔버스 박스를 생성해 찌그러짐을 100% 차단!
                 child: AspectRatio(
-                  aspectRatio: _imageAspectRatio,
+                  aspectRatio: _effectiveAspectRatio,
                   child: LayoutBuilder(
                     builder: (ctx, constraints) {
                       final boxW = constraints.maxWidth;
@@ -338,10 +380,13 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
-                            Image.memory(
-                              widget.originalBytes,
-                              fit: BoxFit.contain,
-                              filterQuality: FilterQuality.high,
+                            RotatedBox(
+                              quarterTurns: _rotationQuarterTurns,
+                              child: Image.memory(
+                                widget.originalBytes,
+                                fit: BoxFit.fill,
+                                filterQuality: FilterQuality.high,
+                              ),
                             ),
                             CustomPaint(
                               painter: _QuadOverlayPainter(corners: _corners),
@@ -392,22 +437,18 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
               child: Row(
                 children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white54),
-                        minimumSize: const Size.fromHeight(48),
-                      ),
-                      onPressed: _isProcessing
-                          ? null
-                          : () => Navigator.pop(context, widget.originalBytes),
-                      child: const Text('원본 화질 그대로'),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.amberAccent,
+                      side: const BorderSide(color: Colors.amberAccent),
+                      minimumSize: const Size(90, 48),
                     ),
+                    onPressed: _isProcessing ? null : _rotate90,
+                    icon: const Icon(Icons.rotate_right, size: 18),
+                    label: const Text('회전'),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
-                    flex: 2,
                     child: FilledButton.icon(
                       style: FilledButton.styleFrom(
                         minimumSize: const Size.fromHeight(48),
@@ -427,7 +468,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
                       label: Text(
                         _isProcessing
                             ? '고화질 처리 중...'
-                            : '모서리 맞춰 펴기 & 글자 읽기',
+                            : '모서리 맞춰 펴기 & AI 글자 읽기',
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
@@ -851,7 +892,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 1단계: 온디바이스 한국어 OCR (Y좌표 줄 정렬 + 공문서 본문 요약 정밀 파서)
+  // 1단계: 온디바이스 한국어 OCR (Y좌표 줄 정렬 + 파일명/인사말 제외 정밀 파서)
   // ===========================================================================
   Future<Map<String, String>> _extractFieldsOfflineOcr({
     required String imagePath,
@@ -920,6 +961,11 @@ class _HomeScreenState extends State<HomeScreen> {
   ) {
     final result = <String, String>{};
 
+    // 모니터 상단 PDF 뷰어 제목줄(.pdf 등) 제거
+    final cleanLines = lines
+        .where((l) => !RegExp(r'\.pdf\b|Adobe|Acrobat|파일\s*편집\s*보기', caseSensitive: false).hasMatch(l))
+        .toList();
+
     final dateMatch = RegExp(
       r'(?:시\s*행\s*일\s*자|시\s*행\s*일|보\s*낸\s*날\s*짜|일\s*자|시\s*행)?[^\d\n]*(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
     ).firstMatch(fullText);
@@ -928,7 +974,7 @@ class _HomeScreenState extends State<HomeScreen> {
           '${dateMatch.group(1)}-${dateMatch.group(2)!.padLeft(2, '0')}-${dateMatch.group(3)!.padLeft(2, '0')}';
     }
 
-    for (final line in lines) {
+    for (final line in cleanLines) {
       final labelMatch = RegExp(
         r'(?:문\s*서\s*번\s*호|공\s*문\s*번\s*호|분\s*류\s*기\s*호|문\s*서\s*명|시\s*행)\s*[:：]?\s*([^\n]+)',
       ).firstMatch(line);
@@ -942,10 +988,10 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
     if ((result['docNumber'] ?? '').isEmpty) {
-      for (final line in lines) {
+      for (final line in cleanLines) {
         if (RegExp(r'\b\d{2,3}-\d{3,4}-\d{4}\b').hasMatch(line)) continue;
         final patternMatch = RegExp(
-          r'([가-힣A-Za-z0-9().\-_]+\s*제?\s*\d{2,4}\s*-\s*\d{1,5}\s*호?|[가-힣A-Za-z]{2,12}\s*-\s*\d{1,5}(?:\s*호)?)',
+          r'([가-힣A-Za-z0-9().\-_]+\s*제?\s*\d{2,4}\s*-\s*[0-9A-Za-z]{1,6}\s*호?|[가-힣A-Za-z]{2,12}\s*-\s*\d{1,5}(?:\s*호)?)',
         ).firstMatch(line);
         if (patternMatch != null) {
           final cand = patternMatch.group(1)!.trim();
@@ -957,7 +1003,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    for (final line in lines) {
+    for (final line in cleanLines) {
       final senderLabel = RegExp(
         r'(?:발\s*신\s*처|발\s*신\s*기\s*관|발\s*신|보\s*낸\s*사\s*람)\s*[:：]\s*([^\n]+)',
       ).firstMatch(line);
@@ -966,8 +1012,8 @@ class _HomeScreenState extends State<HomeScreen> {
         break;
       }
     }
-    if ((result['sender'] ?? '').isEmpty && lines.isNotEmpty) {
-      for (final line in lines.reversed.take(8)) {
+    if ((result['sender'] ?? '').isEmpty && cleanLines.isNotEmpty) {
+      for (final line in cleanLines.reversed.take(8)) {
         if (line.contains('귀하') ||
             line.contains('수신') ||
             line.contains('붙임') ||
@@ -984,8 +1030,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    for (int i = 0; i < lines.length; i++) {
-      final line = lines[i];
+    for (int i = 0; i < cleanLines.length; i++) {
+      final line = cleanLines[i];
       final titleMatch = RegExp(
         r'(?:제\s*목|건\s*명|안\s*건)\s*[:：]?\s*(.+)',
       ).firstMatch(line);
@@ -994,16 +1040,16 @@ class _HomeScreenState extends State<HomeScreen> {
         if (t.length >= 2) {
           result['title'] = t;
           break;
-        } else if (i + 1 < lines.length) {
-          result['title'] = lines[i + 1].trim();
+        } else if (i + 1 < cleanLines.length) {
+          result['title'] = cleanLines[i + 1].trim();
           break;
         }
       }
     }
     if ((result['title'] ?? '').isEmpty) {
-      for (final line in lines) {
+      for (final line in cleanLines) {
         if (RegExp(
-                r'(?:요청의\s*건|협조의\s*건|제출의\s*건|통보의\s*건|승인의\s*건|보고의\s*건|회신의\s*건|안내의\s*건|송부의\s*건|청구의\s*건|촉구의\s*건)')
+                r'(?:요청의\s*건|협조의\s*건|제출의\s*건|통보의\s*건|승인의\s*건|보고의\s*건|회신의\s*건|안내의\s*건|송부의\s*건|청구의\s*건|촉구의\s*건|제출\s*요청)')
             .hasMatch(line)) {
           result['title'] = line.trim();
           break;
@@ -1019,7 +1065,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final bodyCandidates = <String>[];
-    for (final line in lines) {
+    for (final line in cleanLines) {
       if (RegExp(
               r'(?:귀\s*하|무궁한|발찬|발전을|기원합니다|번창하심을|수\s*신\s*[:：]|참\s*조\s*[:：]|문\s*서\s*번\s*호|붙\s*임|첨\s*부)')
           .hasMatch(line)) {
@@ -1059,15 +1105,16 @@ class _HomeScreenState extends State<HomeScreen> {
           '${dateMatch.group(1)}-${dateMatch.group(2)}-${dateMatch.group(3)}';
     }
 
+    // 송장번호 (예: J-1-20210908-01336 또는 210921080446)
     final orderMatch = RegExp(
-      r'(?:송\s*장\s*번\s*호|주\s*문\s*번\s*호|청\s*구\s*번\s*호|NO)\s*[:：]?\s*([A-Za-z0-9\-]{5,25})',
+      r'([A-Z]-\d-\d{8}-\d{4,6}|\b\d{10,14}\b)',
     ).firstMatch(fullText);
     if (orderMatch != null) {
       result['orderNumber'] = orderMatch.group(1)!;
     }
 
     final steelSpecMatch = RegExp(
-      r'\b((?:U?SHD|HD|SD|KS\s*D)\s*[0-9A-Za-z\-*xX.\s]{2,20})\b',
+      r'\b((?:U?SHD|HD|SD|KS\s*D|D\d{2})\s*[0-9A-Za-z\-*xX.\s]{2,20})\b',
     ).firstMatch(fullText);
     if (steelSpecMatch != null) {
       result['specName'] = steelSpecMatch.group(1)!.trim();
@@ -1096,18 +1143,10 @@ class _HomeScreenState extends State<HomeScreen> {
           if (cleaned.isNotEmpty) result['productName'] = cleaned;
         }
       }
-      if ((result['supplierName'] ?? '').isEmpty &&
-          (line.contains('상호') || line.contains('공급자'))) {
-        final cleaned =
-            line.replaceAll(RegExp(r'.*(?:상\s*호|공\s*급\s*자)\s*[:：]?'), '').trim();
-        if (cleaned.isNotEmpty) {
-          result['supplierName'] = cleaned.split(' ').first;
-        }
-      }
     }
 
     final weightMatch = RegExp(
-      r'(?:합\s*계|중\s*량)?[^\d]*(\d{1,3}(?:,\d{3})+|\d+\.\d{2,3})\s*(?:MT|TON|KG|kg|t)?',
+      r'\b(\d{1,2}\.\d{3}|\d{1,3},\d{3})\b',
     ).allMatches(fullText);
     if (weightMatch.isNotEmpty) {
       result['weight'] = weightMatch.last.group(1)!;
@@ -1221,9 +1260,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // ★ 2단계: Gemini Vision AI 문맥 추론 분석
-  // (구글의 신규 `AQ.` 키 규격 필수 조건인 `x-goog-api-key` 헤더 전송 완벽 적용!
-  //  기존 `?key=` URL 파라미터 방식에서 발생하던 404 에러 100% 해결!)
+  // ★ 2단계: Gemini Vision AI 문맥 추론 분석 (`AQ.` 키 `x-goog-api-key` 헤더 지원)
   // ===========================================================================
   Future<Map<String, String>?> _analyzeDocumentWithAi({
     required String category,
@@ -1239,22 +1276,22 @@ class _HomeScreenState extends State<HomeScreen> {
 - sentDate: 문서 시행일 또는 보낸날짜 (YYYY-MM-DD 형식)
 - sender: 공문을 보낸 발신기관/회사/대표자명 (문서 상단 헤더 또는 하단 직인 옆 발신명의)
 - docNumber: '공문번호'라는 라벨이 없더라도 '시행 OO-123', '문서번호', '제2026-00호', '부서명-숫자' 등 문맥상 공문 번호에 해당하는 값
-- title: 수신자('~귀하', '~현장대리인')를 절대 넣지 말고, '제목' 또는 '건명'에 해당하는 공문의 실제 제목 (만약 본문만 찍힌 사진이면 본문 핵심 주제를 제목으로 작성)
+- title: 수신자('~귀하', '~현장대리인')나 상단 PDF 파일명('.pdf')은 절대 넣지 말고, '제목' 또는 '건명'에 해당하는 공문의 실제 제목
 - aiSummary: '1. 귀사의 무궁한 발전을 기원합니다' 같은 상투적 인사말은 완전히 제외하고, 이 공문이 왜 왔는지 핵심 용건과 요청사항만 자연스러운 한 문장으로 요약
 - replyDeadline: 본문이나 표에 적힌 회신기한/제출기한 (없으면 공란)
 ''';
     } else if (category == DocCategory.invoice) {
       prompt = '''
-이 자재송장/거래명세서 이미지를 읽고 문맥을 파악해서 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
+이 자재송장/거래명세서(현대제철 등 가로형 거래명세서 포함) 이미지를 읽고 문맥을 파악해서 아래 JSON 키만 가진 순수 JSON 객체로 응답해줘:
 {
-  "arrivalDate": "도착일/출하일 (YYYY-MM-DD 형식)",
-  "orderNumber": "송장번호 또는 주문번호",
-  "productName": "제품명/품명",
-  "specName": "규격명/강종",
+  "arrivalDate": "도착일/출하일/발행일 (YYYY-MM-DD 형식)",
+  "orderNumber": "송장번호(예: J-1-20210908-01336) 또는 주문번호",
+  "productName": "제품명/품명(예: 이형봉강)",
+  "specName": "규격명/강종(예: D16, SD400, KS D 3504 등)",
   "unit": "단위 (예: MT, TON, EA, kg 등)",
-  "quantity": "수량 (숫자만)",
-  "weight": "중량 (숫자만)",
-  "supplierName": "공급자상호",
+  "quantity": "수량 합계 (숫자만, 예: 486)",
+  "weight": "중량 합계 (숫자만, 예: 19.996)",
+  "supplierName": "공급자상호 (예: 현대제철(주))",
   "amount": "공급가액 또는 합계금액 (없으면 0)"
 }''';
     } else if (category == DocCategory.travel) {
@@ -1276,7 +1313,6 @@ class _HomeScreenState extends State<HomeScreen> {
 }''';
     }
 
-    // Vertex 호환 및 AI Studio 신규 AQ. 키에서 모두 동작하도록 role: "user" 명시
     final body = jsonEncode({
       'contents': [
         {
@@ -1297,8 +1333,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    // AQ. 키는 URL 쿼리(?key=...)로 보내면 구글 서버가 404를 반환하므로,
-    // 반드시 URL에서 ?key=를 빼고 HTTP 헤더 'x-goog-api-key'로 전송해야 작동합니다!
     final endpoints = [
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
@@ -1512,7 +1546,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // 2) 초기 자동 인식 (온디바이스 OCR + AQ. 키 헤더 방식 Gemini AI 자동 수행)
       setState(() => _isBusy = true);
       final initialOcr = await _extractFieldsOfflineOcr(
         imagePath: savedFile.path,
@@ -1572,7 +1605,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   _userSubCategoriesMap[chosenCategory] ?? <String>[];
 
               return AlertDialog(
-                title: const Text('증빙서류 정보 입력'),
+                title: const Text('증빙서류 정보 입력 (v13)'),
                 content: SizedBox(
                   width: double.maxFinite,
                   child: SingleChildScrollView(
@@ -1581,7 +1614,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Container(
-                          height: 140,
+                          height: 145,
                           margin: const EdgeInsets.only(bottom: 12),
                           padding: const EdgeInsets.all(6),
                           decoration: BoxDecoration(
@@ -1743,7 +1776,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         if (chosenCategory == DocCategory.invoice) ...[
                           _buildField(arrivalDateCtrl, '도착일', '예: 2026-10-27'),
                           _buildField(orderNumberCtrl, '주문번호 / 송장번호',
-                              '예: 1200210908-00006'),
+                              '예: J-1-20210908-01336'),
                           _buildField(
                               productNameCtrl, '제품명', '예: 이형봉강(철근)'),
                           _buildField(
@@ -1768,7 +1801,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           _buildField(
                             weightCtrl,
                             '중량 (kg/MT)',
-                            '예: 19,996',
+                            '예: 19.996',
                             keyboardType: TextInputType.number,
                           ),
                           _buildField(
@@ -1992,14 +2025,14 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           return AlertDialog(
-            title: const Text('Gemini AI & 원드라이브 설정'),
+            title: const Text('Gemini AI & 원드라이브 설정 (v13)'),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    '1. Gemini AI 키 등록 (AQ... 및 AIza... 모두 지원)',
+                    '1. Gemini AI 키 등록 (AQ... 및 AIza... 완벽 지원)',
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 13.5,
@@ -2121,9 +2154,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ===========================================================================
-  // HTML 내보내기 (현재 필터링된 카테고리만 + 상하 구조)
-  // ===========================================================================
   Future<void> _exportAndUploadHtmlToOneDrive() async {
     setState(() => _isBusy = true);
     try {
@@ -2391,7 +2421,6 @@ class _HomeScreenState extends State<HomeScreen> {
       border-color: #1e3a8a;
       font-weight: 700;
     }
-    /* 상단 1/2: 깔끔한 가로 전체 폭 카드형 리스트 */
     #list-pane {
       height: 44vh;
       overflow-y: auto;
@@ -2470,7 +2499,6 @@ class _HomeScreenState extends State<HomeScreen> {
       cursor: pointer;
       font-size: 11.5px;
     }
-    /* 하단 1/2: 선택한 항목의 고화질 증빙사진 뷰어 */
     #preview-pane {
       flex: 1;
       background: #0f172a;
@@ -2838,7 +2866,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅'),
+        title: const Text('증빙서류 스냅 v13'),
         actions: [
           IconButton(
             tooltip: 'Gemini AI 키 & 설정',
@@ -2891,7 +2919,6 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Column(
             children: [
-              // 1) 상단 1줄: 문서 종류 선택 탭
               Container(
                 height: 44,
                 padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -2930,8 +2957,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
               ),
-
-              // 2) 상단 2줄: 전체 합계 & 내가 등록한 카테고리별 합계 대시보드
               Container(
                 width: double.infinity,
                 padding:
@@ -3033,8 +3058,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
-
-              // 3) 화면 상단 1/2: 문서 목록 리스트
               Expanded(
                 flex: 1,
                 child: items.isEmpty
@@ -3150,10 +3173,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         },
                       ),
               ),
-
               const Divider(height: 2, thickness: 2),
-
-              // 4) 화면 하단 1/2: 선택한 항목의 세부 내용 및 초고화질 증빙사진
               Expanded(
                 flex: 1,
                 child: Container(
