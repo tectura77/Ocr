@@ -863,7 +863,7 @@ class _CameraScreenState extends State<CameraScreen> {
  if (_shutterFlash)
  IgnorePointer(
  child: Container(
- color: Colors.white.withOpacity(0.55),
+ color: Colors.white.withValues(alpha: 0.55),
  ),
  ),
  if (_pendingAfterTarget != null)
@@ -874,7 +874,7 @@ class _CameraScreenState extends State<CameraScreen> {
  child: Container(
  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
  decoration: BoxDecoration(
- color: Colors.green[800]!.withOpacity(0.92),
+ color: Colors.green[800]!.withValues(alpha: 0.92),
  borderRadius: BorderRadius.circular(10),
  border: Border.all(color: Colors.lightGreenAccent, width: 1.5),
  ),
@@ -2360,7 +2360,7 @@ class _GalleryMapDashboardState extends State<GalleryMapDashboard> {
  width: 26,
  height: 26,
  decoration: BoxDecoration(
- color: Colors.greenAccent.withOpacity(0.35),
+ color: Colors.greenAccent.withValues(alpha: 0.35),
  shape: BoxShape.circle,
  border: Border.all(color: Colors.white, width: 2.5),
  ),
@@ -2704,7 +2704,7 @@ class _GalleryMapDashboardState extends State<GalleryMapDashboard> {
  margin: const EdgeInsets.only(bottom: 6),
  decoration: BoxDecoration(
  color: isShown
- ? Colors.lightGreenAccent.withOpacity(0.14)
+ ? Colors.lightGreenAccent.withValues(alpha: 0.14)
  : Colors.white10,
  borderRadius: BorderRadius.circular(8),
  border: Border.all(
@@ -3285,7 +3285,7 @@ class _GalleryMapDashboardState extends State<GalleryMapDashboard> {
  width: 28,
  height: 28,
  decoration: BoxDecoration(
- color: c.withOpacity(0.35),
+ color: c.withValues(alpha: 0.35),
  shape: BoxShape.circle,
  border: Border.all(color: c, width: 2.2),
  ),
@@ -5217,7 +5217,7 @@ if (photos.length > 0) {
  padding: const EdgeInsets.symmetric(horizontal: 6),
  decoration: BoxDecoration(
  color: isSel
- ? Colors.amber.withOpacity(0.22)
+ ? Colors.amber.withValues(alpha: 0.22)
  : Colors.white10,
  borderRadius: BorderRadius.circular(6),
  border: Border.all(
@@ -5306,7 +5306,7 @@ if (photos.length > 0) {
  child: Container(
  padding: const EdgeInsets.symmetric(horizontal: 8),
  decoration: BoxDecoration(
- color: Colors.amber.withOpacity(0.15),
+ color: Colors.amber.withValues(alpha: 0.15),
  borderRadius: BorderRadius.circular(6),
  border: Border.all(color: Colors.amber),
  ),
@@ -5703,7 +5703,7 @@ if (photos.length > 0) {
  color: Colors.grey[900],
  borderRadius: BorderRadius.circular(8),
  border: Border.all(
- color: Colors.amber.withOpacity(0.75),
+ color: Colors.amber.withValues(alpha: 0.75),
  width: 1.2,
  ),
  ),
@@ -5914,7 +5914,7 @@ if (photos.length > 0) {
  padding: const EdgeInsets.symmetric(
  horizontal: 9, vertical: 6),
  decoration: BoxDecoration(
- color: Colors.green[800]!.withOpacity(0.9),
+ color: Colors.green[800]!.withValues(alpha: 0.9),
  borderRadius: BorderRadius.circular(8),
  border: Border.all(
  color: Colors.lightGreenAccent, width: 1.3),
@@ -6035,7 +6035,7 @@ if (photos.length > 0) {
  child: Container(
  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
  decoration: BoxDecoration(
- color: Colors.green[800]!.withOpacity(0.92),
+ color: Colors.green[800]!.withValues(alpha: 0.92),
  borderRadius: BorderRadius.circular(6),
  border: Border.all(color: Colors.lightGreenAccent, width: 1.2),
  ),
@@ -6555,9 +6555,9 @@ if (photos.length > 0) {
  child: Container(
  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
  decoration: BoxDecoration(
- color: Colors.lightGreenAccent.withOpacity(0.12),
+ color: Colors.lightGreenAccent.withValues(alpha: 0.12),
  borderRadius: BorderRadius.circular(6),
- border: Border.all(color: Colors.lightGreenAccent.withOpacity(0.6)),
+ border: Border.all(color: Colors.lightGreenAccent.withValues(alpha: 0.6)),
  ),
  child: Row(
  mainAxisSize: MainAxisSize.min,
@@ -6581,9 +6581,9 @@ if (photos.length > 0) {
  child: Container(
  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
  decoration: BoxDecoration(
- color: Colors.lightBlueAccent.withOpacity(0.12),
+ color: Colors.lightBlueAccent.withValues(alpha: 0.12),
  borderRadius: BorderRadius.circular(6),
- border: Border.all(color: Colors.lightBlueAccent.withOpacity(0.6)),
+ border: Border.all(color: Colors.lightBlueAccent.withValues(alpha: 0.6)),
  ),
  child: Row(
  mainAxisSize: MainAxisSize.min,
@@ -6607,9 +6607,9 @@ if (photos.length > 0) {
  child: Container(
  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
  decoration: BoxDecoration(
- color: Colors.amber.withOpacity(0.14),
+ color: Colors.amber.withValues(alpha: 0.14),
  borderRadius: BorderRadius.circular(6),
- border: Border.all(color: Colors.amber.withOpacity(0.7)),
+ border: Border.all(color: Colors.amber.withValues(alpha: 0.7)),
  ),
  child: Row(
  mainAxisSize: MainAxisSize.min,
@@ -6730,7 +6730,7 @@ if (photos.length > 0) {
  height: portrait ? 16 : double.infinity,
  decoration: BoxDecoration(
  color: _isDraggingDivider
- ? Colors.amber.withOpacity(0.28)
+ ? Colors.amber.withValues(alpha: 0.28)
  : const Color(0xFF1B1B1B),
  border: Border(
  top: portrait
@@ -6772,7 +6772,7 @@ if (photos.length > 0) {
  width: portrait ? 48 : 4,
  height: portrait ? 4 : 48,
  decoration: BoxDecoration(
- color: _isDraggingDivider ? Colors.amber : Colors.amber.withOpacity(0.75),
+ color: _isDraggingDivider ? Colors.amber : Colors.amber.withValues(alpha: 0.75),
  borderRadius: BorderRadius.circular(4),
  ),
  ),
