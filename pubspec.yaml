@@ -1,7 +1,7 @@
 name: doc_snap_archive
-description: 대외공문, 자재송장, 출장비, 병원비 AI 맞춤 필드 추출 및 원드라이브 누적 HTML / 요약표 포함 PDF 공유 앱
+description: 대외공문, 자재송장, 출장비, 병원비 AI 맞춤 필드 추출 및 HTML / PDF 공유 앱
 publish_to: 'none'
-version: 2.0.0+1
+version: 2.0.0+16
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -21,6 +21,8 @@ dependencies:
   pdf: ^3.10.8
   printing: ^5.12.0
   share_plus: ^7.2.2
+  image: ^4.1.7
+  google_mlkit_text_recognition: ^0.13.0
 
 dev_dependencies:
   flutter_test:
