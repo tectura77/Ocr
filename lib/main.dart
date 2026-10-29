@@ -1,7 +1,7 @@
+// ignore_for_file: unused_field, unused_local_variable, unnecessary_import, deprecated_member_use, prefer_const_constructors, unnecessary_brace_in_string_interps
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v20',
+      title: '증빙서류 스냅 v21',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -322,7 +322,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v20)'),
+        title: const Text('가로/세로 정비율 스캔 (v21)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -447,8 +447,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
                                         decoration: BoxDecoration(
                                           color: _activeCornerIndex == i
                                               ? Colors.amber
-                                              : Colors.blueAccent
-                                                  .withOpacity(0.85),
+                                              : Colors.blueAccent.withAlpha(217),
                                           shape: BoxShape.circle,
                                           border: Border.all(
                                               color: Colors.white, width: 2.5),
@@ -552,7 +551,7 @@ class _QuadOverlayPainter extends CustomPainter {
       ..close();
 
     final fillPaint = Paint()
-      ..color = Colors.blueAccent.withOpacity(0.12)
+      ..color = Colors.blueAccent.withAlpha(31)
       ..style = PaintingStyle.fill;
     canvas.drawPath(path, fillPaint);
 
@@ -779,9 +778,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   static const String _prefsRecordsKey = 'local_doc_records_v2';
   static const String _prefsUserSubCatsKey = 'user_registered_sub_cats_v2';
-  static const String _prefsOneDriveSyncDirKey = 'onedrive_local_sync_dir';
-  static const String _prefsOneDriveSubfolderKey = 'onedrive_target_subfolder';
-  static const String _prefsAccessTokenKey = 'onedrive_access_token';
   static const String _prefsGeminiApiKey = 'gemini_api_key';
   static const String _prefsSplitRatioKey = 'list_photo_split_ratio_v1';
   static const String _prefsHorizSplitRatioKey =
@@ -805,9 +801,6 @@ class _HomeScreenState extends State<HomeScreen> {
     DocCategory.medical: [],
   };
 
-  String _oneDriveLocalDir = '';
-  String _oneDriveSubfolder = 'Documents/증빙서류함';
-  String _accessToken = '';
   String _geminiApiKey = '';
 
   final ImagePicker _picker = ImagePicker();
@@ -867,10 +860,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedCategoryFilter = _records.first.category;
         _selectedRecord = _records.first;
       }
-      _oneDriveLocalDir = prefs.getString(_prefsOneDriveSyncDirKey) ?? '';
-      _oneDriveSubfolder =
-          prefs.getString(_prefsOneDriveSubfolderKey) ?? 'Documents/증빙서류함';
-      _accessToken = prefs.getString(_prefsAccessTokenKey) ?? '';
       _geminiApiKey = prefs.getString(_prefsGeminiApiKey) ?? '';
       _listSplitRatio =
           (prefs.getDouble(_prefsSplitRatioKey) ?? 0.44).clamp(0.18, 0.82);
@@ -2401,7 +2390,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v20)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v21)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -3056,7 +3045,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('AI 설정 및 누적 HTML 안내 (v20)'),
+        title: const Text('AI 설정 및 누적 HTML 안내 (v21)'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3687,7 +3676,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final km = f['distanceKm'] ?? '0';
           return [
             MapEntry('카테고리', subLabel),
-            MapEntry('구분', '자차'),
+            const MapEntry('구분', '자차'),
             MapEntry('산출내역',
                 '${km}km × 2 × 300원 = ${DocRecord._formatCurrency(f['totalAmount'])}원'),
             MapEntry('일자', DocRecord.formatDotDate(f['date'])),
@@ -4125,7 +4114,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v20'),
+        title: const Text('증빙서류 스냅 v21'),
         actions: [
           IconButton(
             tooltip: 'AI 설정 및 누적 안내',
