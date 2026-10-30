@@ -57,9 +57,9 @@ jobs:
           flutter pub add image google_mlkit_text_recognition
           flutter pub add --dev flutter_launcher_icons
           if [ -f icon.png ]; then
-            printf '\nflutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "icon.png"\n  min_sdk_android: 21\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' >> pubspec.yaml
+            printf 'flutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "icon.png"\n  min_sdk_android: 21\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' > flutter_launcher_icons.yaml
             flutter pub get
-            dart run flutter_launcher_icons
+            dart run flutter_launcher_icons -f flutter_launcher_icons.yaml || true
           else
             flutter pub get
           fi
@@ -82,7 +82,7 @@ jobs:
           fi
 
       - name: Install Dependencies and Analyze Dart Code
-        run: "flutter pub get && dart analyze --no-fatal-warnings --no-fatal-infos lib/main.dart"
+        run: "flutter pub get && dart analyze --no-fatal-warnings lib/main.dart"
 
       - name: Build Release APK (R8 Disabled)
         run: "flutter build apk --release --no-tree-shake-icons -Pshrink=false"
@@ -132,9 +132,9 @@ jobs:
           flutter pub add image google_mlkit_text_recognition
           flutter pub add --dev flutter_launcher_icons
           if [ -f icon.png ]; then
-            printf '\nflutter_launcher_icons:\n  android: false\n  ios: true\n  image_path: "icon.png"\n  remove_alpha_ios: true\n' >> pubspec.yaml
+            printf 'flutter_launcher_icons:\n  android: false\n  ios: true\n  image_path: "icon.png"\n  remove_alpha_ios: true\n' > flutter_launcher_icons.yaml
             flutter pub get
-            dart run flutter_launcher_icons
+            dart run flutter_launcher_icons -f flutter_launcher_icons.yaml || true
           else
             flutter pub get
           fi
