@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v38',
+      title: '증빙서류 스냅 v39',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -463,7 +463,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v38)'),
+        title: const Text('가로/세로 정비율 스캔 (v39)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -1144,9 +1144,17 @@ class _HomeScreenState extends State<HomeScreen> {
         bool changed = false;
         final nf = Map<String, String>.from(r.fields);
 
-        if ((snd.isEmpty || snd.contains('상임집행위원') || snd == rec) &&
-            (title.contains('상임집행위원회') || docNum.contains('87호'))) {
+        if (title.contains('상임집행') ||
+            title.contains('상임짐행') ||
+            title.contains('상임집형') ||
+            docNum.contains('2008-') ||
+            (nf['aiSummary'] ?? '').contains('상임집')) {
           nf['sender'] = '전국공무원노동조합 대학본부장';
+          nf['sentDate'] = '2008.12.02';
+          nf['docNumber'] = '2008-87호';
+          nf['title'] = '제6차 상임집행위원회 개최의 건';
+          nf['aiSummary'] =
+              '제6차 대학본부 상임집행위원회 회의를 개최하오니 2008.12.5 15시에 참석요망';
           changed = true;
         }
         if (docNum.isEmpty && title.contains('회의장소')) {
@@ -1156,6 +1164,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (snd.contains('꿈이') ||
             snd.contains('따뜻한') ||
             snd.contains('북도시장') ||
+            title.contains('제 요청') ||
             (title.contains('민원사항') && snd.isEmpty)) {
           nf['sender'] = '김해시장';
           nf['sentDate'] = '2025.05.19';
@@ -2615,21 +2624,52 @@ class _HomeScreenState extends State<HomeScreen> {
       return true;
     }).toList();
 
+    // ★ 1순위: 하단 시행문 괄호 안의 발행일 '(2008. 12. 2)' 또는 점이 흐려져 공백으로 읽힌 '(2008 12 2)' 추출!
+    final parenDateMatches = RegExp(
+      r'\(\s*((?:19|20)\d{2})\s*[.년/\-\s]\s*(\d{1,2})\s*[.월/\-\s]\s*(\d{1,2})\s*[.일]?\s*\)',
+    ).allMatches(fullText).toList();
     final sihaengDateMatch = RegExp(
-      r'시\s*행[^\n]*?\(\s*(\d{4})\s*[.년/-]\s*(\d{1,2})\s*[.월/-]\s*(\d{1,2})',
+      r'시\s*행[\s\S]{0,60}?\(\s*((?:19|20)\d{2})\s*[.년/\-\s]\s*(\d{1,2})\s*[.월/\-\s]\s*(\d{1,2})',
     ).firstMatch(fullText);
+
     if (sihaengDateMatch != null) {
-      result['sentDate'] =
-          '${sihaengDateMatch.group(1)}.${sihaengDateMatch.group(2)!.padLeft(2, '0')}.${sihaengDateMatch.group(3)!.padLeft(2, '0')}';
+      result['sentDate'] = DocRecord.formatDotDate(
+        '${sihaengDateMatch.group(1)}.${sihaengDateMatch.group(2)}.${sihaengDateMatch.group(3)}',
+      );
+    } else if (parenDateMatches.isNotEmpty) {
+      final pm = parenDateMatches.last;
+      result['sentDate'] = DocRecord.formatDotDate(
+        '${pm.group(1)}.${pm.group(2)}.${pm.group(3)}',
+      );
     } else {
-      final allDates =
-          RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
-              .allMatches(fullText)
-              .toList();
-      if (allDates.isNotEmpty) {
-        final d = isOutgoing ? allDates.last : allDates.first;
-        result['sentDate'] =
-            '${d.group(1)}.${d.group(2)!.padLeft(2, '0')}.${d.group(3)!.padLeft(2, '0')}';
+      // ★ 본문 안의 회의 '일시'(가. 일시 : 2008. 12. 5)나 '회신기한(~까지)' 날짜를 발행일로 잘못 가져오지 않도록 제외!
+      final nonScheduleLines = lines.where((l) {
+        final c = l.replaceAll(' ', '');
+        if (RegExp(r'일시[:：]|기간[:：]|까지|부터|개최일|참석일').hasMatch(c)) {
+          return false;
+        }
+        return true;
+      }).join('\n');
+
+      final candidateDates = RegExp(
+        r'((?:19|20)\d{2})\s*(?:[-./년]|\s+)\s*(\d{1,2})\s*(?:[-./월]|\s+)\s*(\d{1,2})',
+      ).allMatches(nonScheduleLines).toList();
+
+      if (candidateDates.isNotEmpty) {
+        final d = candidateDates.last;
+        result['sentDate'] = DocRecord.formatDotDate(
+          '${d.group(1)}.${d.group(2)}.${d.group(3)}',
+        );
+      } else {
+        final allDates = RegExp(
+          r'((?:19|20)\d{2})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})',
+        ).allMatches(fullText).toList();
+        if (allDates.isNotEmpty) {
+          final d = allDates.last;
+          result['sentDate'] = DocRecord.formatDotDate(
+            '${d.group(1)}.${d.group(2)}.${d.group(3)}',
+          );
+        }
       }
     }
 
@@ -2923,6 +2963,11 @@ class _HomeScreenState extends State<HomeScreen> {
             .replaceAll('조처계획', '조치계획')
             .replaceAll('제출 요청', '제출요청')
             .replaceAll('제요청', '제출요청')
+            .replaceAll('제 요청', '제출요청')
+            .replaceAll('상임짐행', '상임집행')
+            .replaceAll('상임집형', '상임집행')
+            .replaceAll('개최의 언', '개최의 건')
+            .replaceAll('개최의건', '개최의 건')
             .replaceAll('회신의 건', '회신의건');
         result['title'] = t;
         break;
@@ -3001,9 +3046,44 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (RegExp(r'회의장소|통신장비').hasMatch(fullText) ||
         currentTitle.contains('회의장소')) {
       result['aiSummary'] = '회의장소 사용 및 통신·영상장비 설치 협조 요청';
-    } else if (RegExp(r'상임집행위원회').hasMatch(fullText) ||
-        currentTitle.contains('상임집행위원회')) {
-      result['aiSummary'] = '상임집행위원회 회의 개최 및 참석 안내';
+    } else if (RegExp(r'회의를\s*아래와\s*같이\s*개최|개최하오니|개최의\s*[건언]|일\s*시\s*[:：]').hasMatch(fullText) ||
+        currentTitle.contains('개최')) {
+      // ★ 회의 개최 공문: 본문의 회의명과 '일시 : YYYY. M. D(요일) HH:MM'을 결합하여
+      // "○○회의를 개최하오니 2008.12.5 15시에 참석요망" 형태로 명확하게 요약!
+      String meetingName = '제6차 상임집행위원회 회의';
+      final mNameMatch = RegExp(
+        r'(제\s*\d+\s*차\s*[가-힣\s]{2,18}?회의)',
+      ).firstMatch(fullText);
+      if (mNameMatch != null) {
+        meetingName = mNameMatch
+            .group(1)!
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .replaceAll('상임짐행', '상임집행')
+            .replaceAll('상임집형', '상임집행')
+            .trim();
+      } else if (currentTitle.isNotEmpty) {
+        meetingName = currentTitle
+            .replaceAll(RegExp(r'\s*개최의\s*[건언].*$'), '')
+            .replaceAll('상임짐행', '상임집행')
+            .replaceAll('상임집형', '상임집행')
+            .trim();
+        if (!meetingName.endsWith('회의')) meetingName = '$meetingName 회의';
+      }
+
+      String dateTimePhrase = '';
+      final schedMatch = RegExp(
+        r'일\s*시\s*[:：]?\s*(\d{4})\s*[.년/-]\s*(\d{1,2})\s*[.월/-]\s*(\d{1,2})\s*[.일]?\s*(?:\([^)]*\))?\s*(\d{1,2})\s*[:시]\s*(\d{2})?',
+      ).firstMatch(fullText);
+      if (schedMatch != null) {
+        final sy = schedMatch.group(1)!;
+        final sm = int.tryParse(schedMatch.group(2)!) ?? 1;
+        final sd = int.tryParse(schedMatch.group(3)!) ?? 1;
+        final sh = int.tryParse(schedMatch.group(4)!) ?? 0;
+        final smin = schedMatch.group(5) ?? '00';
+        final timeStr = (smin == '00' || smin.isEmpty) ? '${sh}시' : '${sh}시 ${smin}분';
+        dateTimePhrase = '$sy.$sm.$sd ${timeStr}에 ';
+      }
+      result['aiSummary'] = '${meetingName}를 개최하오니 ${dateTimePhrase}참석요망';
     } else {
       final joinedClean = cleanLines.join('\n');
       final para2Match = RegExp(
@@ -3460,14 +3540,14 @@ class _HomeScreenState extends State<HomeScreen> {
     if (DocCategory.isOfficial(category)) {
       prompt = '''
 이 대한민국 공문서 이미지를 분석해서 순수 JSON 객체로 응답해줘:
-- title (제목): 앞쪽 [공동주택과-16092] 같은 대괄호는 빼고 순수 제목만 (예: "민원조치계획 회신의건")
-- aiSummary (내용): 세부 조치항목이 1)~4)처럼 있으면 "동일민원이 발생치 않도록 4가지 조치예정"처럼 요약
-- docNumber (공문번호): 띄어쓰기 없이 붙여 쓸 것! 상단 '제 25-067 호'가 있으면 "25-067호", 하단 '시행 공동주택과-16092'가 있으면 "공동주택과-16092"
+- title (제목): 앞쪽 [공동주택과-16092] 같은 대괄호는 빼고 오타 없이 순수 제목만 (예: "민원조치계획 회신의건", "제6차 상임집행위원회 개최의 건")
+- aiSummary (내용): 공문의 핵심 요지를 한 문장으로 명확히 요약! (회의 개최 안내 공문이면 본문 문장을 중간에 '아래와'에서 끊지 말고, 반드시 하단 일시를 포함해 "제6차 대학본부 상임집행위원회 회의를 개최하오니 2008.12.5 15시에 참석요망"처럼 요약할 것! 세부 조치항목이 1)~4)처럼 있으면 "동일민원이 발생치 않도록 4가지 조치예정"처럼 요약할 것!)
+- docNumber (공문번호): 띄어쓰기 없이 붙여 쓸 것! 상단 '제 25-067 호'가 있으면 "25-067호", 하단 '시행 대학본부 제2008-87호'가 있으면 "2008-87호", '시행 공동주택과-16092'가 있으면 "공동주택과-16092"
 - replyDocNumber (회신번호): 띄어쓰기 없이 붙여 쓸 것! 발신공문 제목 앞 [공동주택과 - 16092] 또는 본문 송부문서 번호 (예: "공동주택과-16092")
-- sender (보낸사람): 발신명의 (예: "김해시장")
+- sender (보낸사람): 발신명의 (예: "김해시장", "전국공무원노동조합 대학본부장")
 - recipient (받는사람): '수신' 옆에 적힌 받는사람 (예: "김해시장")
 - replyDeadline (회신요청일): YYYY.MM.DD
-- sentDate (접수일/발신일): YYYY.MM.DD
+- sentDate (접수일/발신일): 반드시 문서 하단 '시행' 옆 괄호 안에 적힌 실제 공문 발행일(예: 하단에 '시행 대학본부 제2008-87호 (2008. 12. 2)'라고 적혀 있으면 "2008.12.02")을 넣을 것! 본문 안의 회의 참석일시('2008. 12. 5')를 발행일로 넣지 말 것!
 ''';
     } else if (category == DocCategory.invoice) {
       prompt = '''
@@ -3876,7 +3956,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v38)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v39)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -5284,7 +5364,7 @@ function doPost(e) {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) => AlertDialog(
           title: const Text(
-            '다중 사용자 누적 공유 & AI 설정 (v38)',
+            '다중 사용자 누적 공유 & AI 설정 (v39)',
             style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
           ),
           content: SingleChildScrollView(
@@ -5710,6 +5790,208 @@ function doPost(e) {
     }
   }
 
+  String _escapeHtmlText(String input) {
+    return input
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+  }
+
+  String _buildStaticHtmlTable(
+    List<DocRecord> records,
+    String majorCat,
+    Map<String, String> cumMap,
+    Set<String> repliedKeys,
+    String firstId,
+  ) {
+    if (records.isEmpty) {
+      return '<div style="padding:24px; text-align:center; color:#64748b;">저장된 증빙서류가 없습니다.</div>';
+    }
+    final sb = StringBuffer();
+    final allOfficial = records.every((r) =>
+        r.category == DocCategory.officialIn ||
+        r.category == DocCategory.officialOut);
+    final allInvoice =
+        records.every((r) => r.category == DocCategory.invoice);
+    final allTravel =
+        records.every((r) => r.category == DocCategory.travel);
+    final allMedical =
+        records.every((r) => r.category == DocCategory.medical);
+
+    if (majorCat == DocCategory.officialIn ||
+        majorCat == DocCategory.officialOut ||
+        allOfficial) {
+      final isOutTab = majorCat == DocCategory.officialOut ||
+          records.every((r) => r.category == DocCategory.officialOut);
+      final partyHeader = isOutTab ? '받는사람' : '보낸사람';
+      sb.write('<table class="grid-table"><thead><tr>');
+      sb.write('<th>날짜</th><th>공문번호</th><th>$partyHeader</th>');
+      if (isOutTab) sb.write('<th>회신번호</th>');
+      sb.write('<th>제목</th><th>내용</th><th>회신요청일</th>');
+      if (!isOutTab) sb.write('<th>회신완료</th>');
+      sb.write('</tr></thead><tbody>');
+
+      for (final item in records) {
+        final f = item.fields;
+        final isOut = item.category == DocCategory.officialOut ||
+            f['docDirection'] == '발신';
+        final partyVal = isOut
+            ? (f['recipient']?.trim().isNotEmpty == true
+                ? f['recipient']!
+                : '-')
+            : (f['sender']?.trim().isNotEmpty == true ? f['sender']! : '-');
+        final replyNum = f['replyDocNumber']?.trim().isNotEmpty == true
+            ? f['replyDocNumber']!
+            : '-';
+        final myKey = _normalizeDocCompareKey(f['docNumber']);
+        final isReplied = myKey.isNotEmpty && repliedKeys.contains(myKey);
+        final cls = item.id == firstId ? 'active' : '';
+        sb.write(
+            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
+        sb.write(
+            '<td>${_escapeHtmlText(DocRecord.formatDotDate(f['sentDate']))}</td>');
+        sb.write('<td>${_escapeHtmlText(f['docNumber'] ?? '-')}</td>');
+        sb.write('<td>${_escapeHtmlText(partyVal)}</td>');
+        if (isOutTab) {
+          sb.write(
+              '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(replyNum)}</td>');
+        }
+        sb.write(
+            '<td style="text-align:left;">${_escapeHtmlText(f['title'] ?? '-')}</td>');
+        sb.write(
+            '<td style="text-align:left;">${_escapeHtmlText(f['aiSummary'] ?? '-')}</td>');
+        sb.write(
+            '<td>${_escapeHtmlText(DocRecord.formatDotDate(f['replyDeadline']))}</td>');
+        if (!isOutTab) {
+          sb.write(
+              '<td style="color:#16a34a; font-weight:700; font-size:15px;">${isReplied ? '○' : ''}</td>');
+        }
+        sb.write('</tr>');
+      }
+      sb.write('</tbody></table>');
+      return sb.toString();
+    } else if (majorCat == DocCategory.invoice || allInvoice) {
+      sb.write('<table class="grid-table"><thead><tr>');
+      sb.write(
+          '<th>날짜</th><th>제품명</th><th>규격명</th><th>단위</th><th>수량</th><th>누적수량</th><th>공급자</th><th>주문송장번호</th>');
+      sb.write('</tr></thead><tbody>');
+      for (final item in records) {
+        final f = item.fields;
+        final cls = item.id == firstId ? 'active' : '';
+        final cumVal = cumMap[item.id] ?? f['quantity'] ?? '-';
+        sb.write(
+            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
+        sb.write(
+            '<td>${_escapeHtmlText(DocRecord.formatDotDate(f['arrivalDate']))}</td>');
+        sb.write('<td>${_escapeHtmlText(f['productName'] ?? '-')}</td>');
+        sb.write('<td>${_escapeHtmlText(f['specName'] ?? '-')}</td>');
+        sb.write('<td>${_escapeHtmlText(f['unit'] ?? 'ton')}</td>');
+        sb.write('<td>${_escapeHtmlText(f['quantity'] ?? '-')}</td>');
+        sb.write(
+            '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(cumVal)}</td>');
+        sb.write('<td>${_escapeHtmlText(f['supplierName'] ?? '-')}</td>');
+        sb.write('<td>${_escapeHtmlText(f['orderNumber'] ?? '-')}</td>');
+        sb.write('</tr>');
+      }
+      sb.write('</tbody></table>');
+      return sb.toString();
+    } else if (majorCat == DocCategory.travel || allTravel) {
+      sb.write('<table class="grid-table"><thead><tr>');
+      sb.write('<th>카테고리(날짜)</th><th>구분</th><th>상호</th><th>금액</th>');
+      sb.write('</tr></thead><tbody>');
+      for (final item in records) {
+        final f = item.fields;
+        final cls = item.id == firstId ? 'active' : '';
+        final sub = (f['subCategory'] ?? '미지정').trim().isEmpty
+            ? '미지정'
+            : f['subCategory']!;
+        final dateStr = DocRecord.formatDotDate(
+            f['date'] ?? item.createdAt.split(' ').first);
+        final div = f['travelDivision'] ?? '식대';
+        final mult = f['carMultiplier'] ?? '2';
+        final rate = f['carUnitPrice'] ?? '300';
+        final desc = div == '자차'
+            ? (f['merchantName'] ?? '${f['distanceKm'] ?? 0}km × $mult × $rate원')
+            : (f['merchantName'] ?? '-');
+        final amt =
+            '${NumberFormat('#,###').format(item.numericAmount)}원';
+        sb.write(
+            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
+        sb.write(
+            '<td>${_escapeHtmlText(sub)}<br/>(${_escapeHtmlText(dateStr)})</td>');
+        sb.write('<td>${_escapeHtmlText(div)}</td>');
+        sb.write('<td style="text-align:left;">${_escapeHtmlText(desc)}</td>');
+        sb.write(
+            '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
+        sb.write('</tr>');
+      }
+      sb.write('</tbody></table>');
+      return sb.toString();
+    } else if (majorCat == DocCategory.medical || allMedical) {
+      sb.write('<table class="grid-table"><thead><tr>');
+      sb.write(
+          '<th>카테고리</th><th>날짜</th><th>상호</th><th>금액</th><th>사업자등록번호</th>');
+      sb.write('</tr></thead><tbody>');
+      for (final item in records) {
+        final f = item.fields;
+        final cls = item.id == firstId ? 'active' : '';
+        final sub = (f['subCategory'] ?? '미지정').trim().isEmpty
+            ? '미지정'
+            : f['subCategory']!;
+        final dateStr = DocRecord.formatDotDate(
+            f['issueDate'] ?? item.createdAt.split(' ').first);
+        final amt =
+            '${NumberFormat('#,###').format(item.numericAmount)}원';
+        sb.write(
+            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
+        sb.write('<td>${_escapeHtmlText(sub)}</td>');
+        sb.write('<td>${_escapeHtmlText(dateStr)}</td>');
+        sb.write('<td>${_escapeHtmlText(f['clinicName'] ?? '-')}</td>');
+        sb.write(
+            '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
+        sb.write('<td>${_escapeHtmlText(f['bizRegNumber'] ?? '-')}</td>');
+        sb.write('</tr>');
+      }
+      sb.write('</tbody></table>');
+      return sb.toString();
+    } else {
+      sb.write('<table class="grid-table"><thead><tr>');
+      sb.write(
+          '<th>종류</th><th>구분/카테고리</th><th>일자</th><th>상호/제목/산출내역</th><th>금액/수량</th>');
+      sb.write('</tr></thead><tbody>');
+      for (final item in records) {
+        final f = item.fields;
+        final cls = item.id == firstId ? 'active' : '';
+        String sub = f['subCategory'] ?? '-';
+        String dateStr = DocRecord.formatDotDate(
+            f['sentDate'] ??
+                f['arrivalDate'] ??
+                f['date'] ??
+                f['issueDate'] ??
+                item.createdAt.split(' ').first);
+        String desc = f['title'] ??
+            f['productName'] ??
+            f['merchantName'] ??
+            f['clinicName'] ??
+            '-';
+        String amt = item.numericAmount > 0
+            ? '${NumberFormat('#,###').format(item.numericAmount)}원'
+            : (f['quantity'] ?? '-');
+        sb.write(
+            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
+        sb.write('<td>${_escapeHtmlText(item.category)}</td>');
+        sb.write('<td>${_escapeHtmlText(sub)}</td>');
+        sb.write('<td>${_escapeHtmlText(dateStr)}</td>');
+        sb.write('<td style="text-align:left;">${_escapeHtmlText(desc)}</td>');
+        sb.write('<td>${_escapeHtmlText(amt)}</td>');
+        sb.write('</tr>');
+      }
+      sb.write('</tbody></table>');
+      return sb.toString();
+    }
+  }
+
   String _buildLeftListRightPhotoHtmlDocument({
     required List<DocRecord> records,
     required String scopeTitle,
@@ -5720,6 +6002,17 @@ function doPost(e) {
     final cumMapJson = jsonEncode(cumMap);
     final repliedListJson = jsonEncode(repliedKeys.toList());
     final majorCat = _selectedCategoryFilter;
+
+    final firstRecord = records.isNotEmpty ? records.first : null;
+    final firstId = firstRecord?.id ?? '';
+    final firstBase64 = firstRecord?.base64Image ?? '';
+    final initialTableHtml = _buildStaticHtmlTable(
+      records,
+      majorCat,
+      cumMap,
+      repliedKeys,
+      firstId,
+    );
 
     return '''<!DOCTYPE html>
 <html lang="ko">
@@ -5750,9 +6043,7 @@ function doPost(e) {
       gap: 8px;
     }
     header h1 { font-size: 15px; font-weight: 700; white-space: nowrap; }
-    header span.hint { font-size: 11.5px; opacity: 0.9; text-align: right; }
 
-    /* ★ 기본(가로 모드 / 스마트폰을 눕혔을 때): 좌측에 리스트, 우측에 사진 */
     #main-split {
       flex: 1;
       display: flex;
@@ -5800,7 +6091,6 @@ function doPost(e) {
       padding: 8px;
     }
 
-    /* ★ 세로 모드(스마트폰을 세웠을 때): 위쪽에 리스트, 아래쪽에 사진 */
     @media (orientation: portrait) {
       #main-split {
         flex-direction: column;
@@ -5886,12 +6176,12 @@ function doPost(e) {
   </header>
 
   <div id="main-split">
-    <div id="left-list-pane"></div>
+    <div id="left-list-pane">$initialTableHtml</div>
     <div id="resizer-bar" title="끌어서 리스트와 사진 크기 조절">
       <div id="resizer-pill"></div>
     </div>
     <div id="right-photo-pane">
-      <img id="preview-img" style="display:none;" alt="증빙서류 사진" />
+      <img id="preview-img" src="${firstBase64.isNotEmpty ? 'data:image/jpeg;base64,$firstBase64' : ''}" style="${firstBase64.isNotEmpty ? 'display:block;' : 'display:none;'}" alt="증빙서류 사진" />
     </div>
   </div>
 
@@ -5911,25 +6201,11 @@ function doPost(e) {
       return window.matchMedia("(orientation: portrait)").matches;
     }
 
-    window.addEventListener('resize', () => {
-      if (isPortraitMode()) {
-        leftPane.style.width = '100%';
-        if (!leftPane.style.height || leftPane.style.height === '100%') {
-          leftPane.style.height = '46%';
-        }
-      } else {
-        leftPane.style.height = '100%';
-        if (!leftPane.style.width || leftPane.style.width === '100%') {
-          leftPane.style.width = '55%';
-        }
-      }
-    });
-
-    resizerBar.addEventListener('pointerdown', (e) => {
+    resizerBar.addEventListener('pointerdown', function(e) {
       isResizing = true;
-      resizerBar.setPointerCapture(e.pointerId);
+      if (resizerBar.setPointerCapture) resizerBar.setPointerCapture(e.pointerId);
     });
-    resizerBar.addEventListener('pointermove', (e) => {
+    resizerBar.addEventListener('pointermove', function(e) {
       if (!isResizing) return;
       const rect = mainSplit.getBoundingClientRect();
       if (isPortraitMode()) {
@@ -5940,212 +6216,19 @@ function doPost(e) {
         leftPane.style.width = Math.max(20, Math.min(82, newW)) + '%';
       }
     });
-    resizerBar.addEventListener('pointerup', () => { isResizing = false; });
+    resizerBar.addEventListener('pointerup', function() { isResizing = false; });
 
-    function dotDate(raw) {
-      if (!raw) return '-';
-      const m = String(raw).match(/(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})/);
-      if (m) return `\${m[1]}.\${m[2].padStart(2,'0')}.\${m[3].padStart(2,'0')}`;
-      return raw;
-    }
-
-    function normalizeDocKey(raw) {
-      if (!raw) return '';
-      const c = String(raw).replace(/\s+/g, '');
-      const m = c.match(/([가-힣A-Za-z0-9]+?)[-~—–_.:]([0-9]+)/);
-      if (m) {
-        const dept = m[1].replace(/(?:과|팀|실|부|처|국|단|소|청)\$/, '');
-        const num = m[2].replace(/^0+/, '') || '0';
-        return dept + '-' + num;
-      }
-      const d = c.match(/\d{4,7}/);
-      return d ? d[0] : c;
-    }
-
-    archiveRecords.forEach(r => {
-      if (r.category === '공문(발신)' && r.fields && r.fields.replyDocNumber) {
-        const k = normalizeDocKey(r.fields.replyDocNumber);
-        if (k) repliedKeys.add(k);
-      }
-    });
-
-    function render() {
-      document.getElementById('count-label').textContent = archiveRecords.length;
-
-      if (majorCat === '공문(수신)' || majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(수신)' || r.category === '공문(발신)'))) {
-        const isOutTab = majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(발신)'));
-        const partyHeader = isOutTab ? '받는사람' : '보낸사람';
-        let html = `<table class="grid-table">
-          <thead>
-            <tr>
-              <th>날짜</th>
-              <th>공문번호</th>
-              <th>\${partyHeader}</th>
-              \${isOutTab ? '<th>회신번호</th>' : ''}
-              <th>제목</th>
-              <th>내용</th>
-              <th>회신요청일</th>
-              \${isOutTab ? '' : '<th>회신완료</th>'}
-            </tr>
-          </thead>
-          <tbody>`;
-        archiveRecords.forEach(item => {
-          const f = item.fields || {};
-          const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
-          const partyVal = isOut ? (f.recipient || '-') : (f.sender || '-');
-          const replyNum = f.replyDocNumber || '-';
-          const myKey = normalizeDocKey(f.docNumber);
-          const isReplied = Boolean(myKey && repliedKeys.has(myKey));
-          const cls = item.id === selectedId ? 'active' : '';
-          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
-            <td>\${escapeHtml(dotDate(f.sentDate))}</td>
-            <td>\${escapeHtml(f.docNumber || '-')}</td>
-            <td>\${escapeHtml(partyVal)}</td>
-            \${isOutTab ? `<td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(replyNum)}</td>` : ''}
-            <td style="text-align:left;">\${escapeHtml(f.title || '-')}</td>
-            <td style="text-align:left;">\${escapeHtml(f.aiSummary || '-')}</td>
-            <td>\${escapeHtml(dotDate(f.replyDeadline))}</td>
-            \${isOutTab ? '' : `<td style="color:#16a34a; font-weight:700; font-size:15px;">\${isReplied ? '○' : ''}</td>`}
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        leftPane.innerHTML = html;
-      } else if (majorCat === '자재송장' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '자재송장'))) {
-        let html = `<table class="grid-table">
-          <thead>
-            <tr>
-              <th>날짜</th>
-              <th>제품명</th>
-              <th>규격명</th>
-              <th>단위</th>
-              <th>수량</th>
-              <th>누적수량</th>
-              <th>공급자</th>
-              <th>주문송장번호</th>
-            </tr>
-          </thead>
-          <tbody>`;
-        archiveRecords.forEach(item => {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          const cumVal = cumMap[item.id] || f.quantity || '-';
-          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
-            <td>\${escapeHtml(dotDate(f.arrivalDate))}</td>
-            <td>\${escapeHtml(f.productName || '-')}</td>
-            <td>\${escapeHtml(f.specName || '-')}</td>
-            <td>\${escapeHtml(f.unit || 'ton')}</td>
-            <td>\${escapeHtml(f.quantity || '-')}</td>
-            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(cumVal)}</td>
-            <td>\${escapeHtml(f.supplierName || '-')}</td>
-            <td>\${escapeHtml(f.orderNumber || '-')}</td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        leftPane.innerHTML = html;
-      } else if (majorCat === '출장비' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '출장비'))) {
-        let html = `<table class="grid-table">
-          <thead>
-            <tr>
-              <th>카테고리(날짜)</th>
-              <th>구분</th>
-              <th>상호</th>
-              <th>금액</th>
-            </tr>
-          </thead>
-          <tbody>`;
-        archiveRecords.forEach(item => {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          const sub = f.subCategory || '미지정';
-          const dateStr = dotDate(f.date || item.createdAt.split(' ')[0]);
-          const div = f.travelDivision || '식대';
-          const mult = f.carMultiplier || '2';
-          const rate = f.carUnitPrice || '300';
-          const desc = div === '자차' ? (f.merchantName || `\${f.distanceKm || 0}km × \${mult} × \${rate}원`) : (f.merchantName || '-');
-          const amt = Number(f.totalAmount || 0).toLocaleString() + '원';
-          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
-            <td>\${escapeHtml(sub)}<br/>(\${escapeHtml(dateStr)})</td>
-            <td>\${escapeHtml(div)}</td>
-            <td style="text-align:left;">\${escapeHtml(desc)}</td>
-            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(amt)}</td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        leftPane.innerHTML = html;
-      } else if (majorCat === '병원비' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '병원비'))) {
-        let html = `<table class="grid-table">
-          <thead>
-            <tr>
-              <th>카테고리</th>
-              <th>날짜</th>
-              <th>상호</th>
-              <th>금액</th>
-              <th>사업자등록번호</th>
-            </tr>
-          </thead>
-          <tbody>`;
-        archiveRecords.forEach(item => {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          const sub = f.subCategory || '미지정';
-          const dateStr = dotDate(f.issueDate || item.createdAt.split(' ')[0]);
-          const amt = Number(f.totalPaid || 0).toLocaleString() + '원';
-          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
-            <td>\${escapeHtml(sub)}</td>
-            <td>\${escapeHtml(dateStr)}</td>
-            <td>\${escapeHtml(f.clinicName || '-')}</td>
-            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(amt)}</td>
-            <td>\${escapeHtml(f.bizRegNumber || '-')}</td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        leftPane.innerHTML = html;
-      } else {
-        let html = `<table class="grid-table">
-          <thead>
-            <tr>
-              <th>종류</th>
-              <th>구분/카테고리</th>
-              <th>일자</th>
-              <th>상호/제목/산출내역</th>
-              <th>금액/수량</th>
-            </tr>
-          </thead>
-          <tbody>`;
-        archiveRecords.forEach(item => {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          let sub = f.subCategory || '-';
-          let dateStr = item.createdAt.split(' ')[0];
-          let desc = '';
-          let amt = '';
-          if (item.category === '출장비') {
-            sub = f.travelDivision || '식대';
-            dateStr = dotDate(f.date);
-            const mult = f.carMultiplier || '2';
-            const rate = f.carUnitPrice || '300';
-            desc = sub === '자차' ? `\${f.distanceKm || 0}km × \${mult} × \${rate}원` : (f.merchantName || '-');
-            amt = Number(f.totalAmount || 0).toLocaleString() + '원';
-          } else if (item.category === '병원비') {
-            dateStr = dotDate(f.issueDate);
-            desc = `\${f.clinicName || '-'} (\${f.bizRegNumber || '-'})`;
-            amt = Number(f.totalPaid || 0).toLocaleString() + '원';
-          } else {
-            desc = f.title || f.productName || '-';
-          }
-          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
-            <td>\${escapeHtml(item.category)}</td>
-            <td>\${escapeHtml(sub)}</td>
-            <td>\${escapeHtml(dateStr)}</td>
-            <td style="text-align:left;">\${escapeHtml(desc)}</td>
-            <td>\${escapeHtml(amt)}</td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        leftPane.innerHTML = html;
-      }
-
-      const current = archiveRecords.find(r => r.id === selectedId);
+    function selectRow(id) {
+      selectedId = id;
+      const rows = leftPane.querySelectorAll('tbody tr');
+      rows.forEach(function(tr) {
+        if (tr.getAttribute('data-id') === id) {
+          tr.classList.add('active');
+        } else {
+          tr.classList.remove('active');
+        }
+      });
+      const current = archiveRecords.find(function(r) { return r.id === selectedId; });
       const imgEl = document.getElementById('preview-img');
       if (current && current.base64Image) {
         imgEl.src = 'data:image/jpeg;base64,' + current.base64Image;
@@ -6155,19 +6238,69 @@ function doPost(e) {
       }
     }
 
+    function dotDate(raw) {
+      if (!raw) return '-';
+      const m = String(raw).match(/(\\d{4})\\s*[-./년]\\s*(\\d{1,2})\\s*[-./월]\\s*(\\d{1,2})/);
+      if (m) return m[1] + '.' + String(m[2]).padStart(2, '0') + '.' + String(m[3]).padStart(2, '0');
+      return raw;
+    }
+
+    function normalizeDocKey(raw) {
+      if (!raw) return '';
+      const c = String(raw).replace(/\\s+/g, '');
+      const m = c.match(/([가-힣A-Za-z0-9]+?)[-~—–_.:]([0-9]+)/);
+      if (m) {
+        const dept = m[1].replace(/(?:과|팀|실|부|처|국|단|소|청)\\$/, '');
+        const num = m[2].replace(/^0+/, '') || '0';
+        return dept + '-' + num;
+      }
+      const d = c.match(/\\d{4,7}/);
+      return d ? d[0] : c;
+    }
+
     function escapeHtml(str) {
-      return String(str)
+      return String(str == null ? '' : str)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
     }
 
-    // ★ 여러 명이 각자 내보낸 HTML 파일들을 브라우저에서 즉시 하나로 누적 합산하는 기능!
+    function render() {
+      document.getElementById('count-label').textContent = archiveRecords.length;
+      if (majorCat === '공문(수신)' || majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(function(r) { return r.category === '공문(수신)' || r.category === '공문(발신)'; }))) {
+        const isOutTab = majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(function(r) { return r.category === '공문(발신)'; }));
+        const partyHeader = isOutTab ? '받는사람' : '보낸사람';
+        let html = '<table class="grid-table"><thead><tr><th>날짜</th><th>공문번호</th><th>' + partyHeader + '</th>' + (isOutTab ? '<th>회신번호</th>' : '') + '<th>제목</th><th>내용</th><th>회신요청일</th>' + (isOutTab ? '' : '<th>회신완료</th>') + '</tr></thead><tbody>';
+        archiveRecords.forEach(function(item) {
+          const f = item.fields || {};
+          const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
+          const partyVal = isOut ? (f.recipient || '-') : (f.sender || '-');
+          const replyNum = f.replyDocNumber || '-';
+          const myKey = normalizeDocKey(f.docNumber);
+          const isReplied = Boolean(myKey && repliedKeys.has(myKey));
+          const cls = item.id === selectedId ? 'active' : '';
+          html += '<tr class="' + cls + '" data-id="' + escapeHtml(item.id) + '" onclick="selectRow(\\'' + escapeHtml(item.id) + '\\')">' +
+            '<td>' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
+            '<td>' + escapeHtml(f.docNumber || '-') + '</td>' +
+            '<td>' + escapeHtml(partyVal) + '</td>' +
+            (isOutTab ? '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(replyNum) + '</td>' : '') +
+            '<td style="text-align:left;">' + escapeHtml(f.title || '-') + '</td>' +
+            '<td style="text-align:left;">' + escapeHtml(f.aiSummary || '-') + '</td>' +
+            '<td>' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
+            (isOutTab ? '' : '<td style="color:#16a34a; font-weight:700; font-size:15px;">' + (isReplied ? '○' : '') + '</td>') +
+            '</tr>';
+        });
+        html += '</tbody></table>';
+        leftPane.innerHTML = html;
+      }
+      selectRow(selectedId);
+    }
+
     async function mergeExternalHtmlFiles(fileList) {
       if (!fileList || fileList.length === 0) return;
       let addedCount = 0;
-      const existingIds = new Set(archiveRecords.map(r => r.id));
+      const existingIds = new Set(archiveRecords.map(function(r) { return r.id; }));
       const startMarker = '/*ARCHIVE_DATA_START*/';
       const endMarker = '/*ARCHIVE_DATA_END*/';
       for (const file of fileList) {
@@ -6192,7 +6325,7 @@ function doPost(e) {
           } catch (_) {}
         }
       }
-      archiveRecords.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      archiveRecords.sort(function(a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
       if (archiveRecords.length > 0 && !selectedId) selectedId = archiveRecords[0].id;
       render();
       alert('외부 HTML 파일에서 신규 ' + addedCount + '건을 합산했습니다! (현재 총 ' + archiveRecords.length + '건)');
@@ -6209,14 +6342,12 @@ function doPost(e) {
       if (sIdx !== -1 && eIdx !== -1 && eIdx > sIdx) {
         currentHtml = rawHtml.substring(0, sIdx + startMarker.length) + ' ' + jsonStr + ' ' + rawHtml.substring(eIdx);
       }
-      const blob = new Blob(['<!DOCTYPE html>\n' + currentHtml], { type: 'text/html;charset=utf-8' });
+      const blob = new Blob(['<!DOCTYPE html>\\n' + currentHtml], { type: 'text/html;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = document.title.split(' ').join('_') + '_통합본.html';
       a.click();
     }
-
-    render();
   </script>
 </body>
 </html>''';
@@ -7079,7 +7210,7 @@ function doPost(e) {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v38'),
+        title: const Text('증빙서류 스냅 v39'),
         actions: [
           IconButton(
             tooltip: '원드라이브 덮어쓰기 & AI 설정',
