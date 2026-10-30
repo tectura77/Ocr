@@ -1,4 +1,4 @@
-// ignore_for_file: unused_field, unused_local_variable, unnecessary_import, deprecated_member_use, prefer_const_constructors, unnecessary_brace_in_string_interps
+// ignore_for_file: unused_field, unused_element, unused_local_variable, unnecessary_import, deprecated_member_use, prefer_const_constructors, unnecessary_brace_in_string_interps
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v27',
+      title: '증빙서류 스냅 v28',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -322,7 +322,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v27)'),
+        title: const Text('가로/세로 정비율 스캔 (v28)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -2742,7 +2742,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v27)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v28)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -3785,7 +3785,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('원드라이브 덮어쓰기 & AI 설정 (v27)'),
+        title: const Text('원드라이브 덮어쓰기 & AI 설정 (v28)'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -4826,8 +4826,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell('공문번호', width: 76),
                         _buildFixedHeaderCell(partyHeader, width: 68),
                         _buildFixedHeaderCell(
-                            isOutTab ? '공문번호
-(회신번호)' : '공문번호',
+                            isOutTab ? '공문번호\n(회신번호)' : '공문번호',
                             width: 76),
                         _buildFixedHeaderCell('제목', width: 118),
                         _buildFixedHeaderCell('내용', width: 152),
@@ -5302,7 +5301,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v27'),
+        title: const Text('증빙서류 스냅 v28'),
         actions: [
           IconButton(
             tooltip: '원드라이브 덮어쓰기 & AI 설정',
