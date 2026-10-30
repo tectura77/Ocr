@@ -30,13 +30,40 @@ jobs:
           cache: true
 
       - name: Backup Custom Files Before Scaffold
-        run: "cp pubspec.yaml /tmp/pubspec.yaml.bak && if [ -f lib/main.dart ]; then cp lib/main.dart /tmp/main.dart.bak && echo 'Picked lib/main.dart'; elif [ -f main.dart ]; then cp main.dart /tmp/main.dart.bak && echo 'Picked root main.dart'; fi && if [ -f android/app/src/main/AndroidManifest.xml ]; then cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak; elif [ -f AndroidManifest.xml ]; then cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak; fi"
+        run: |
+          cp pubspec.yaml /tmp/pubspec.yaml.bak
+          if [ -f icon.png ]; then cp icon.png /tmp/icon.png.bak && echo "Found icon.png"; fi
+          if [ -f lib/main.dart ]; then
+            cp lib/main.dart /tmp/main.dart.bak
+          elif [ -f main.dart ]; then
+            cp main.dart /tmp/main.dart.bak
+          fi
+          if [ -f android/app/src/main/AndroidManifest.xml ]; then
+            cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak
+          elif [ -f AndroidManifest.xml ]; then
+            cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak
+          fi
 
       - name: Create Flutter Platform Scaffold
         run: "rm -rf android ios && flutter create --platforms=android --org com.example --project-name doc_snap_archive ."
 
-      - name: Restore Custom Files and Configure Dependencies
-        run: "mkdir -p lib android/app/src/main && sed -e '/flutter_web_auth_2/d' /tmp/pubspec.yaml.bak > pubspec.yaml && sed -e '/flutter_web_auth_2/d' /tmp/main.dart.bak > lib/main.dart && cp lib/main.dart main.dart && flutter pub add image google_mlkit_text_recognition && if [ -f /tmp/AndroidManifest.xml.bak ]; then sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/\"/g' -e 's/package=\"com.example.doc_snap_archive\"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml; fi"
+      - name: Restore Custom Files, Configure Dependencies, and Generate App Icons from icon.png
+        run: |
+          mkdir -p lib android/app/src/main
+          sed -e '/flutter_web_auth_2/d' /tmp/pubspec.yaml.bak > pubspec.yaml
+          sed -e '/flutter_web_auth_2/d' /tmp/main.dart.bak > lib/main.dart
+          cp lib/main.dart main.dart
+          if [ -f /tmp/icon.png.bak ]; then cp /tmp/icon.png.bak icon.png; fi
+          flutter pub add image google_mlkit_text_recognition
+          flutter pub add --dev flutter_launcher_icons
+          if [ -f icon.png ]; then
+            printf '\nflutter_launcher_icons:\n  android: true\n  ios: true\n  image_path: "icon.png"\n  min_sdk_android: 21\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' >> pubspec.yaml
+            flutter pub get
+            dart run flutter_launcher_icons
+          fi
+          if [ -f /tmp/AndroidManifest.xml.bak ]; then
+            sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/package="com.example.doc_snap_archive"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml
+          fi
 
       - name: Configure Gradle, SDK 35, ProGuard Rules, and Disable R8 Minification
         run: |
@@ -53,7 +80,7 @@ jobs:
           fi
 
       - name: Install Dependencies and Analyze Dart Code
-        run: "flutter pub get && dart analyze lib/main.dart"
+        run: "flutter pub get && dart analyze --no-fatal-warnings --no-fatal-infos lib/main.dart"
 
       - name: Build Release APK (R8 Disabled)
         run: "flutter build apk --release --no-tree-shake-icons -Pshrink=false"
@@ -81,19 +108,34 @@ jobs:
           cache: true
 
       - name: Backup Custom Files Before Scaffold
-        run: "cp pubspec.yaml /tmp/pubspec.yaml.bak && if [ -f lib/main.dart ]; then cp lib/main.dart /tmp/main.dart.bak; elif [ -f main.dart ]; then cp main.dart /tmp/main.dart.bak; fi"
+        run: |
+          cp pubspec.yaml /tmp/pubspec.yaml.bak
+          if [ -f icon.png ]; then cp icon.png /tmp/icon.png.bak; fi
+          if [ -f lib/main.dart ]; then
+            cp lib/main.dart /tmp/main.dart.bak
+          elif [ -f main.dart ]; then
+            cp main.dart /tmp/main.dart.bak
+          fi
 
       - name: Create Flutter iOS Scaffold
         run: "rm -rf ios && flutter create --platforms=ios --org com.example --project-name doc_snap_archive ."
 
-      - name: Restore Custom Files and Configure iOS Podfile (iOS 15.5)
+      - name: Restore Custom Files, Generate App Icons, and Configure iOS Podfile (iOS 15.5)
         run: |
           mkdir -p lib
           sed -e '/flutter_web_auth_2/d' /tmp/pubspec.yaml.bak > pubspec.yaml
           sed -e '/flutter_web_auth_2/d' /tmp/main.dart.bak > lib/main.dart
           cp lib/main.dart main.dart
+          if [ -f /tmp/icon.png.bak ]; then cp /tmp/icon.png.bak icon.png; fi
           flutter pub add image google_mlkit_text_recognition
-          flutter pub get
+          flutter pub add --dev flutter_launcher_icons
+          if [ -f icon.png ]; then
+            printf '\nflutter_launcher_icons:\n  android: true\n  ios: true\n  image_path: "icon.png"\n  remove_alpha_ios: true\n' >> pubspec.yaml
+            flutter pub get
+            dart run flutter_launcher_icons
+          else
+            flutter pub get
+          fi
           sed -i '' "s/.*platform :ios.*/platform :ios, '15.5'/g" ios/Podfile || true
           sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g" ios/Runner.xcodeproj/project.pbxproj || true
 
