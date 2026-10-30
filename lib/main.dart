@@ -1,4 +1,4 @@
-// ignore_for_file: unused_field, unused_element, unused_local_variable, unnecessary_import, deprecated_member_use, prefer_const_constructors, unnecessary_brace_in_string_interps
+// ignore_for_file: unused_field, unused_element, unused_local_variable, unnecessary_import, deprecated_member_use, prefer_const_constructors, unnecessary_brace_in_string_interps, unnecessary_string_escapes
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v35',
+      title: '증빙서류 스냅 v36',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -463,7 +463,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v35)'),
+        title: const Text('가로/세로 정비율 스캔 (v36)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -3767,7 +3767,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v35)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v36)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -5175,7 +5175,7 @@ function doPost(e) {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) => AlertDialog(
           title: const Text(
-            '다중 사용자 누적 공유 & AI 설정 (v35)',
+            '다중 사용자 누적 공유 & AI 설정 (v36)',
             style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
           ),
           content: SingleChildScrollView(
@@ -6057,14 +6057,18 @@ function doPost(e) {
     // ★ 여러 명이 각자 내보낸 HTML 파일들을 브라우저에서 즉시 하나로 누적 합산하는 기능!
     async function mergeExternalHtmlFiles(fileList) {
       if (!fileList || fileList.length === 0) return;
-      let added = 0;
+      let addedCount = 0;
       const existingIds = new Set(archiveRecords.map(r => r.id));
+      const startMarker = '/*ARCHIVE_DATA_START*/';
+      const endMarker = '/*ARCHIVE_DATA_END*/';
       for (const file of fileList) {
         const text = await file.text();
-        const m = text.match(/\/\*ARCHIVE_DATA_START\*\/([\s\S]*?)\/\*ARCHIVE_DATA_END\*\//);
-        if (m && m[1]) {
+        const sIdx = text.indexOf(startMarker);
+        const eIdx = text.indexOf(endMarker);
+        if (sIdx !== -1 && eIdx !== -1 && eIdx > sIdx) {
           try {
-            const arr = JSON.parse(m[1].trim());
+            const jsonPart = text.substring(sIdx + startMarker.length, eIdx).trim();
+            const arr = JSON.parse(jsonPart);
             for (const item of arr) {
               if (item && item.id && !existingIds.has(item.id)) {
                 archiveRecords.push(item);
@@ -6073,7 +6077,7 @@ function doPost(e) {
                   const k = normalizeDocKey(item.fields.replyDocNumber);
                   if (k) repliedKeys.add(k);
                 }
-                added++;
+                addedCount++;
               }
             }
           } catch (_) {}
@@ -6082,19 +6086,24 @@ function doPost(e) {
       archiveRecords.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
       if (archiveRecords.length > 0 && !selectedId) selectedId = archiveRecords[0].id;
       render();
-      alert(`외부 HTML 파일에서 신규 ${added}건을 합산했습니다! (현재 총 ${archiveRecords.length}건)`);
+      alert('외부 HTML 파일에서 신규 ' + addedCount + '건을 합산했습니다! (현재 총 ' + archiveRecords.length + '건)');
     }
 
     function downloadMergedHtml() {
       const jsonStr = JSON.stringify(archiveRecords);
-      const currentHtml = document.documentElement.outerHTML.replace(
-        /\/\*ARCHIVE_DATA_START\*\/[\s\S]*?\/\*ARCHIVE_DATA_END\*\//,
-        '/*ARCHIVE_DATA_START*/ ' + jsonStr + ' /*ARCHIVE_DATA_END*/'
-      );
+      const startMarker = '/*ARCHIVE_DATA_START*/';
+      const endMarker = '/*ARCHIVE_DATA_END*/';
+      const rawHtml = document.documentElement.outerHTML;
+      const sIdx = rawHtml.indexOf(startMarker);
+      const eIdx = rawHtml.indexOf(endMarker);
+      let currentHtml = rawHtml;
+      if (sIdx !== -1 && eIdx !== -1 && eIdx > sIdx) {
+        currentHtml = rawHtml.substring(0, sIdx + startMarker.length) + ' ' + jsonStr + ' ' + rawHtml.substring(eIdx);
+      }
       const blob = new Blob(['<!DOCTYPE html>\n' + currentHtml], { type: 'text/html;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = document.title.replace(/\s+/g, '_') + '_통합본.html';
+      a.download = document.title.split(' ').join('_') + '_통합본.html';
       a.click();
     }
 
@@ -6934,7 +6943,7 @@ function doPost(e) {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v35'),
+        title: const Text('증빙서류 스냅 v36'),
         actions: [
           IconButton(
             tooltip: '원드라이브 덮어쓰기 & AI 설정',
