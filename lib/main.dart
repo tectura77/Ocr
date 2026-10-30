@@ -1048,6 +1048,8 @@ class _HomeScreenState extends State<HomeScreen> {
   };
 
   String _geminiApiKey = '';
+  bool _geminiKeyVerified = false;
+  String _lastGeminiStatusMsg = '';
   String _oneDriveCloudFolder = 'Documents/증빙서류함';
   String _oneDriveAccessToken = '';
   String _exporterUserName = '';
@@ -1255,6 +1257,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedRecord = _records.first;
       }
       _geminiApiKey = prefs.getString(_prefsGeminiApiKey) ?? '';
+      _geminiKeyVerified = prefs.getBool('gemini_key_verified_v39') ?? false;
       _periodAnchorStartDay =
           (prefs.getInt(_prefsPeriodAnchorDayKey) ?? 1).clamp(1, 28);
       _oneDriveCloudFolder =
@@ -3526,6 +3529,76 @@ class _HomeScreenState extends State<HomeScreen> {
     return Uint8List.fromList(img.encodeJpg(resized, quality: 88));
   }
 
+  // ★ Gemini API 키 실제 작동 여부 실시간 테스트 함수
+  Future<Map<String, dynamic>> _verifyGeminiApiKey(String rawKey) async {
+    final key = rawKey.trim();
+    if (key.isEmpty) {
+      return {
+        'ok': false,
+        'msg': 'API 키가 비어 있습니다. (비워두시면 내장 오프라인 한국어 OCR로 작동합니다)',
+      };
+    }
+    if (!key.startsWith('AIza') || key.length < 30) {
+      return {
+        'ok': false,
+        'msg': '❌ 올바른 Google Gemini API 키 형식이 아닙니다. (정상 키는 "AIza..."로 시작하는 39자리 문자열입니다)',
+      };
+    }
+
+    const models = ['gemini-2.5-pro', 'gemini-2.5-flash'];
+    String lastErr = '연결 실패';
+    for (final modelName in models) {
+      try {
+        final uri = Uri.parse(
+          'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent',
+        );
+        final resp = await http
+            .post(
+              uri,
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': key,
+              },
+              body: jsonEncode({
+                'contents': [
+                  {
+                    'role': 'user',
+                    'parts': [
+                      {'text': 'Reply with OK'}
+                    ]
+                  }
+                ],
+                'generationConfig': {'maxOutputTokens': 8},
+              }),
+            )
+            .timeout(const Duration(seconds: 8));
+        if (resp.statusCode == 200) {
+          return {
+            'ok': true,
+            'model': modelName,
+            'msg': '✅ Gemini API 정밀 연동 성공! (작동 모델: $modelName)',
+          };
+        } else {
+          try {
+            final errJson =
+                jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+            final errMsg = errJson['error']?['message']?.toString() ??
+                'HTTP ${resp.statusCode}';
+            lastErr = '[$modelName] $errMsg';
+          } catch (_) {
+            lastErr = 'HTTP 오류 코드 ${resp.statusCode}';
+          }
+        }
+      } catch (e) {
+        lastErr = '네트워크/시간초과: $e';
+      }
+    }
+    return {
+      'ok': false,
+      'msg': '❌ Gemini 호출 실패: $lastErr',
+    };
+  }
+
   Future<Map<String, String>?> _analyzeDocumentWithAi({
     required String category,
     required Uint8List imageBytes,
@@ -3606,8 +3679,15 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
+    if (!key.startsWith('AIza') || key.length < 30) {
+      _lastGeminiStatusMsg = '❌ 잘못된 API 키 형식 (내장 OCR 결과만 적용됨)';
+      if (mounted) setState(() => _geminiKeyVerified = false);
+      return null;
+    }
+
     // ★ Gemini 2.5 Pro 최우선 호출 (무료 티어 한도 초과 시 gemini-2.5-flash 자동 백업)
     const models = ['gemini-2.5-pro', 'gemini-2.5-flash'];
+    String lastErrorReason = '응답 없음';
     for (final modelName in models) {
       try {
         final uri = Uri.parse(
@@ -3648,10 +3728,36 @@ class _HomeScreenState extends State<HomeScreen> {
               result[k] = v.toString().trim();
             }
           });
-          if (result.isNotEmpty) return result;
+          if (result.isNotEmpty) {
+            _lastGeminiStatusMsg = '✅ Gemini AI($modelName) 정밀 교정 완료!';
+            if (mounted && !_geminiKeyVerified) {
+              setState(() => _geminiKeyVerified = true);
+            }
+            return result;
+          }
+        } else {
+          try {
+            final errJson =
+                jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+            final code = resp.statusCode;
+            final msg = errJson['error']?['message']?.toString() ?? '';
+            if (code == 400 || code == 403 || msg.contains('API key')) {
+              lastErrorReason = '유효하지 않은 API 키($code)';
+              if (mounted) setState(() => _geminiKeyVerified = false);
+            } else if (code == 429) {
+              lastErrorReason = '무료 호출 한도 초과(429)';
+            } else {
+              lastErrorReason = 'HTTP $code';
+            }
+          } catch (_) {
+            lastErrorReason = 'HTTP ${resp.statusCode}';
+          }
         }
-      } catch (_) {}
+      } catch (_) {
+        lastErrorReason = '네트워크 연결/시간초과';
+      }
     }
+    _lastGeminiStatusMsg = '⚠️ Gemini 실패($lastErrorReason) → 내장 OCR 적용됨';
     return null;
   }
 
@@ -3907,7 +4013,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   // ★ Gemini API 키가 등록되어 있으면 1차 초고속 내장 OCR 직후 항상 Gemini 2.5 Pro가 정밀 교정 수행!
                   if (_geminiApiKey.trim().isNotEmpty) {
                     if (ctx.mounted) {
-                      setDialogState(() => isAiAnalyzing = true);
+                      setDialogState(() {
+                        isAiAnalyzing = true;
+                        _lastGeminiStatusMsg = '⏳ Gemini 2.5 Pro 연결 및 정밀 분석 중...';
+                      });
                     }
                     final aiMap = await _analyzeDocumentWithAi(
                       category: chosenCategory,
@@ -3919,6 +4028,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         isAiAnalyzing = false;
                       });
                     }
+                  } else {
+                    _lastGeminiStatusMsg = 'ℹ️ 내장 한국어 OCR 분석 완료 (Gemini 키 미등록)';
                   }
                 } catch (_) {
                   if (ctx.mounted) {
@@ -3953,30 +4064,63 @@ class _HomeScreenState extends State<HomeScreen> {
                   (parsedKm * parsedMult * parsedUnitPrice).round();
 
               return AlertDialog(
-                title: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('증빙서류 입력 (v39)', style: TextStyle(fontSize: 18)),
-                    if (isAiAnalyzing)
-                      const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('증빙서류 입력 (v39)', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                        if (isAiAnalyzing)
+                          const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(
+                                width: 13,
+                                height: 13,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                              SizedBox(width: 5),
+                              Text(
+                                '분석 중...',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: Colors.blueAccent,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
                           ),
-                          SizedBox(width: 6),
-                          Text(
-                            'Gemini 2.5 Pro 정밀 인식 중...',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.blueAccent,
-                              fontWeight: FontWeight.bold,
-                            ),
+                      ],
+                    ),
+                    if (_lastGeminiStatusMsg.isNotEmpty) ...[
+                      const SizedBox(height: 5),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: _lastGeminiStatusMsg.startsWith('✅')
+                              ? const Color(0xFFDCFCE7)
+                              : (_lastGeminiStatusMsg.startsWith('⚠️') || _lastGeminiStatusMsg.startsWith('❌'))
+                                  ? const Color(0xFFFEE2E2)
+                                  : const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          _lastGeminiStatusMsg,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: _lastGeminiStatusMsg.startsWith('✅')
+                                ? const Color(0xFF166534)
+                                : (_lastGeminiStatusMsg.startsWith('⚠️') || _lastGeminiStatusMsg.startsWith('❌'))
+                                    ? const Color(0xFF991B1B)
+                                    : const Color(0xFF1E3A8A),
                           ),
-                        ],
+                        ),
                       ),
+                    ],
                   ],
                 ),
                 content: SizedBox(
@@ -5509,19 +5653,84 @@ function doPost(e) {
                 const Divider(height: 20),
 
                 const Text(
-                  '3. Gemini 2.5 Pro AI 키 등록 (정밀 분석 자동 작동)',
+                  '3. Gemini 2.5 Pro AI 키 등록 & 실제 작동 테스트',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                 ),
                 const SizedBox(height: 6),
                 TextField(
                   controller: geminiKeyCtrl,
                   decoration: const InputDecoration(
-                    labelText: 'Gemini API Key',
+                    labelText: 'Gemini API Key (AIza... 형식)',
                     hintText: '비워두셔도 내장 한국어 OCR이 즉시 작동합니다',
                     border: OutlineInputBorder(),
                     isDense: true,
                   ),
                 ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.verified_outlined, size: 16),
+                        label: const Text(
+                          'Gemini API 키 실제 연결 테스트',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                        onPressed: () async {
+                          setModalState(() {
+                            _lastGeminiStatusMsg = '⏳ Google 서버에 실제 연결 테스트 중...';
+                          });
+                          final res = await _verifyGeminiApiKey(geminiKeyCtrl.text);
+                          final ok = res['ok'] == true;
+                          final msg = res['msg']?.toString() ?? '';
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setBool('gemini_key_verified_v39', ok);
+                          if (mounted) {
+                            setState(() {
+                              _geminiKeyVerified = ok;
+                              _lastGeminiStatusMsg = msg;
+                            });
+                          }
+                          setModalState(() {});
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                if (_lastGeminiStatusMsg.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: _lastGeminiStatusMsg.startsWith('✅')
+                          ? const Color(0xFFDCFCE7)
+                          : _lastGeminiStatusMsg.startsWith('⏳')
+                              ? const Color(0xFFEFF6FF)
+                              : const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: _lastGeminiStatusMsg.startsWith('✅')
+                            ? Colors.green
+                            : _lastGeminiStatusMsg.startsWith('⏳')
+                                ? Colors.blue
+                                : Colors.redAccent,
+                      ),
+                    ),
+                    child: Text(
+                      _lastGeminiStatusMsg,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.bold,
+                        color: _lastGeminiStatusMsg.startsWith('✅')
+                            ? const Color(0xFF166534)
+                            : _lastGeminiStatusMsg.startsWith('⏳')
+                                ? const Color(0xFF1E3A8A)
+                                : const Color(0xFF991B1B),
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 const Text(
                   '4. 원드라이브 Graph API 토큰 (선택)',
@@ -5564,8 +5773,22 @@ function doPost(e) {
                     : folderCtrl.text.trim();
                 final enteredToken = tokenCtrl.text.trim();
 
+                bool verified = false;
+                String verifyMsg = '설정이 저장되었습니다.';
+                if (enteredKey.isNotEmpty) {
+                  setModalState(() {
+                    _lastGeminiStatusMsg = '⏳ 저장 전 Gemini API 키 유효성 검증 중...';
+                  });
+                  final check = await _verifyGeminiApiKey(enteredKey);
+                  verified = check['ok'] == true;
+                  verifyMsg = check['msg']?.toString() ?? '';
+                } else {
+                  _lastGeminiStatusMsg = '';
+                }
+
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString(_prefsGeminiApiKey, enteredKey);
+                await prefs.setBool('gemini_key_verified_v39', verified);
                 await prefs.setString(_prefsUserNameKey, enteredName);
                 await prefs.setBool(
                     _prefsUniqueFileNameModeKey, tempConflictFree);
@@ -5576,6 +5799,7 @@ function doPost(e) {
 
                 setState(() {
                   _geminiApiKey = enteredKey;
+                  _geminiKeyVerified = verified;
                   _exporterUserName = enteredName;
                   _useConflictFreeFileName = tempConflictFree;
                   _googleWebhookUrl = enteredWebhook;
@@ -5583,7 +5807,7 @@ function doPost(e) {
                   _oneDriveAccessToken = enteredToken;
                 });
                 if (ctx.mounted) Navigator.pop(ctx);
-                _showSnack('설정이 저장되었습니다.');
+                _showSnack(verifyMsg);
               },
               child: const Text('저장'),
             ),
@@ -5806,7 +6030,7 @@ function doPost(e) {
     String firstId,
   ) {
     if (records.isEmpty) {
-      return '<div style="padding:24px; text-align:center; color:#64748b;">저장된 증빙서류가 없습니다.</div>';
+      return '<div style="padding:28px; text-align:center; color:#64748b; font-size:13px;">등록된 증빙서류가 없습니다.</div>';
     }
     final sb = StringBuffer();
     final allOfficial = records.every((r) =>
@@ -5825,11 +6049,17 @@ function doPost(e) {
       final isOutTab = majorCat == DocCategory.officialOut ||
           records.every((r) => r.category == DocCategory.officialOut);
       final partyHeader = isOutTab ? '받는사람' : '보낸사람';
-      sb.write('<table class="grid-table"><thead><tr>');
-      sb.write('<th>날짜</th><th>공문번호</th><th>$partyHeader</th>');
-      if (isOutTab) sb.write('<th>회신번호</th>');
-      sb.write('<th>제목</th><th>내용</th><th>회신요청일</th>');
-      if (!isOutTab) sb.write('<th>회신완료</th>');
+      final tableWidth = isOutTab ? 686 : 666;
+      sb.write('<table class="app-fixed-table" style="width:${tableWidth}px;"><thead><tr>');
+      sb.write('<th style="width:64px;">날짜</th>');
+      sb.write('<th style="width:76px;">공문번호</th>');
+      sb.write('<th style="width:68px;">$partyHeader</th>');
+      if (isOutTab) sb.write('<th style="width:76px;">회신번호</th>');
+      sb.write('<th style="width:118px;">제목</th>');
+      sb.write('<th style="width:152px;">내용</th>');
+      sb.write('<th style="width:64px;">회신요청일</th>');
+      if (!isOutTab) sb.write('<th style="width:56px;">회신완료</th>');
+      sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
 
       for (final item in records) {
@@ -5847,58 +6077,63 @@ function doPost(e) {
         final myKey = DocRecord.normalizeDocNumKey(f['docNumber']);
         final isReplied = myKey.isNotEmpty && repliedKeys.contains(myKey);
         final cls = item.id == firstId ? 'active' : '';
-        sb.write(
-            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
-        sb.write(
-            '<td>${_escapeHtmlText(DocRecord.formatDotDate(f['sentDate']))}</td>');
-        sb.write('<td>${_escapeHtmlText(f['docNumber'] ?? '-')}</td>');
-        sb.write('<td>${_escapeHtmlText(partyVal)}</td>');
+        final safeId = _escapeHtmlText(item.id);
+        sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
+        sb.write('<td style="width:64px;">${_escapeHtmlText(DocRecord.formatDotDate(f['sentDate']))}</td>');
+        sb.write('<td style="width:76px;">${_escapeHtmlText(f['docNumber'] ?? '-')}</td>');
+        sb.write('<td style="width:68px;">${_escapeHtmlText(partyVal)}</td>');
         if (isOutTab) {
-          sb.write(
-              '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(replyNum)}</td>');
+          sb.write('<td style="width:76px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(replyNum)}</td>');
         }
-        sb.write(
-            '<td style="text-align:left;">${_escapeHtmlText(f['title'] ?? '-')}</td>');
-        sb.write(
-            '<td style="text-align:left;">${_escapeHtmlText(f['aiSummary'] ?? '-')}</td>');
-        sb.write(
-            '<td>${_escapeHtmlText(DocRecord.formatDotDate(f['replyDeadline']))}</td>');
+        sb.write('<td style="width:118px;">${_escapeHtmlText(f['title'] ?? '-')}</td>');
+        sb.write('<td style="width:152px;">${_escapeHtmlText(f['aiSummary'] ?? '-')}</td>');
+        sb.write('<td style="width:64px;">${_escapeHtmlText(DocRecord.formatDotDate(f['replyDeadline']))}</td>');
         if (!isOutTab) {
-          sb.write(
-              '<td style="color:#16a34a; font-weight:700; font-size:15px;">${isReplied ? '○' : ''}</td>');
+          sb.write('<td style="width:56px; color:#16a34a; font-weight:700; font-size:14px;">${isReplied ? '○' : ''}</td>');
         }
+        sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.invoice || allInvoice) {
-      sb.write('<table class="grid-table"><thead><tr>');
-      sb.write(
-          '<th>날짜</th><th>제품명</th><th>규격명</th><th>단위</th><th>수량</th><th>누적수량</th><th>공급자</th><th>주문송장번호</th>');
+      sb.write('<table class="app-fixed-table" style="width:642px;"><thead><tr>');
+      sb.write('<th style="width:64px;">날짜</th>');
+      sb.write('<th style="width:72px;">제품명</th>');
+      sb.write('<th style="width:62px;">규격명</th>');
+      sb.write('<th style="width:44px;">단위</th>');
+      sb.write('<th style="width:64px;">수량</th>');
+      sb.write('<th style="width:68px;">누적수량</th>');
+      sb.write('<th style="width:78px;">공급자</th>');
+      sb.write('<th style="width:122px;">주문송장번호</th>');
+      sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
       for (final item in records) {
         final f = item.fields;
         final cls = item.id == firstId ? 'active' : '';
         final cumVal = cumMap[item.id] ?? f['quantity'] ?? '-';
-        sb.write(
-            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
-        sb.write(
-            '<td>${_escapeHtmlText(DocRecord.formatDotDate(f['arrivalDate']))}</td>');
-        sb.write('<td>${_escapeHtmlText(f['productName'] ?? '-')}</td>');
-        sb.write('<td>${_escapeHtmlText(f['specName'] ?? '-')}</td>');
-        sb.write('<td>${_escapeHtmlText(f['unit'] ?? 'ton')}</td>');
-        sb.write('<td>${_escapeHtmlText(f['quantity'] ?? '-')}</td>');
-        sb.write(
-            '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(cumVal)}</td>');
-        sb.write('<td>${_escapeHtmlText(f['supplierName'] ?? '-')}</td>');
-        sb.write('<td>${_escapeHtmlText(f['orderNumber'] ?? '-')}</td>');
+        final safeId = _escapeHtmlText(item.id);
+        sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
+        sb.write('<td style="width:64px;">${_escapeHtmlText(DocRecord.formatDotDate(f['arrivalDate']))}</td>');
+        sb.write('<td style="width:72px;">${_escapeHtmlText(f['productName'] ?? '-')}</td>');
+        sb.write('<td style="width:62px;">${_escapeHtmlText(f['specName'] ?? '-')}</td>');
+        sb.write('<td style="width:44px;">${_escapeHtmlText(f['unit'] ?? 'ton')}</td>');
+        sb.write('<td style="width:64px;">${_escapeHtmlText(f['quantity'] ?? '-')}</td>');
+        sb.write('<td style="width:68px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(cumVal)}</td>');
+        sb.write('<td style="width:78px;">${_escapeHtmlText(f['supplierName'] ?? '-')}</td>');
+        sb.write('<td style="width:122px;">${_escapeHtmlText(f['orderNumber'] ?? '-')}</td>');
+        sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.travel || allTravel) {
-      sb.write('<table class="grid-table"><thead><tr>');
-      sb.write('<th>카테고리(날짜)</th><th>구분</th><th>상호</th><th>금액</th>');
+      sb.write('<table class="app-fixed-table" style="width:446px;"><thead><tr>');
+      sb.write('<th style="width:100px;">카테고리(날짜)</th>');
+      sb.write('<th style="width:58px;">구분</th>');
+      sb.write('<th style="width:136px;">상호</th>');
+      sb.write('<th style="width:84px;">금액</th>');
+      sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
       for (final item in records) {
         final f = item.fields;
@@ -5912,26 +6147,31 @@ function doPost(e) {
         final mult = f['carMultiplier'] ?? '2';
         final rate = f['carUnitPrice'] ?? '300';
         final desc = div == '자차'
-            ? (f['merchantName'] ?? '${f['distanceKm'] ?? 0}km × $mult × $rate원')
+            ? (f['merchantName']?.trim().isNotEmpty == true
+                ? f['merchantName']!
+                : '${f['distanceKm'] ?? 0}km × $mult × ${rate}원')
             : (f['merchantName'] ?? '-');
         final amt =
             '${NumberFormat('#,###').format(item.numericAmount)}원';
-        sb.write(
-            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
-        sb.write(
-            '<td>${_escapeHtmlText(sub)}<br/>(${_escapeHtmlText(dateStr)})</td>');
-        sb.write('<td>${_escapeHtmlText(div)}</td>');
-        sb.write('<td style="text-align:left;">${_escapeHtmlText(desc)}</td>');
-        sb.write(
-            '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
+        final safeId = _escapeHtmlText(item.id);
+        sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
+        sb.write('<td style="width:100px;">${_escapeHtmlText(sub)}<br/>(${_escapeHtmlText(dateStr)})</td>');
+        sb.write('<td style="width:58px; color:#451a03; font-weight:700;">${_escapeHtmlText(div)}</td>');
+        sb.write('<td style="width:136px;">${_escapeHtmlText(desc)}</td>');
+        sb.write('<td style="width:84px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
+        sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.medical || allMedical) {
-      sb.write('<table class="grid-table"><thead><tr>');
-      sb.write(
-          '<th>카테고리</th><th>날짜</th><th>상호</th><th>금액</th><th>사업자등록번호</th>');
+      sb.write('<table class="app-fixed-table" style="width:492px;"><thead><tr>');
+      sb.write('<th style="width:74px;">카테고리</th>');
+      sb.write('<th style="width:68px;">날짜</th>');
+      sb.write('<th style="width:104px;">상호</th>');
+      sb.write('<th style="width:80px;">금액</th>');
+      sb.write('<th style="width:98px;">사업자등록번호</th>');
+      sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
       for (final item in records) {
         final f = item.fields;
@@ -5943,48 +6183,42 @@ function doPost(e) {
             f['issueDate'] ?? item.createdAt.split(' ').first);
         final amt =
             '${NumberFormat('#,###').format(item.numericAmount)}원';
-        sb.write(
-            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
-        sb.write('<td>${_escapeHtmlText(sub)}</td>');
-        sb.write('<td>${_escapeHtmlText(dateStr)}</td>');
-        sb.write('<td>${_escapeHtmlText(f['clinicName'] ?? '-')}</td>');
-        sb.write(
-            '<td style="color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
-        sb.write('<td>${_escapeHtmlText(f['bizRegNumber'] ?? '-')}</td>');
+        final safeId = _escapeHtmlText(item.id);
+        sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
+        sb.write('<td style="width:74px;">${_escapeHtmlText(sub)}</td>');
+        sb.write('<td style="width:68px;">${_escapeHtmlText(dateStr)}</td>');
+        sb.write('<td style="width:104px;">${_escapeHtmlText(f['clinicName'] ?? '-')}</td>');
+        sb.write('<td style="width:80px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
+        sb.write('<td style="width:98px;">${_escapeHtmlText(f['bizRegNumber'] ?? '-')}</td>');
+        sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
       sb.write('</tbody></table>');
       return sb.toString();
     } else {
-      sb.write('<table class="grid-table"><thead><tr>');
-      sb.write(
-          '<th>종류</th><th>구분/카테고리</th><th>일자</th><th>상호/제목/산출내역</th><th>금액/수량</th>');
+      sb.write('<table class="app-fixed-table" style="width:490px;"><thead><tr>');
+      sb.write('<th style="width:72px;">분류</th>');
+      sb.write('<th style="width:68px;">날짜</th>');
+      sb.write('<th style="width:150px;">제목 / 상호 / 품목</th>');
+      sb.write('<th style="width:132px;">상세 / 금액 / 수량</th>');
+      sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
       for (final item in records) {
         final f = item.fields;
         final cls = item.id == firstId ? 'active' : '';
-        String sub = f['subCategory'] ?? '-';
-        String dateStr = DocRecord.formatDotDate(
+        final dateStr = DocRecord.formatDotDate(
             f['sentDate'] ??
                 f['arrivalDate'] ??
                 f['date'] ??
                 f['issueDate'] ??
                 item.createdAt.split(' ').first);
-        String desc = f['title'] ??
-            f['productName'] ??
-            f['merchantName'] ??
-            f['clinicName'] ??
-            '-';
-        String amt = item.numericAmount > 0
-            ? '${NumberFormat('#,###').format(item.numericAmount)}원'
-            : (f['quantity'] ?? '-');
-        sb.write(
-            '<tr class="$cls" data-id="${_escapeHtmlText(item.id)}" onclick="selectRow(\'${_escapeHtmlText(item.id)}\')">');
-        sb.write('<td>${_escapeHtmlText(item.category)}</td>');
-        sb.write('<td>${_escapeHtmlText(sub)}</td>');
-        sb.write('<td>${_escapeHtmlText(dateStr)}</td>');
-        sb.write('<td style="text-align:left;">${_escapeHtmlText(desc)}</td>');
-        sb.write('<td>${_escapeHtmlText(amt)}</td>');
+        final safeId = _escapeHtmlText(item.id);
+        sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
+        sb.write('<td style="width:72px;">${_escapeHtmlText(item.category)}</td>');
+        sb.write('<td style="width:68px;">${_escapeHtmlText(dateStr)}</td>');
+        sb.write('<td style="width:150px;">${_escapeHtmlText(item.displayTitle)}</td>');
+        sb.write('<td style="width:132px;">${_escapeHtmlText(item.displaySubtitle)}</td>');
+        sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
       sb.write('</tbody></table>');
@@ -6018,32 +6252,204 @@ function doPost(e) {
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>증빙서류 - $scopeTitle</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>증빙서류 스냅 v39 - $scopeTitle</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", sans-serif;
-      background: #f1f5f9;
-      color: #1e293b;
+      background: #f8fafc;
+      color: #0f172a;
       height: 100vh;
       height: 100dvh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
-    header {
+
+    /* 1) 앱 상단 AppBar 완벽 재현 */
+    header.app-bar {
       background: #1e3a8a;
       color: #ffffff;
-      padding: 9px 14px;
+      padding: 8px 12px;
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-shrink: 0;
-      gap: 8px;
+      gap: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+      z-index: 20;
     }
-    header h1 { font-size: 15px; font-weight: 700; white-space: nowrap; }
+    header.app-bar .title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 15px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    header.app-bar .actions-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .app-btn {
+      border: none;
+      border-radius: 6px;
+      padding: 5px 9px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .app-btn.merge { background: #f59e0b; color: #0f172a; }
+    .app-btn.save { background: #ffffff; color: #1e3a8a; }
 
+    /* 2) 상단 1줄: 문서 종류 선택 탭 (전체 | 공문(수신) | 공문(발신) | 자재송장 | 출장비 | 병원비) */
+    #major-tabs-bar {
+      height: 42px;
+      background: #f1f5f9;
+      padding: 0 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    #major-tabs-bar::-webkit-scrollbar { display: none; }
+    .chip-btn {
+      padding: 5px 11px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .chip-btn.active {
+      background: #dbeafe;
+      border-color: #1e3a8a;
+      color: #1e3a8a;
+      font-weight: 700;
+    }
+
+    /* 3) 상단 2줄: 요약 합계 & 기간필터 & 서브카테고리/구분/제품명 필터 칩 바 */
+    #summary-filter-bar {
+      background: #eff6ff;
+      border-bottom: 1px solid #bfdbfe;
+      padding: 7px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .summary-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1e3a8a;
+    }
+    .summary-sub {
+      font-size: 12px;
+      font-weight: 700;
+      color: #4338ca;
+    }
+    .chip-scroll-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      padding-bottom: 1px;
+    }
+    .chip-scroll-row::-webkit-scrollbar { display: none; }
+    .sub-chip {
+      padding: 4px 10px;
+      border-radius: 7px;
+      border: 1px solid #c7d2fe;
+      background: #ffffff;
+      color: #1e293b;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .sub-chip.active {
+      background: #e0e7ff;
+      border-color: #4338ca;
+      color: #1e1b4b;
+      font-weight: 700;
+    }
+    .amber-chip {
+      padding: 4px 10px;
+      border-radius: 7px;
+      border: 1px solid #fcd34d;
+      background: #fffbeb;
+      color: #451a03;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .amber-chip.active {
+      background: #fcd34d;
+      border-color: #d97706;
+      color: #451a03;
+      font-weight: 700;
+    }
+    .period-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-size: 11.5px;
+    }
+    .period-badge {
+      background: #1e3a8a;
+      color: #ffffff;
+      font-weight: 700;
+      padding: 4px 9px;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .period-nav-btn {
+      background: #ffffff;
+      border: 1px solid #93c5fd;
+      color: #1e3a8a;
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .period-input {
+      border: 1px solid #93c5fd;
+      border-radius: 5px;
+      padding: 2px 5px;
+      font-size: 11px;
+      color: #1e3a8a;
+      background: #ffffff;
+    }
+
+    /* 4) 메인 분할 화면 (가로 모드: 좌측 표 + 좌우 조절바 + 우측 사진 / 세로 모드: 위쪽 표 + 상하 조절바 + 아래쪽 사진) */
     #main-split {
       flex: 1;
       display: flex;
@@ -6053,42 +6459,56 @@ function doPost(e) {
       overflow: hidden;
     }
     #left-list-pane {
-      width: 55%;
+      width: 48%;
       height: 100%;
       overflow: auto;
       background: #ffffff;
       flex-shrink: 0;
+      -webkit-overflow-scrolling: touch;
     }
     #resizer-bar {
-      width: 14px;
+      width: 22px;
       height: 100%;
-      background: #cbd5e1;
+      background: #cfd8dc;
       cursor: ew-resize;
       display: flex;
       align-items: center;
       justify-content: center;
       user-select: none;
       touch-action: none;
-      border-left: 1px solid #94a3b8;
-      border-right: 1px solid #94a3b8;
+      border-left: 1px solid #90a4ae;
+      border-right: 1px solid #90a4ae;
       flex-shrink: 0;
+    }
+    #resizer-handle-content {
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     #resizer-pill {
       width: 4px;
-      height: 42px;
+      height: 44px;
       background: #1e3a8a;
       border-radius: 999px;
+    }
+    #resizer-text {
+      display: none;
+      font-size: 11px;
+      font-weight: 600;
+      color: #263238;
+      white-space: nowrap;
     }
     #right-photo-pane {
       flex: 1;
       width: auto;
       height: 100%;
       background: #0f172a;
+      position: relative;
+      overflow: hidden;
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: auto;
-      padding: 8px;
+      touch-action: none;
     }
 
     @media (orientation: portrait) {
@@ -6097,20 +6517,22 @@ function doPost(e) {
       }
       #left-list-pane {
         width: 100% !important;
-        height: 46%;
+        height: 44%;
       }
       #resizer-bar {
         width: 100%;
-        height: 16px;
+        height: 24px;
         cursor: ns-resize;
         border-left: none;
         border-right: none;
-        border-top: 1px solid #94a3b8;
-        border-bottom: 1px solid #94a3b8;
+        border-top: 1px solid #90a4ae;
+        border-bottom: 1px solid #90a4ae;
       }
       #resizer-pill {
-        width: 46px;
-        height: 4px;
+        display: none;
+      }
+      #resizer-text {
+        display: inline-block;
       }
       #right-photo-pane {
         width: 100%;
@@ -6119,79 +6541,256 @@ function doPost(e) {
       }
     }
 
+    /* 5) 앱의 _buildFixedHeaderCell & _buildFixedDataCell 100% 동일 고정 폭 그리드 */
+    table.app-fixed-table {
+      table-layout: fixed;
+      border-collapse: collapse;
+      text-align: center;
+    }
+    table.app-fixed-table th {
+      background: #e2e8f0;
+      color: #1e293b;
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 700;
+      padding: 7px 4px;
+      border-right: 1px solid #94a3b8;
+      border-bottom: 1px solid #94a3b8;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      word-break: keep-all;
+      overflow-wrap: break-word;
+    }
+    table.app-fixed-table td {
+      padding: 7px 4px;
+      border-right: 1px solid #cbd5e1;
+      border-bottom: 1px solid #cbd5e1;
+      color: #0f172a;
+      font-size: 11px;
+      line-height: 1.25;
+      font-weight: 500;
+      cursor: pointer;
+      word-break: keep-all;
+      overflow-wrap: break-word;
+      vertical-align: middle;
+    }
+    table.app-fixed-table tr:hover td { background: #f8fafc; }
+    table.app-fixed-table tr.active td {
+      background: #dbeafe;
+      font-weight: 700;
+    }
+    .row-btn {
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 13px;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .row-btn:hover { background: rgba(0,0,0,0.08); }
+
+    /* 6) 우측/하단 InteractiveViewer 사진 확대·축소·드래그 팬 컨트롤 */
+    #photo-viewport {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      cursor: grab;
+    }
+    #photo-viewport:active { cursor: grabbing; }
     #preview-img {
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
-      border-radius: 4px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      transform-origin: center center;
+      transition: transform 0.05s ease-out;
+      user-select: none;
+      -webkit-user-drag: none;
     }
-    table.grid-table {
-      width: max-content;
-      min-width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      text-align: center;
+    #zoom-controls {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      display: flex;
+      gap: 4px;
+      background: rgba(15, 23, 42, 0.78);
+      padding: 4px 6px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.2);
+      z-index: 10;
     }
-    table.grid-table th {
-      background: #e2e8f0;
-      color: #1e293b;
+    .zoom-btn {
+      background: #1e3a8a;
+      color: #ffffff;
+      border: none;
+      border-radius: 5px;
+      padding: 4px 8px;
+      font-size: 11.5px;
       font-weight: 700;
-      padding: 8px 8px;
-      border: 1px solid #94a3b8;
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      white-space: nowrap;
-    }
-    table.grid-table td {
-      padding: 8px 8px;
-      border: 1px solid #cbd5e1;
-      color: #0f172a;
       cursor: pointer;
-      line-height: 1.35;
-      max-width: 170px;
-      word-break: keep-all;
-      overflow-wrap: break-word;
     }
-    table.grid-table tr:hover td { background: #f8fafc; }
-    table.grid-table tr.active td {
-      background: #dbeafe;
+
+    /* 7) 항목 수정 모달 다이얼로그 */
+    #edit-modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    #edit-modal-box {
+      background: #ffffff;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 420px;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    #edit-modal-header {
+      background: #1e3a8a;
+      color: #ffffff;
+      padding: 11px 14px;
+      font-size: 14px;
       font-weight: 700;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #edit-modal-body {
+      padding: 14px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .field-group label {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: #334155;
+    }
+    .field-group input, .field-group select {
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 7px 9px;
+      font-size: 12.5px;
+      color: #0f172a;
+    }
+    #edit-modal-footer {
+      padding: 10px 14px;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      background: #f8fafc;
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>[$scopeTitle] 증빙서류 (<span id="count-label">${records.length}</span>건)</h1>
-    <div style="display:flex; gap:6px; align-items:center;">
-      <label style="background:#f59e0b; color:#0f172a; font-weight:700; font-size:12px; padding:5px 10px; border-radius:6px; cursor:pointer;">
-        + 다른 사람 HTML 합치기
+  <header class="app-bar">
+    <div class="title-wrap">
+      <span>증빙서류 스냅 v39</span>
+      <span style="font-size:12px; font-weight:500; color:#fde047;">(<span id="count-label">${records.length}</span>건)</span>
+    </div>
+    <div class="actions-wrap">
+      <label class="app-btn merge" title="여러 명이 보낸 HTML 파일들을 한꺼번에 불러와 합치기">
+        📂 +HTML 합치기
         <input type="file" id="merge-file-input" accept=".html,.htm" multiple style="display:none;" onchange="mergeExternalHtmlFiles(this.files)" />
       </label>
-      <button onclick="downloadMergedHtml()" style="background:#ffffff; color:#1e3a8a; border:none; font-weight:700; font-size:12px; padding:5px 10px; border-radius:6px; cursor:pointer;">
-        통합본 저장
+      <button class="app-btn save" onclick="downloadMergedHtml()" title="현재 필터/수정 상태가 반영된 통합 HTML 파일 저장">
+        💾 통합본 저장
       </button>
     </div>
   </header>
 
+  <!-- 1) 앱과 100% 동일한 상단 카테고리 탭 바 -->
+  <div id="major-tabs-bar"></div>
+
+  <!-- 2) 앱과 100% 동일한 상단 요약/기간필터/서브카테고리/구분/품목 필터 영역 -->
+  <div id="summary-filter-bar" style="display:none;"></div>
+
+  <!-- 3) 앱과 100% 동일한 상하(세로)/좌우(가로) 분할 리스트 & 사진 뷰어 -->
   <div id="main-split">
     <div id="left-list-pane">$initialTableHtml</div>
     <div id="resizer-bar" title="끌어서 리스트와 사진 크기 조절">
-      <div id="resizer-pill"></div>
+      <div id="resizer-handle-content">
+        <div id="resizer-pill"></div>
+        <span id="resizer-text">☰ 위아래로 끌어서 화면 크기 조절 (표는 좌우로 드래그 가능)</span>
+      </div>
     </div>
     <div id="right-photo-pane">
-      <img id="preview-img" src="${firstBase64.isNotEmpty ? 'data:image/jpeg;base64,$firstBase64' : ''}" style="${firstBase64.isNotEmpty ? 'display:block;' : 'display:none;'}" alt="증빙서류 사진" />
+      <div id="photo-viewport">
+        <img id="preview-img" src="${firstBase64.isNotEmpty ? 'data:image/jpeg;base64,$firstBase64' : ''}" style="${firstBase64.isNotEmpty ? 'display:block;' : 'display:none;'}" alt="증빙서류 사진" />
+        <div id="empty-photo-msg" style="${firstBase64.isNotEmpty ? 'display:none;' : 'display:block;'} color:#cbd5e1; font-size:13px; text-align:center; padding:16px;">
+          목록에서 항목을 선택하면<br/>이곳에 증빙사진이 크게 표시됩니다.
+        </div>
+      </div>
+      <div id="zoom-controls">
+        <button class="zoom-btn" onclick="zoomPhoto(-0.35)">－ 축소</button>
+        <button class="zoom-btn" onclick="resetPhotoZoom()">100%</button>
+        <button class="zoom-btn" onclick="zoomPhoto(0.35)">＋ 확대</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4) 앱과 동일한 항목 수정 모달 -->
+  <div id="edit-modal-backdrop" onclick="if(event.target===this) closeEditModal()">
+    <div id="edit-modal-box">
+      <div id="edit-modal-header">
+        <span>항목 수정</span>
+        <button onclick="closeEditModal()" style="background:none; border:none; color:#fff; font-size:16px; cursor:pointer;">✕</button>
+      </div>
+      <div id="edit-modal-body"></div>
+      <div id="edit-modal-footer">
+        <button class="chip-btn" onclick="closeEditModal()">취소</button>
+        <button class="app-btn merge" style="background:#1e3a8a; color:#fff; padding:6px 14px;" onclick="saveEditedRecord()">저장</button>
+      </div>
     </div>
   </div>
 
   <script>
     const archiveRecords = /*ARCHIVE_DATA_START*/ $recordsJson /*ARCHIVE_DATA_END*/;
-    const cumMap = $cumMapJson;
-    const repliedKeys = new Set($repliedListJson);
-    const majorCat = "$majorCat";
-    let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
+    const ALL_TABS = ['전체', '공문(수신)', '공문(발신)', '자재송장', '출장비', '병원비'];
+    const TRAVEL_DIVS = ['전체', '자차', '택시', '기차', '식대', '통행료'];
 
+    let selectedCategoryFilter = "$majorCat";
+    // 만약 내보낸 데이터에 현재 탭 항목이 없고 다른 탭만 있으면 자동으로 해당 탭 선택
+    if (selectedCategoryFilter !== '전체' && !archiveRecords.some(function(r) { return r.category === selectedCategoryFilter; })) {
+      const uniqueCats = Array.from(new Set(archiveRecords.map(function(r) { return r.category; })));
+      selectedCategoryFilter = uniqueCats.length === 1 ? uniqueCats[0] : '전체';
+    }
+
+    let selectedSubCategoryFilter = '전체';
+    let selectedTravelDivisionFilter = '전체';
+    let selectedInvoiceProductFilter = '전체';
+
+    // 기간 필터 상태 (자재송장 월 단위 이동 / 병원비 시작일~종료일 지정)
+    let periodAllMap = { '자재송장': true, '병원비': true };
+    let invoiceAnchorYear = new Date().getFullYear();
+    let invoiceAnchorMonth = new Date().getMonth() + 1;
+    let invoiceAnchorDay = 1;
+    let medicalStartDate = '';
+    let medicalEndDate = '';
+
+    let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
+    let editingRecordId = null;
+
+    // -------------------------------------------------------------------------
+    // A. 분할 화면 리사이저 (세로/가로 자동 감지)
+    // -------------------------------------------------------------------------
     const resizerBar = document.getElementById('resizer-bar');
     const leftPane = document.getElementById('left-list-pane');
     const mainSplit = document.getElementById('main-split');
@@ -6218,31 +6817,80 @@ function doPost(e) {
     });
     resizerBar.addEventListener('pointerup', function() { isResizing = false; });
 
-    function selectRow(id) {
-      selectedId = id;
-      const rows = leftPane.querySelectorAll('tbody tr');
-      rows.forEach(function(tr) {
-        if (tr.getAttribute('data-id') === id) {
-          tr.classList.add('active');
-        } else {
-          tr.classList.remove('active');
-        }
-      });
-      const current = archiveRecords.find(function(r) { return r.id === selectedId; });
-      const imgEl = document.getElementById('preview-img');
-      if (current && current.base64Image) {
-        imgEl.src = 'data:image/jpeg;base64,' + current.base64Image;
-        imgEl.style.display = 'block';
-      } else {
-        imgEl.style.display = 'none';
-      }
+    // -------------------------------------------------------------------------
+    // B. 우측/하단 사진 뷰어 줌(확대/축소) 및 드래그 이동 (앱의 InteractiveViewer와 동일)
+    // -------------------------------------------------------------------------
+    const photoViewport = document.getElementById('photo-viewport');
+    const previewImg = document.getElementById('preview-img');
+    let photoScale = 1;
+    let photoTx = 0;
+    let photoTy = 0;
+    let isPanningPhoto = false;
+    let panStartX = 0;
+    let panStartY = 0;
+
+    function applyPhotoTransform() {
+      previewImg.style.transform = 'translate(' + photoTx + 'px, ' + photoTy + 'px) scale(' + photoScale + ')';
+    }
+    function zoomPhoto(delta) {
+      photoScale = Math.max(0.6, Math.min(8.0, photoScale + delta));
+      if (photoScale === 1) { photoTx = 0; photoTy = 0; }
+      applyPhotoTransform();
+    }
+    function resetPhotoZoom() {
+      photoScale = 1;
+      photoTx = 0;
+      photoTy = 0;
+      applyPhotoTransform();
     }
 
+    photoViewport.addEventListener('wheel', function(e) {
+      e.preventDefault();
+      zoomPhoto(e.deltaY < 0 ? 0.25 : -0.25);
+    }, { passive: false });
+
+    photoViewport.addEventListener('pointerdown', function(e) {
+      if (e.target.tagName === 'BUTTON') return;
+      isPanningPhoto = true;
+      panStartX = e.clientX - photoTx;
+      panStartY = e.clientY - photoTy;
+      if (photoViewport.setPointerCapture) photoViewport.setPointerCapture(e.pointerId);
+    });
+    photoViewport.addEventListener('pointermove', function(e) {
+      if (!isPanningPhoto) return;
+      photoTx = e.clientX - panStartX;
+      photoTy = e.clientY - panStartY;
+      applyPhotoTransform();
+    });
+    photoViewport.addEventListener('pointerup', function() {
+      isPanningPhoto = false;
+    });
+    photoViewport.addEventListener('dblclick', function() {
+      if (photoScale > 1.05) resetPhotoZoom();
+      else { photoScale = 2.2; applyPhotoTransform(); }
+    });
+
+    // -------------------------------------------------------------------------
+    // C. 앱과 100% 동일한 날짜/숫자/공문번호/누적수량 계산 함수들
+    // -------------------------------------------------------------------------
     function dotDate(raw) {
       if (!raw) return '-';
       const m = String(raw).match(/(\\d{4})\\s*[-./년]\\s*(\\d{1,2})\\s*[-./월]\\s*(\\d{1,2})/);
       if (m) return m[1] + '.' + String(m[2]).padStart(2, '0') + '.' + String(m[3]).padStart(2, '0');
-      return raw;
+      return String(raw);
+    }
+
+    function parseRecordDateObj(item) {
+      const f = item.fields || {};
+      let raw = '';
+      if (item.category === '공문(수신)' || item.category === '공문(발신)') raw = f.sentDate || '';
+      else if (item.category === '자재송장') raw = f.arrivalDate || '';
+      else if (item.category === '출장비') raw = f.date || '';
+      else if (item.category === '병원비') raw = f.issueDate || '';
+      if (!raw && item.createdAt) raw = String(item.createdAt).split(' ')[0];
+      const m = String(raw).match(/(\\d{4})\\s*[-./년]\\s*(\\d{1,2})\\s*[-./월]\\s*(\\d{1,2})/);
+      if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      return null;
     }
 
     function normalizeDocKey(raw) {
@@ -6258,6 +6906,65 @@ function doPost(e) {
       return d ? d[0] : c;
     }
 
+    function computeRepliedKeySet() {
+      const set = new Set();
+      archiveRecords.forEach(function(r) {
+        if (r.category === '공문(발신)' && r.fields && r.fields.replyDocNumber) {
+          const k = normalizeDocKey(r.fields.replyDocNumber);
+          if (k) set.add(k);
+        }
+      });
+      return set;
+    }
+
+    function getNumericAmount(item) {
+      const f = item.fields || {};
+      let raw = '0';
+      if (item.category === '병원비') raw = f.totalPaid || '0';
+      else if (item.category === '출장비') raw = f.totalAmount || '0';
+      else raw = f.amount || '0';
+      const digits = String(raw).replace(/[^0-9]/g, '');
+      return digits ? parseInt(digits, 10) : 0;
+    }
+
+    function getNumericQty(item) {
+      const f = item.fields || {};
+      const raw = String(f.quantity || f.weight || '0').replace(/,/g, '');
+      const m = raw.match(/[-+]?\\d+(?:\\.\\d+)?/);
+      return m ? parseFloat(m[0]) : 0;
+    }
+
+    function formatNumber(n) {
+      return Number(n || 0).toLocaleString('ko-KR');
+    }
+
+    function formatQtyNum(val) {
+      return Number(val || 0).toFixed(3).replace(/0+\$/, '').replace(/\\.\$/, '');
+    }
+
+    function computeInvoiceCumulativeMap() {
+      const map = {};
+      const invoices = archiveRecords.filter(function(r) { return r.category === '자재송장'; }).slice();
+      invoices.sort(function(a, b) {
+        const da = dotDate((a.fields || {}).arrivalDate);
+        const db = dotDate((b.fields || {}).arrivalDate);
+        const cmp = da.localeCompare(db);
+        if (cmp !== 0) return cmp;
+        return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+      });
+      const running = {};
+      invoices.forEach(function(inv) {
+        const f = inv.fields || {};
+        const prod = (f.productName || '-').trim();
+        const spec = (f.specName || '-').trim();
+        const key = prod + '||' + spec;
+        const nextVal = (running[key] || 0) + getNumericQty(inv);
+        running[key] = nextVal;
+        map[inv.id] = formatQtyNum(nextVal);
+      });
+      return map;
+    }
+
     function escapeHtml(str) {
       return String(str == null ? '' : str)
         .replace(/&/g, '&amp;')
@@ -6266,13 +6973,314 @@ function doPost(e) {
         .replace(/"/g, '&quot;');
     }
 
+    // -------------------------------------------------------------------------
+    // D. 기간 필터 및 카테고리 필터링 (앱의 _filteredRecords와 100% 동일)
+    // -------------------------------------------------------------------------
+    function getInvoicePeriodBounds() {
+      const start = new Date(invoiceAnchorYear, invoiceAnchorMonth - 1, invoiceAnchorDay);
+      const end = new Date(invoiceAnchorYear, invoiceAnchorMonth, invoiceAnchorDay - 1, 23, 59, 59);
+      return { start: start, end: end };
+    }
+
+    function matchesPeriod(item) {
+      const cat = selectedCategoryFilter;
+      if (cat !== '자재송장' && cat !== '병원비') return true;
+      if (periodAllMap[cat]) return true;
+      const d = parseRecordDateObj(item);
+      if (!d) return true;
+      if (cat === '자재송장') {
+        const b = getInvoicePeriodBounds();
+        return d >= b.start && d <= b.end;
+      } else if (cat === '병원비') {
+        if (medicalStartDate) {
+          const s = new Date(medicalStartDate + 'T00:00:00');
+          if (d < s) return false;
+        }
+        if (medicalEndDate) {
+          const e = new Date(medicalEndDate + 'T23:59:59');
+          if (d > e) return false;
+        }
+        return true;
+      }
+      return true;
+    }
+
+    function getRecordsInMajorCategory() {
+      return archiveRecords.filter(function(r) {
+        const matchMajor = (selectedCategoryFilter === '전체') || (r.category === selectedCategoryFilter);
+        if (!matchMajor) return false;
+        return matchesPeriod(r);
+      });
+    }
+
+    function getFilteredRecords() {
+      const base = getRecordsInMajorCategory();
+      return base.filter(function(r) {
+        const f = r.fields || {};
+        if (selectedCategoryFilter === '출장비' || selectedCategoryFilter === '병원비') {
+          if (selectedSubCategoryFilter !== '전체') {
+            const sub = (f.subCategory || '').trim() || '미지정';
+            if (sub !== selectedSubCategoryFilter) return false;
+          }
+        }
+        if (selectedCategoryFilter === '출장비' && selectedTravelDivisionFilter !== '전체') {
+          const div = (f.travelDivision || '식대').trim();
+          if (div !== selectedTravelDivisionFilter) return false;
+        }
+        if (selectedCategoryFilter === '자재송장' && selectedInvoiceProductFilter !== '전체') {
+          const prod = (f.productName || '미지정').trim() || '미지정';
+          if (prod !== selectedInvoiceProductFilter) return false;
+        }
+        return true;
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // E. 상단 탭 바 + 요약/필터 바 + 테이블 전체 렌더링
+    // -------------------------------------------------------------------------
+    function setMajorTab(cat) {
+      selectedCategoryFilter = cat;
+      selectedSubCategoryFilter = '전체';
+      selectedTravelDivisionFilter = '전체';
+      selectedInvoiceProductFilter = '전체';
+      const list = getFilteredRecords();
+      if (!list.some(function(r) { return r.id === selectedId; })) {
+        selectedId = list.length > 0 ? list[0].id : null;
+      }
+      render();
+    }
+
+    function shiftInvoiceMonth(delta) {
+      periodAllMap['자재송장'] = false;
+      const d = new Date(invoiceAnchorYear, invoiceAnchorMonth - 1 + delta, 1);
+      invoiceAnchorYear = d.getFullYear();
+      invoiceAnchorMonth = d.getMonth() + 1;
+      render();
+    }
+
+    function renderMajorTabsBar() {
+      const bar = document.getElementById('major-tabs-bar');
+      let html = '';
+      ALL_TABS.forEach(function(cat) {
+        const cnt = cat === '전체'
+          ? archiveRecords.length
+          : archiveRecords.filter(function(r) { return r.category === cat; }).length;
+        const activeCls = (cat === selectedCategoryFilter) ? 'active' : '';
+        html += '<button class="chip-btn ' + activeCls + '" onclick="setMajorTab(\\'' + cat + '\\')">' +
+          escapeHtml(cat) + ' (' + cnt + ')</button>';
+      });
+      bar.innerHTML = html;
+    }
+
+    function renderSummaryAndFilterBar() {
+      const bar = document.getElementById('summary-filter-bar');
+      const cat = selectedCategoryFilter;
+      if (cat === '공문(수신)' || cat === '공문(발신)') {
+        bar.style.display = 'none';
+        return;
+      }
+      bar.style.display = 'flex';
+      const majorList = getRecordsInMajorCategory();
+      let html = '';
+
+      // 1) 기간 필터 줄 (자재송장 / 병원비)
+      if (cat === '자재송장') {
+        const isAll = periodAllMap['자재송장'];
+        const b = getInvoicePeriodBounds();
+        const sStr = b.start.getFullYear() + '.' + String(b.start.getMonth()+1).padStart(2,'0') + '.' + String(b.start.getDate()).padStart(2,'0');
+        const eStr = b.end.getFullYear() + '.' + String(b.end.getMonth()+1).padStart(2,'0') + '.' + String(b.end.getDate()).padStart(2,'0');
+        html += '<div class="period-bar">' +
+          '<span class="period-badge">📅 기간필터: ' + (isAll ? '전체기간' : (invoiceAnchorYear + '.' + String(invoiceAnchorMonth).padStart(2,'0') + '월')) + '</span>' +
+          '<button class="period-nav-btn" onclick="shiftInvoiceMonth(-1)">◀ 이전달</button>' +
+          '<button class="period-nav-btn" onclick="shiftInvoiceMonth(1)">다음달 ▶</button>' +
+          '<span style="color:#1e3a8a; font-weight:600;">' + (isAll ? '전체 날짜 조회 중' : (sStr + ' ~ ' + eStr)) + '</span>' +
+          (!isAll ? '<button class="period-nav-btn" style="color:#dc2626; border-color:#fca5a5;" onclick="periodAllMap[\\'자재송장\\']=true; render();">전체보기</button>' : '') +
+          '</div>';
+      } else if (cat === '병원비') {
+        const isAll = periodAllMap['병원비'];
+        html += '<div class="period-bar">' +
+          '<span class="period-badge">📅 날짜필터: ' + (isAll ? '전체날짜' : '기간지정') + '</span>' +
+          '<input type="date" class="period-input" value="' + medicalStartDate + '" onchange="medicalStartDate=this.value; periodAllMap[\\'병원비\\']=false; render();" />' +
+          '<span>~</span>' +
+          '<input type="date" class="period-input" value="' + medicalEndDate + '" onchange="medicalEndDate=this.value; periodAllMap[\\'병원비\\']=false; render();" />' +
+          (!isAll ? '<button class="period-nav-btn" style="color:#dc2626; border-color:#fca5a5;" onclick="periodAllMap[\\'병원비\\']=true; medicalStartDate=\\'\\'; medicalEndDate=\\'\\'; render();">전체보기</button>' : '') +
+          '</div>';
+      }
+
+      // 2) 자재송장: 제품명별 합계수량 칩
+      if (cat === '자재송장') {
+        const prodSet = new Set();
+        majorList.forEach(function(r) {
+          const p = ((r.fields || {}).productName || '미지정').trim() || '미지정';
+          prodSet.add(p);
+        });
+        const prods = ['전체'].concat(Array.from(prodSet));
+        html += '<div class="chip-scroll-row">';
+        prods.forEach(function(p) {
+          const matched = majorList.filter(function(r) {
+            const rp = ((r.fields || {}).productName || '미지정').trim() || '미지정';
+            return p === '전체' || rp === p;
+          });
+          let sumQty = 0;
+          let unit = 'ton';
+          matched.forEach(function(r) {
+            sumQty += getNumericQty(r);
+            if (r.fields && r.fields.unit) unit = r.fields.unit;
+          });
+          const label = p === '전체'
+            ? ('품목전체 (' + matched.length + '건 · ' + formatQtyNum(sumQty) + unit + ')')
+            : (p + '(' + formatQtyNum(sumQty) + unit + ')');
+          const cls = (selectedInvoiceProductFilter === p) ? 'active' : '';
+          html += '<button class="amber-chip ' + cls + '" onclick="selectedInvoiceProductFilter=\\'' + escapeHtml(p) + '\\'; render();">' + escapeHtml(label) + '</button>';
+        });
+        html += '</div>';
+      }
+
+      // 3) 출장비 / 병원비 / 전체: 금액 합계 및 서브카테고리 칩
+      if (cat === '출장비' || cat === '병원비' || cat === '전체') {
+        let majorSum = 0;
+        majorList.forEach(function(r) { majorSum += getNumericAmount(r); });
+        let subSum = 0;
+        majorList.forEach(function(r) {
+          const sub = ((r.fields || {}).subCategory || '').trim() || '미지정';
+          if (selectedSubCategoryFilter === '전체' || sub === selectedSubCategoryFilter) {
+            subSum += getNumericAmount(r);
+          }
+        });
+        html += '<div class="summary-row">' +
+          '<span class="summary-title">' + escapeHtml(cat) + ' 합계 (' + majorList.length + '건): ' + formatNumber(majorSum) + '원</span>' +
+          ((cat !== '전체' && selectedSubCategoryFilter !== '전체')
+            ? '<span class="summary-sub">[' + escapeHtml(selectedSubCategoryFilter) + ' 합계: ' + formatNumber(subSum) + '원]</span>'
+            : '') +
+          '</div>';
+
+        if (cat === '출장비' || cat === '병원비') {
+          const subSet = new Set();
+          majorList.forEach(function(r) {
+            const s = ((r.fields || {}).subCategory || '').trim() || '미지정';
+            subSet.add(s);
+          });
+          const subs = ['전체'].concat(Array.from(subSet));
+          if (subs.length > 1) {
+            html += '<div class="chip-scroll-row">';
+            subs.forEach(function(s) {
+              const matched = majorList.filter(function(r) {
+                const rs = ((r.fields || {}).subCategory || '').trim() || '미지정';
+                return s === '전체' || rs === s;
+              });
+              let sum = 0;
+              matched.forEach(function(r) { sum += getNumericAmount(r); });
+              const cls = (selectedSubCategoryFilter === s) ? 'active' : '';
+              html += '<button class="sub-chip ' + cls + '" onclick="selectedSubCategoryFilter=\\'' + escapeHtml(s) + '\\'; render();">' +
+                escapeHtml(s) + ' (' + matched.length + '건 · ' + formatNumber(sum) + '원)</button>';
+            });
+            html += '</div>';
+          }
+        }
+
+        if (cat === '출장비') {
+          html += '<div class="chip-scroll-row">';
+          TRAVEL_DIVS.forEach(function(div) {
+            const matched = majorList.filter(function(r) {
+              const sub = ((r.fields || {}).subCategory || '').trim() || '미지정';
+              if (selectedSubCategoryFilter !== '전체' && sub !== selectedSubCategoryFilter) return false;
+              const rdiv = ((r.fields || {}).travelDivision || '식대').trim();
+              return div === '전체' || rdiv === div;
+            });
+            let sum = 0;
+            matched.forEach(function(r) { sum += getNumericAmount(r); });
+            const label = div === '전체'
+              ? ('구분전체 (' + matched.length + '건)')
+              : (div + ' (' + formatNumber(sum) + '원)');
+            const cls = (selectedTravelDivisionFilter === div) ? 'active' : '';
+            html += '<button class="amber-chip ' + cls + '" onclick="selectedTravelDivisionFilter=\\'' + escapeHtml(div) + '\\'; render();">' +
+              escapeHtml(label) + '</button>';
+          });
+          html += '</div>';
+        }
+      }
+
+      bar.innerHTML = html;
+    }
+
+    function getDisplayTitle(item) {
+      const f = item.fields || {};
+      if (item.category === '공문(수신)' || item.category === '공문(발신)') return f.title || '제목 없음';
+      if (item.category === '자재송장') return ((f.productName || '품목 미상') + ' (' + (f.specName || '-') + ')').trim();
+      if (item.category === '출장비') {
+        const sub = f.subCategory ? ('[' + f.subCategory + '] ') : '';
+        const div = f.travelDivision || '자차';
+        if (div === '자차') {
+          const mult = f.carMultiplier || '2';
+          const rate = f.carUnitPrice || '300';
+          return sub + '자차 (' + (f.distanceKm || '0') + 'km × ' + mult + ' × ' + rate + '원)';
+        }
+        return sub + div + ' - ' + (f.merchantName || '상호 미상');
+      }
+      if (item.category === '병원비') {
+        const sub = f.subCategory ? ('[' + f.subCategory + '] ') : '';
+        return sub + (f.clinicName || '병원/약국명 미상');
+      }
+      return '-';
+    }
+
+    function getDisplaySubtitle(item) {
+      const f = item.fields || {};
+      if (item.category === '공문(수신)' || item.category === '공문(발신)') {
+        const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
+        const partyLabel = isOut ? '받는사람' : '보낸사람';
+        const partyVal = isOut ? (f.recipient || '-') : (f.sender || '-');
+        return '공문번호: ' + (f.docNumber || '-') + ' | ' + partyLabel + ': ' + partyVal + ' | ' + (f.aiSummary || '-');
+      }
+      if (item.category === '자재송장') {
+        return '수량: ' + (f.quantity || '-') + ' ' + (f.unit || 'ton') + ' | 공급자: ' + (f.supplierName || '-') + ' | 송장번호: ' + (f.orderNumber || '-');
+      }
+      if (item.category === '출장비') {
+        return '구분: ' + (f.travelDivision || '-') + ' | 금액: ' + formatNumber(getNumericAmount(item)) + '원 | 일자: ' + dotDate(f.date);
+      }
+      if (item.category === '병원비') {
+        return '수납액: ' + formatNumber(getNumericAmount(item)) + '원 | 사업자번호: ' + (f.bizRegNumber || '-');
+      }
+      return '';
+    }
+
     function render() {
-      document.getElementById('count-label').textContent = archiveRecords.length;
-      if (majorCat === '공문(수신)' || majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(function(r) { return r.category === '공문(수신)' || r.category === '공문(발신)'; }))) {
-        const isOutTab = majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(function(r) { return r.category === '공문(발신)'; }));
+      renderMajorTabsBar();
+      renderSummaryAndFilterBar();
+
+      const items = getFilteredRecords();
+      document.getElementById('count-label').textContent = items.length;
+      if (!items.some(function(r) { return r.id === selectedId; })) {
+        selectedId = items.length > 0 ? items[0].id : null;
+      }
+
+      if (items.length === 0) {
+        leftPane.innerHTML = '<div style="padding:28px; text-align:center; color:#64748b; font-size:13px;">조건에 맞는 증빙서류가 없습니다.</div>';
+        selectRow(null);
+        return;
+      }
+
+      const cumMap = computeInvoiceCumulativeMap();
+      const repliedKeys = computeRepliedKeySet();
+      const cat = selectedCategoryFilter;
+      let html = '';
+
+      if (cat === '공문(수신)' || cat === '공문(발신)') {
+        const isOutTab = (cat === '공문(발신)');
         const partyHeader = isOutTab ? '받는사람' : '보낸사람';
-        let html = '<table class="grid-table"><thead><tr><th>날짜</th><th>공문번호</th><th>' + partyHeader + '</th>' + (isOutTab ? '<th>회신번호</th>' : '') + '<th>제목</th><th>내용</th><th>회신요청일</th>' + (isOutTab ? '' : '<th>회신완료</th>') + '</tr></thead><tbody>';
-        archiveRecords.forEach(function(item) {
+        const tableWidth = isOutTab ? 686 : 666;
+        html += '<table class="app-fixed-table" style="width:' + tableWidth + 'px;"><thead><tr>' +
+          '<th style="width:64px;">날짜</th>' +
+          '<th style="width:76px;">공문번호</th>' +
+          '<th style="width:68px;">' + partyHeader + '</th>' +
+          (isOutTab ? '<th style="width:76px;">회신번호</th>' : '') +
+          '<th style="width:118px;">제목</th>' +
+          '<th style="width:152px;">내용</th>' +
+          '<th style="width:64px;">회신요청일</th>' +
+          (!isOutTab ? '<th style="width:56px;">회신완료</th>' : '') +
+          '<th style="width:68px;">수정/삭제</th>' +
+          '</tr></thead><tbody>';
+        items.forEach(function(item) {
           const f = item.fields || {};
           const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
           const partyVal = isOut ? (f.recipient || '-') : (f.sender || '-');
@@ -6280,23 +7288,246 @@ function doPost(e) {
           const myKey = normalizeDocKey(f.docNumber);
           const isReplied = Boolean(myKey && repliedKeys.has(myKey));
           const cls = item.id === selectedId ? 'active' : '';
-          html += '<tr class="' + cls + '" data-id="' + escapeHtml(item.id) + '" onclick="selectRow(\\'' + escapeHtml(item.id) + '\\')">' +
-            '<td>' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
-            '<td>' + escapeHtml(f.docNumber || '-') + '</td>' +
-            '<td>' + escapeHtml(partyVal) + '</td>' +
-            (isOutTab ? '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(replyNum) + '</td>' : '') +
-            '<td style="text-align:left;">' + escapeHtml(f.title || '-') + '</td>' +
-            '<td style="text-align:left;">' + escapeHtml(f.aiSummary || '-') + '</td>' +
-            '<td>' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
-            (isOutTab ? '' : '<td style="color:#16a34a; font-weight:700; font-size:15px;">' + (isReplied ? '○' : '') + '</td>') +
+          const sid = escapeHtml(item.id);
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
+            '<td style="width:64px;">' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
+            '<td style="width:76px;">' + escapeHtml(f.docNumber || '-') + '</td>' +
+            '<td style="width:68px;">' + escapeHtml(partyVal) + '</td>' +
+            (isOutTab ? '<td style="width:76px; color:#1e3a8a; font-weight:700;">' + escapeHtml(replyNum) + '</td>' : '') +
+            '<td style="width:118px;">' + escapeHtml(f.title || '-') + '</td>' +
+            '<td style="width:152px;">' + escapeHtml(f.aiSummary || '-') + '</td>' +
+            '<td style="width:64px;">' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
+            (!isOutTab ? '<td style="width:56px; color:#16a34a; font-weight:700; font-size:14px;">' + (isReplied ? '○' : '') + '</td>' : '') +
+            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
-        leftPane.innerHTML = html;
+      } else if (cat === '자재송장') {
+        html += '<table class="app-fixed-table" style="width:642px;"><thead><tr>' +
+          '<th style="width:64px;">날짜</th>' +
+          '<th style="width:72px;">제품명</th>' +
+          '<th style="width:62px;">규격명</th>' +
+          '<th style="width:44px;">단위</th>' +
+          '<th style="width:64px;">수량</th>' +
+          '<th style="width:68px;">누적수량</th>' +
+          '<th style="width:78px;">공급자</th>' +
+          '<th style="width:122px;">주문송장번호</th>' +
+          '<th style="width:68px;">수정/삭제</th>' +
+          '</tr></thead><tbody>';
+        items.forEach(function(item) {
+          const f = item.fields || {};
+          const cls = item.id === selectedId ? 'active' : '';
+          const cumVal = cumMap[item.id] || f.quantity || '-';
+          const sid = escapeHtml(item.id);
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
+            '<td style="width:64px;">' + escapeHtml(dotDate(f.arrivalDate)) + '</td>' +
+            '<td style="width:72px;">' + escapeHtml(f.productName || '-') + '</td>' +
+            '<td style="width:62px;">' + escapeHtml(f.specName || '-') + '</td>' +
+            '<td style="width:44px;">' + escapeHtml(f.unit || 'ton') + '</td>' +
+            '<td style="width:64px;">' + escapeHtml(f.quantity || '-') + '</td>' +
+            '<td style="width:68px; color:#1e3a8a; font-weight:700;">' + escapeHtml(cumVal) + '</td>' +
+            '<td style="width:78px;">' + escapeHtml(f.supplierName || '-') + '</td>' +
+            '<td style="width:122px;">' + escapeHtml(f.orderNumber || '-') + '</td>' +
+            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+            '</tr>';
+        });
+        html += '</tbody></table>';
+      } else if (cat === '출장비') {
+        html += '<table class="app-fixed-table" style="width:446px;"><thead><tr>' +
+          '<th style="width:100px;">카테고리(날짜)</th>' +
+          '<th style="width:58px;">구분</th>' +
+          '<th style="width:136px;">상호</th>' +
+          '<th style="width:84px;">금액</th>' +
+          '<th style="width:68px;">수정/삭제</th>' +
+          '</tr></thead><tbody>';
+        items.forEach(function(item) {
+          const f = item.fields || {};
+          const cls = item.id === selectedId ? 'active' : '';
+          const sub = (f.subCategory || '').trim() || '미지정';
+          const dateStr = dotDate(f.date || (item.createdAt || '').split(' ')[0]);
+          const div = f.travelDivision || '식대';
+          const mult = f.carMultiplier || '2';
+          const rate = f.carUnitPrice || '300';
+          const desc = div === '자차'
+            ? (f.merchantName ? f.merchantName : ((f.distanceKm || '0') + 'km × ' + mult + ' × ' + rate + '원'))
+            : (f.merchantName || '-');
+          const amt = formatNumber(getNumericAmount(item)) + '원';
+          const sid = escapeHtml(item.id);
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
+            '<td style="width:100px;">' + escapeHtml(sub) + '<br/>(' + escapeHtml(dateStr) + ')</td>' +
+            '<td style="width:58px; color:#451a03; font-weight:700;">' + escapeHtml(div) + '</td>' +
+            '<td style="width:136px;">' + escapeHtml(desc) + '</td>' +
+            '<td style="width:84px; color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
+            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+            '</tr>';
+        });
+        html += '</tbody></table>';
+      } else if (cat === '병원비') {
+        html += '<table class="app-fixed-table" style="width:492px;"><thead><tr>' +
+          '<th style="width:74px;">카테고리</th>' +
+          '<th style="width:68px;">날짜</th>' +
+          '<th style="width:104px;">상호</th>' +
+          '<th style="width:80px;">금액</th>' +
+          '<th style="width:98px;">사업자등록번호</th>' +
+          '<th style="width:68px;">수정/삭제</th>' +
+          '</tr></thead><tbody>';
+        items.forEach(function(item) {
+          const f = item.fields || {};
+          const cls = item.id === selectedId ? 'active' : '';
+          const sub = (f.subCategory || '').trim() || '미지정';
+          const dateStr = dotDate(f.issueDate || (item.createdAt || '').split(' ')[0]);
+          const amt = formatNumber(getNumericAmount(item)) + '원';
+          const sid = escapeHtml(item.id);
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
+            '<td style="width:74px;">' + escapeHtml(sub) + '</td>' +
+            '<td style="width:68px;">' + escapeHtml(dateStr) + '</td>' +
+            '<td style="width:104px;">' + escapeHtml(f.clinicName || '-') + '</td>' +
+            '<td style="width:80px; color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
+            '<td style="width:98px;">' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
+            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+            '</tr>';
+        });
+        html += '</tbody></table>';
+      } else {
+        // 전체 탭 (앱의 5번째 표와 100% 동일: 분류 72 | 날짜 68 | 제목/상호/품목 150 | 상세/금액/수량 132 | 수정/삭제 68 = 490px)
+        html += '<table class="app-fixed-table" style="width:490px;"><thead><tr>' +
+          '<th style="width:72px;">분류</th>' +
+          '<th style="width:68px;">날짜</th>' +
+          '<th style="width:150px;">제목 / 상호 / 품목</th>' +
+          '<th style="width:132px;">상세 / 금액 / 수량</th>' +
+          '<th style="width:68px;">수정/삭제</th>' +
+          '</tr></thead><tbody>';
+        items.forEach(function(item) {
+          const f = item.fields || {};
+          const cls = item.id === selectedId ? 'active' : '';
+          let dateStr = (item.createdAt || '').split(' ')[0];
+          if (item.category === '공문(수신)' || item.category === '공문(발신)') dateStr = dotDate(f.sentDate);
+          else if (item.category === '자재송장') dateStr = dotDate(f.arrivalDate);
+          else if (item.category === '출장비') dateStr = dotDate(f.date);
+          else if (item.category === '병원비') dateStr = dotDate(f.issueDate);
+          const sid = escapeHtml(item.id);
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
+            '<td style="width:72px;">' + escapeHtml(item.category) + '</td>' +
+            '<td style="width:68px;">' + escapeHtml(dateStr) + '</td>' +
+            '<td style="width:150px;">' + escapeHtml(getDisplayTitle(item)) + '</td>' +
+            '<td style="width:132px;">' + escapeHtml(getDisplaySubtitle(item)) + '</td>' +
+            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+            '</tr>';
+        });
+        html += '</tbody></table>';
       }
+
+      leftPane.innerHTML = html;
       selectRow(selectedId);
     }
 
+    function selectRow(id) {
+      selectedId = id;
+      const rows = leftPane.querySelectorAll('tbody tr');
+      rows.forEach(function(tr) {
+        if (tr.getAttribute('data-id') === id) {
+          tr.classList.add('active');
+        } else {
+          tr.classList.remove('active');
+        }
+      });
+      const current = archiveRecords.find(function(r) { return r.id === selectedId; });
+      const imgEl = document.getElementById('preview-img');
+      const emptyMsg = document.getElementById('empty-photo-msg');
+      resetPhotoZoom();
+      if (current && current.base64Image) {
+        imgEl.src = 'data:image/jpeg;base64,' + current.base64Image;
+        imgEl.style.display = 'block';
+        if (emptyMsg) emptyMsg.style.display = 'none';
+      } else {
+        imgEl.style.display = 'none';
+        if (emptyMsg) emptyMsg.style.display = 'block';
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // F. HTML 내부에서 직접 항목 수정(✏️) 및 삭제(🗑️)
+    // -------------------------------------------------------------------------
+    function deleteRow(id) {
+      const target = archiveRecords.find(function(r) { return r.id === id; });
+      if (!target) return;
+      if (!confirm('선택한 항목(' + getDisplayTitle(target) + ')을 목록에서 삭제하시겠습니까?\\n(삭제 후 우측 상단 [통합본 저장]을 누르면 반영된 파일이 저장됩니다)')) return;
+      const idx = archiveRecords.findIndex(function(r) { return r.id === id; });
+      if (idx !== -1) archiveRecords.splice(idx, 1);
+      render();
+    }
+
+    function openEditModal(id) {
+      const rec = archiveRecords.find(function(r) { return r.id === id; });
+      if (!rec) return;
+      editingRecordId = id;
+      const f = rec.fields || {};
+      const body = document.getElementById('edit-modal-body');
+      let html = '';
+
+      function fieldInput(key, label, val) {
+        return '<div class="field-group"><label>' + escapeHtml(label) + '</label>' +
+          '<input type="text" data-field="' + escapeHtml(key) + '" value="' + escapeHtml(val || '') + '" /></div>';
+      }
+
+      if (rec.category === '공문(수신)' || rec.category === '공문(발신)') {
+        const isOut = rec.category === '공문(발신)';
+        html += fieldInput('sentDate', '날짜 (YYYY.MM.DD)', dotDate(f.sentDate));
+        html += fieldInput('docNumber', '공문번호', f.docNumber);
+        html += fieldInput(isOut ? 'recipient' : 'sender', isOut ? '받는사람' : '보낸사람', isOut ? f.recipient : f.sender);
+        if (isOut) html += fieldInput('replyDocNumber', '회신번호 (원본 수신공문 번호)', f.replyDocNumber);
+        html += fieldInput('title', '제목', f.title);
+        html += fieldInput('aiSummary', '내용 (핵심요약)', f.aiSummary);
+        html += fieldInput('replyDeadline', '회신요청일', dotDate(f.replyDeadline));
+      } else if (rec.category === '자재송장') {
+        html += fieldInput('arrivalDate', '입고날짜 (YYYY.MM.DD)', dotDate(f.arrivalDate));
+        html += fieldInput('productName', '제품명', f.productName);
+        html += fieldInput('specName', '규격명', f.specName);
+        html += fieldInput('unit', '단위', f.unit || 'ton');
+        html += fieldInput('quantity', '수량', f.quantity);
+        html += fieldInput('supplierName', '공급자', f.supplierName);
+        html += fieldInput('orderNumber', '주문송장번호', f.orderNumber);
+      } else if (rec.category === '출장비') {
+        html += fieldInput('subCategory', '카테고리 (예: 여의도출장)', f.subCategory);
+        html += fieldInput('date', '날짜 (YYYY.MM.DD)', dotDate(f.date));
+        html += fieldInput('travelDivision', '구분 (자차/택시/기차/식대/통행료)', f.travelDivision || '식대');
+        html += fieldInput('merchantName', '상호 / 내역', f.merchantName);
+        html += fieldInput('totalAmount', '금액 (숫자만)', f.totalAmount);
+      } else if (rec.category === '병원비') {
+        html += fieldInput('subCategory', '카테고리 (예: 감기, 치과)', f.subCategory);
+        html += fieldInput('issueDate', '날짜 (YYYY.MM.DD)', dotDate(f.issueDate));
+        html += fieldInput('clinicName', '병원/약국 상호', f.clinicName);
+        html += fieldInput('totalPaid', '수납 금액 (숫자만)', f.totalPaid);
+        html += fieldInput('bizRegNumber', '사업자등록번호', f.bizRegNumber);
+      }
+
+      body.innerHTML = html;
+      document.getElementById('edit-modal-backdrop').style.display = 'flex';
+    }
+
+    function closeEditModal() {
+      editingRecordId = null;
+      document.getElementById('edit-modal-backdrop').style.display = 'none';
+    }
+
+    function saveEditedRecord() {
+      if (!editingRecordId) return;
+      const rec = archiveRecords.find(function(r) { return r.id === editingRecordId; });
+      if (!rec) return;
+      if (!rec.fields) rec.fields = {};
+      const inputs = document.querySelectorAll('#edit-modal-body input[data-field]');
+      inputs.forEach(function(inp) {
+        const k = inp.getAttribute('data-field');
+        rec.fields[k] = inp.value.trim();
+        if (k === 'quantity') rec.fields['weight'] = inp.value.trim();
+      });
+      closeEditModal();
+      render();
+    }
+
+    // -------------------------------------------------------------------------
+    // G. 외부 HTML 다중 병합 & 통합본 저장
+    // -------------------------------------------------------------------------
     async function mergeExternalHtmlFiles(fileList) {
       if (!fileList || fileList.length === 0) return;
       let addedCount = 0;
@@ -6315,10 +7546,6 @@ function doPost(e) {
               if (item && item.id && !existingIds.has(item.id)) {
                 archiveRecords.push(item);
                 existingIds.add(item.id);
-                if (item.category === '공문(발신)' && item.fields && item.fields.replyDocNumber) {
-                  const k = normalizeDocKey(item.fields.replyDocNumber);
-                  if (k) repliedKeys.add(k);
-                }
                 addedCount++;
               }
             }
@@ -6348,6 +7575,9 @@ function doPost(e) {
       a.download = document.title.split(' ').join('_') + '_통합본.html';
       a.click();
     }
+
+    // 초기 구동
+    render();
   </script>
 </body>
 </html>''';
@@ -7213,14 +8443,22 @@ function doPost(e) {
         title: const Text('증빙서류 스냅 v39'),
         actions: [
           IconButton(
-            tooltip: '원드라이브 덮어쓰기 & AI 설정',
+            tooltip: _geminiApiKey.trim().isEmpty
+                ? 'AI & 공유 설정 (현재: 내장 OCR 모드)'
+                : (_geminiKeyVerified
+                    ? 'Gemini 2.5 Pro 정상 작동 중'
+                    : '⚠️ Gemini API 키 오류 (클릭하여 확인)'),
             icon: Icon(
-              _geminiApiKey.trim().isNotEmpty
-                  ? Icons.auto_awesome
-                  : Icons.settings,
-              color: _geminiApiKey.trim().isNotEmpty
-                  ? Colors.amberAccent
-                  : Colors.white,
+              _geminiApiKey.trim().isEmpty
+                  ? Icons.settings
+                  : (_geminiKeyVerified
+                      ? Icons.auto_awesome
+                      : Icons.error_outline),
+              color: _geminiApiKey.trim().isEmpty
+                  ? Colors.white
+                  : (_geminiKeyVerified
+                      ? Colors.amberAccent
+                      : Colors.redAccent),
             ),
             onPressed: _openSettingsDialog,
           ),
