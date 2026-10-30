@@ -5844,7 +5844,7 @@ function doPost(e) {
         final replyNum = f['replyDocNumber']?.trim().isNotEmpty == true
             ? f['replyDocNumber']!
             : '-';
-        final myKey = _normalizeDocCompareKey(f['docNumber']);
+        final myKey = DocRecord.normalizeDocNumKey(f['docNumber']);
         final isReplied = myKey.isNotEmpty && repliedKeys.contains(myKey);
         final cls = item.id == firstId ? 'active' : '';
         sb.write(
@@ -6250,7 +6250,7 @@ function doPost(e) {
       const c = String(raw).replace(/\\s+/g, '');
       const m = c.match(/([가-힣A-Za-z0-9]+?)[-~—–_.:]([0-9]+)/);
       if (m) {
-        const dept = m[1].replace(/(?:과|팀|실|부|처|국|단|소|청)\\$/, '');
+        const dept = m[1].replace(/(?:과|팀|실|부|처|국|단|소|청)\$/, '');
         const num = m[2].replace(/^0+/, '') || '0';
         return dept + '-' + num;
       }
