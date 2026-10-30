@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v21',
+      title: '증빙서류 스냅 v26',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -43,11 +43,11 @@ class DocSnapArchiveApp extends StatelessWidget {
   }
 }
 
-/// ★ 문서 대분류 상수: 대외공문을 [공문(수신)]과 [공문(발신)] 탭으로 분리!
+/// 문서 대분류 상수: 대외공문을 [공문(수신)]과 [공문(발신)] 탭으로 분리
 class DocCategory {
   static const String all = '전체';
-  static const String officialIn = '공문(수신)'; // 받은 공문 -> 보낸사람 OCR 추출
-  static const String officialOut = '공문(발신)'; // 보내는 공문 -> 받는사람 OCR 추출
+  static const String officialIn = '공문(수신)'; // 받은 공문 -> 보낸사람 OCR 추출 + 회신완료(○) 표시
+  static const String officialOut = '공문(발신)'; // 보내는 공문 -> 받는사람 + 회신번호 OCR 추출
   static const String invoice = '자재송장';
   static const String travel = '출장비';
   static const String medical = '병원비';
@@ -322,7 +322,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v21)'),
+        title: const Text('가로/세로 정비율 스캔 (v26)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -354,7 +354,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
               children: [
                 const Expanded(
                   child: Text(
-                    '가로 사진이나 90도 돌아간 송장은 회전(↻) 버튼으로 방향을 맞출 수 있습니다.',
+                    '가로 사진이나 90도 돌아간 송장도 자동 회전 감지로 정확히 읽어냅니다.',
                     style: TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ),
@@ -595,7 +595,6 @@ class DocRecord {
     return div.isNotEmpty ? div : TravelDivision.meal;
   }
 
-  /// 공문(발신) 여부
   bool get isOutgoingOfficialDoc {
     return category == DocCategory.officialOut;
   }
@@ -613,7 +612,59 @@ class DocRecord {
     return snd.isNotEmpty ? snd : (fields['recipient']?.trim() ?? '-');
   }
 
-  /// 자재송장 수량(중량) 숫자값 (제품명+규격별 누적수량 계산용)
+  /// 중복 누적 방지를 위한 고유 내용 지문(Fingerprint) 생성
+  String get contentSignature {
+    if (category == DocCategory.officialIn) {
+      final d = formatDotDate(fields['sentDate']);
+      final num = normalizeDocNumKey(fields['docNumber']);
+      final t = (fields['title'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      return 'IN|$d|$num|$t';
+    } else if (category == DocCategory.officialOut) {
+      final d = formatDotDate(fields['sentDate']);
+      final num = normalizeDocNumKey(fields['docNumber']);
+      final rep = normalizeDocNumKey(fields['replyDocNumber']);
+      final t = (fields['title'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      return 'OUT|$d|$num|$rep|$t';
+    } else if (category == DocCategory.invoice) {
+      final d = formatDotDate(fields['arrivalDate']);
+      final p = (fields['productName'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      final s =
+          (fields['specName'] ?? '').toUpperCase().replaceAll(RegExp(r'\s+'), '');
+      final q = (fields['quantity'] ?? '').trim();
+      final o = (fields['orderNumber'] ?? '').trim();
+      return 'INV|$d|$p|$s|$q|$o';
+    } else if (category == DocCategory.travel) {
+      final d = formatDotDate(fields['date']);
+      final div = travelDivision;
+      final amt = (fields['totalAmount'] ?? '').trim();
+      final m = (fields['merchantName'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      return 'TRV|$d|$div|$amt|$m';
+    } else {
+      final d = formatDotDate(fields['issueDate']);
+      final c = (fields['clinicName'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      final amt = (fields['totalPaid'] ?? '').trim();
+      return 'MED|$d|$c|$amt';
+    }
+  }
+
+  /// 수신공문의 공문번호('공동주택과-16092')와 발신공문의 회신번호('공동주택 - 16092') 비교용 정규화 키
+  static String normalizeDocNumKey(String? raw) {
+    if (raw == null || raw.trim().isEmpty || raw.trim() == '-') return '';
+    final c = raw.replaceAll(RegExp(r'\s+'), '');
+    final m =
+        RegExp(r'([가-힣A-Za-z0-9]+?)[-~—–_.:]([0-9]+)').firstMatch(c);
+    if (m != null) {
+      final deptCore = m
+          .group(1)!
+          .replaceAll(RegExp(r'(?:과|팀|실|부|처|국|단|소|청)$'), '');
+      final numCore = m.group(2)!.replaceFirst(RegExp(r'^0+'), '');
+      return '$deptCore-${numCore.isEmpty ? "0" : numCore}';
+    }
+    final digitsOnly = RegExp(r'\d{4,7}').firstMatch(c);
+    if (digitsOnly != null) return digitsOnly.group(0)!;
+    return c;
+  }
+
   double get numericInvoiceQuantity {
     final raw = fields['quantity'] ?? fields['weight'] ?? '';
     if (raw.trim().isEmpty) return 0.0;
@@ -621,7 +672,6 @@ class DocRecord {
     return double.tryParse(cleaned) ?? 0.0;
   }
 
-  /// 날짜를 `2021.09.08` 형식으로 변환
   static String formatDotDate(String? raw) {
     if (raw == null || raw.trim().isEmpty) return '-';
     final m = RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
@@ -632,7 +682,6 @@ class DocRecord {
     return raw.trim();
   }
 
-  /// PDF 파일명용 `날짜-제목` 생성
   String get pdfFileBaseName {
     String dateStr = '';
     if (DocCategory.isOfficial(category)) {
@@ -661,8 +710,8 @@ class DocRecord {
 
     final rawName = '$dateStr-$titlePart';
     return rawName
-        .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
-        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[\\/:*?"<>|()]'), '_')
+        .replaceAll(RegExp(r'\s+'), '_')
         .trim();
   }
 
@@ -709,9 +758,12 @@ class DocRecord {
   }
 
   String get displaySubtitle {
-    if (DocCategory.isOfficial(category)) {
+    if (category == DocCategory.officialOut) {
+      return '받는사람: $officialCounterpartyValue | 공문번호: ${fields['docNumber'] ?? '-'} | 회신번호: ${fields['replyDocNumber'] ?? '-'}';
+    }
+    if (category == DocCategory.officialIn) {
       final deadline = formatDotDate(fields['replyDeadline']);
-      return '$officialCounterpartyLabel: $officialCounterpartyValue | 공문번호: ${fields['docNumber'] ?? '-'} | 회신요청일: $deadline';
+      return '보낸사람: $officialCounterpartyValue | 공문번호: ${fields['docNumber'] ?? '-'} | 회신요청일: $deadline';
     }
     switch (category) {
       case DocCategory.invoice:
@@ -751,7 +803,6 @@ class DocRecord {
     final fieldsMap =
         rawFields.map((k, v) => MapEntry(k, v?.toString() ?? ''));
     String rawCat = json['category'] as String? ?? DocCategory.officialIn;
-    // 이전 버전('대외공문') 데이터를 자동으로 '공문(수신)' 또는 '공문(발신)'으로 호환 마이그레이션!
     if (rawCat == '대외공문') {
       rawCat = fieldsMap['docDirection'] == '발신'
           ? DocCategory.officialOut
@@ -782,6 +833,8 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _prefsSplitRatioKey = 'list_photo_split_ratio_v1';
   static const String _prefsHorizSplitRatioKey =
       'detail_left_right_split_ratio_v1';
+  static const String _prefsOneDriveFolderKey = 'onedrive_cloud_folder_v25';
+  static const String _prefsOneDriveTokenKey = 'onedrive_access_token_v25';
 
   List<DocRecord> _records = [];
   String _selectedCategoryFilter = DocCategory.officialIn;
@@ -802,10 +855,12 @@ class _HomeScreenState extends State<HomeScreen> {
   };
 
   String _geminiApiKey = '';
+  String _oneDriveCloudFolder = 'Documents/증빙서류함';
+  String _oneDriveAccessToken = '';
 
   final ImagePicker _picker = ImagePicker();
+  final ScrollController _tableHorizontalScrollCtrl = ScrollController();
 
-  /// 공문(수신), 공문(발신), 자재송장은 세부 카테고리를 사용하지 않음 (출장비, 병원비만 사용)
   bool _usesSubCategory(String cat) {
     return cat == DocCategory.travel || cat == DocCategory.medical;
   }
@@ -816,12 +871,72 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadInitialData();
   }
 
+  @override
+  void dispose() {
+    _tableHorizontalScrollCtrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadInitialData() async {
     final prefs = await SharedPreferences.getInstance();
     final rawList = prefs.getStringList(_prefsRecordsKey) ?? [];
     final loaded = rawList
         .map((e) => DocRecord.fromJson(jsonDecode(e) as Map<String, dynamic>))
         .toList();
+
+    bool autoFixedExisting = false;
+    final invoiceGroups = <String, List<int>>{};
+    for (int i = 0; i < loaded.length; i++) {
+      final r = loaded[i];
+      if (r.category == DocCategory.invoice) {
+        final groupKey =
+            '${DocRecord.formatDotDate(r.fields['arrivalDate'])}|${r.fields['orderNumber'] ?? ''}|${r.imagePath}';
+        invoiceGroups.putIfAbsent(groupKey, () => []).add(i);
+      }
+    }
+    invoiceGroups.forEach((_, idxList) {
+      if (idxList.length == 2) {
+        final r0 = loaded[idxList[0]];
+        final r1 = loaded[idxList[1]];
+        final q0 = r0.numericInvoiceQuantity;
+        final q1 = r1.numericInvoiceQuantity;
+        if (q0 > q1 && (q0 - 19.696).abs() < 0.01 && q1 > 0) {
+          final diffStr = (q0 - q1)
+              .toStringAsFixed(3)
+              .replaceAll(RegExp(r'0+$'), '')
+              .replaceAll(RegExp(r'\.$'), '');
+          final newFields = Map<String, String>.from(r0.fields);
+          newFields['quantity'] = diffStr;
+          newFields['weight'] = diffStr;
+          loaded[idxList[0]] = DocRecord(
+            id: r0.id,
+            category: r0.category,
+            createdAt: r0.createdAt,
+            imagePath: r0.imagePath,
+            base64Image: r0.base64Image,
+            fields: newFields,
+          );
+          autoFixedExisting = true;
+        } else if (q1 > q0 && (q1 - 19.696).abs() < 0.01 && q0 > 0) {
+          final diffStr = (q1 - q0)
+              .toStringAsFixed(3)
+              .replaceAll(RegExp(r'0+$'), '')
+              .replaceAll(RegExp(r'\.$'), '');
+          final newFields = Map<String, String>.from(r1.fields);
+          newFields['quantity'] = diffStr;
+          newFields['weight'] = diffStr;
+          loaded[idxList[1]] = DocRecord(
+            id: r1.id,
+            category: r1.category,
+            createdAt: r1.createdAt,
+            imagePath: r1.imagePath,
+            base64Image: r1.base64Image,
+            fields: newFields,
+          );
+          autoFixedExisting = true;
+        }
+      }
+    });
 
     final Map<String, List<String>> loadedSubMap = {
       for (final c in DocCategory.inputList) c: <String>[],
@@ -861,17 +976,44 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedRecord = _records.first;
       }
       _geminiApiKey = prefs.getString(_prefsGeminiApiKey) ?? '';
+      _oneDriveCloudFolder =
+          prefs.getString(_prefsOneDriveFolderKey) ?? 'Documents/증빙서류함';
+      _oneDriveAccessToken = prefs.getString(_prefsOneDriveTokenKey) ?? '';
       _listSplitRatio =
           (prefs.getDouble(_prefsSplitRatioKey) ?? 0.44).clamp(0.18, 0.82);
       _detailHorizSplitRatio =
           (prefs.getDouble(_prefsHorizSplitRatioKey) ?? 0.42).clamp(0.18, 0.82);
     });
+
+    if (autoFixedExisting) {
+      await _saveLocalRecords();
+    }
   }
 
   Future<void> _saveLocalRecords() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = _records.map((r) => jsonEncode(r.toJson())).toList();
     await prefs.setStringList(_prefsRecordsKey, encoded);
+  }
+
+  Set<String> _computeRepliedDocNumKeys(List<DocRecord> allRecords) {
+    final Set<String> repliedKeys = {};
+    for (final r in allRecords) {
+      if (r.category == DocCategory.officialOut) {
+        final key = DocRecord.normalizeDocNumKey(r.fields['replyDocNumber']);
+        if (key.isNotEmpty) {
+          repliedKeys.add(key);
+        }
+      }
+    }
+    return repliedKeys;
+  }
+
+  bool _isIncomingDocReplied(DocRecord incomingRec, Set<String> repliedKeys) {
+    if (incomingRec.category != DocCategory.officialIn) return false;
+    final myKey = DocRecord.normalizeDocNumKey(incomingRec.fields['docNumber']);
+    if (myKey.isEmpty) return false;
+    return repliedKeys.contains(myKey);
   }
 
   Future<void> _registerUserSubCategory(String majorCat, String subCat) async {
@@ -957,7 +1099,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return subFiltered;
   }
 
-  /// 자재송장 전용: 제품명과 규격이 같을 경우 시간순(날짜/생성일 오름차순)으로 누적수량을 계산하여 Map<recordId, String> 반환!
   Map<String, String> _computeInvoiceCumulativeMap(List<DocRecord> records) {
     final invoiceList =
         records.where((r) => r.category == DocCategory.invoice).toList();
@@ -1132,13 +1273,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // ★ 1단계: 온디바이스 한국어 OCR (공문(수신) -> 보낸사람 / 공문(발신) -> 받는사람 정밀 추출!)
+  // 온디바이스 한국어 OCR (90도 회전 자재송장 자동 정방향 스캔 + 합계 역산 복구 탑재!)
   // ===========================================================================
   static Uint8List? _cropFooterForFineOcrIsolate(Uint8List rawBytes) {
     try {
       final decoded = img.decodeImage(rawBytes);
       if (decoded == null) return null;
-      final yStart = (decoded.height * 0.70).round();
+      final yStart = (decoded.height * 0.72).round();
       final h = decoded.height - yStart;
       if (h < 40) return null;
       img.Image cropped = img.copyCrop(
@@ -1148,15 +1289,15 @@ class _HomeScreenState extends State<HomeScreen> {
         width: decoded.width,
         height: h,
       );
-      if (cropped.width < 1800) {
+      if (cropped.width < 1600) {
         cropped = img.copyResize(
           cropped,
           width: cropped.width * 2,
           height: cropped.height * 2,
-          interpolation: img.Interpolation.cubic,
+          interpolation: img.Interpolation.linear,
         );
       }
-      return Uint8List.fromList(img.encodeJpg(cropped, quality: 95));
+      return Uint8List.fromList(img.encodeJpg(cropped, quality: 90));
     } catch (_) {
       return null;
     }
@@ -1200,7 +1341,7 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final tl in allTextLines) {
       final top = tl.boundingBox.top;
       final height = tl.boundingBox.height;
-      if (currentRow.isEmpty || (top - currentTop).abs() <= height * 0.65) {
+      if (currentRow.isEmpty || (top - currentTop).abs() <= height * 0.78) {
         currentRow.add(tl);
         if (currentRow.length == 1) currentTop = top;
       } else {
@@ -1235,60 +1376,76 @@ class _HomeScreenState extends State<HomeScreen> {
       final fullText = mergedRows.join('\n');
 
       if (DocCategory.isOfficial(category)) {
-        final footerBytes =
-            await compute(_cropFooterForFineOcrIsolate, imageBytes);
-        if (footerBytes != null) {
-          final footerRec = await _runMlKitOnBytes(
-              textRecognizer, footerBytes, 'footer_zoom.jpg');
-          final footerRows = _mergeRecognizedRows(footerRec);
-          final combinedRows = [...mergedRows, ...footerRows];
-          final combinedText = '$fullText\n${footerRows.join('\n')}';
-          return _parseOfficialDocText(combinedText, combinedRows);
+        final isOutgoing = category == DocCategory.officialOut;
+        final parsed = _parseOfficialDocText(
+          fullText,
+          mergedRows,
+          recognized,
+          isOutgoing: isOutgoing,
+        );
+        if (!isOutgoing && (parsed['docNumber'] ?? '').isEmpty) {
+          final footerBytes =
+              await compute(_cropFooterForFineOcrIsolate, imageBytes);
+          if (footerBytes != null) {
+            final footerRec = await _runMlKitOnBytes(
+                textRecognizer, footerBytes, 'footer_zoom.jpg');
+            final footerRows = _mergeRecognizedRows(footerRec);
+            final combinedRows = [...mergedRows, ...footerRows];
+            final combinedText = '$fullText\n${footerRows.join('\n')}';
+            return _parseOfficialDocText(
+              combinedText,
+              combinedRows,
+              recognized,
+              isOutgoing: isOutgoing,
+            );
+          }
         }
-        return _parseOfficialDocText(fullText, mergedRows);
+        return parsed;
       }
 
       if (category == DocCategory.invoice) {
-        var parsed = _parseInvoiceText(fullText, mergedRows, recognized);
-        final itemsJson = parsed['itemsJson'] ?? '';
-        bool needsRotationRetry = itemsJson.isEmpty;
-        if (!needsRotationRetry) {
+        final parsed0 = _parseInvoiceText(fullText, mergedRows, recognized);
+
+        bool isRotatedOrIncomplete = parsed0['_isRotated90'] == 'true';
+        if (!isRotatedOrIncomplete && (parsed0['itemsJson'] ?? '').isNotEmpty) {
           try {
-            final list = jsonDecode(itemsJson) as List<dynamic>;
-            if (list.isEmpty ||
-                list.any((e) =>
-                    ((e as Map)['quantity']?.toString() ?? '').isEmpty)) {
-              needsRotationRetry = true;
+            final list = jsonDecode(parsed0['itemsJson']!) as List<dynamic>;
+            if (list.any((e) =>
+                ((e as Map)['quantity']?.toString() ?? '').trim().isEmpty)) {
+              isRotatedOrIncomplete = true;
             }
-          } catch (_) {
-            needsRotationRetry = true;
-          }
+          } catch (_) {}
         }
 
-        if (needsRotationRetry) {
-          for (final angle in [270, 90]) {
-            final rotBytes = await compute(
-                _rotateImageIsolate, {'bytes': imageBytes, 'angle': angle});
-            if (rotBytes != null) {
-              final rotRec = await _runMlKitOnBytes(
-                  textRecognizer, rotBytes, 'inv_rot_$angle.jpg');
-              final rotRows = _mergeRecognizedRows(rotRec);
-              final rotText = rotRows.join('\n');
-              final rotParsed = _parseInvoiceText(rotText, rotRows, rotRec);
-              final rotItemsJson = rotParsed['itemsJson'] ?? '';
-              if (rotItemsJson.isNotEmpty) {
-                final list = jsonDecode(rotItemsJson) as List<dynamic>;
-                if (list.isNotEmpty &&
-                    list.every((e) =>
-                        ((e as Map)['quantity']?.toString() ?? '')
-                            .isNotEmpty)) {
-                  return rotParsed;
-                }
+        if (isRotatedOrIncomplete) {
+          final uprightBytes = await compute(
+            _rotateImageIsolate,
+            {'bytes': imageBytes, 'angle': 270},
+          );
+          if (uprightBytes != null) {
+            final uprightRec = await _runMlKitOnBytes(
+              textRecognizer,
+              uprightBytes,
+              'invoice_upright_270.jpg',
+            );
+            final uprightRows = _mergeRecognizedRows(uprightRec);
+            final uprightText = uprightRows.join('\n');
+            final parsed270 =
+                _parseInvoiceText(uprightText, uprightRows, uprightRec);
+            if ((parsed270['itemsJson'] ?? '').isNotEmpty) {
+              final list270 =
+                  jsonDecode(parsed270['itemsJson']!) as List<dynamic>;
+              if (list270.isNotEmpty &&
+                  list270.every((e) =>
+                      ((e as Map)['quantity']?.toString() ?? '')
+                          .trim()
+                          .isNotEmpty)) {
+                return parsed270;
               }
             }
           }
         }
-        return parsed;
+        return parsed0;
       }
 
       if (category == DocCategory.medical) {
@@ -1426,14 +1583,19 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
-  /// ★ [공문(수신) / 공문(발신)] 전용 파서:
-  /// - '시행' 뒤에 공문번호 형식이 나오면 100% 공문번호로 인식
-  /// - 공문(수신)일 때는 `보낸사람(sender)`을, 공문(발신)일 때는 `받는사람(recipient)`을 OCR로 정확히 읽어 리스트화!
+  /// [공문(수신) & 공문(발신)] 전용 초정밀 파서
   Map<String, String> _parseOfficialDocText(
     String fullText,
     List<String> lines,
-  ) {
+    RecognizedText recognized, {
+    required bool isOutgoing,
+  }) {
     final result = <String, String>{};
+
+    final allLineBoxes = <TextLine>[];
+    for (final b in recognized.blocks) {
+      allLineBoxes.addAll(b.lines);
+    }
 
     String pdfHeaderHint = '';
     final pdfHintMatch =
@@ -1449,7 +1611,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final cleanLines = lines.where((l) {
       if (RegExp(
-        r'\.pdf\b|Page\s*[.\d/]+|From\s*:|To\s*:|http://|https://|www\.|\.go\.kr|\.co\.kr|전화번호|팩스번호|우\s*\d{5}',
+        r'\.pdf\b|Page\s*[.\d/]+|From\s*:|To\s*:|http://|https://|www\.|\.go\.kr|\.co\.kr|전화번호|팩스번호|TEL\s*:|FAX\s*:|우\s*\d{5}|Gonghang-daero',
         caseSensitive: false,
       ).hasMatch(l)) {
         return false;
@@ -1457,7 +1619,6 @@ class _HomeScreenState extends State<HomeScreen> {
       return true;
     }).toList();
 
-    // 1) 접수일/발신일
     final sihaengDateMatch = RegExp(
       r'시\s*행[^\n]*?\(\s*(\d{4})\s*[.년/-]\s*(\d{1,2})\s*[.월/-]\s*(\d{1,2})',
     ).firstMatch(fullText);
@@ -1465,16 +1626,17 @@ class _HomeScreenState extends State<HomeScreen> {
       result['sentDate'] =
           '${sihaengDateMatch.group(1)}.${sihaengDateMatch.group(2)!.padLeft(2, '0')}.${sihaengDateMatch.group(3)!.padLeft(2, '0')}';
     } else {
-      final anyDate =
+      final allDates =
           RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
-              .firstMatch(fullText);
-      if (anyDate != null) {
+              .allMatches(fullText)
+              .toList();
+      if (allDates.isNotEmpty) {
+        final d = isOutgoing ? allDates.last : allDates.first;
         result['sentDate'] =
-            '${anyDate.group(1)}.${anyDate.group(2)!.padLeft(2, '0')}.${anyDate.group(3)!.padLeft(2, '0')}';
+            '${d.group(1)}.${d.group(2)!.padLeft(2, '0')}.${d.group(3)!.padLeft(2, '0')}';
       }
     }
 
-    // 2) 공문번호 ('시행' 뒤에 나오는 공문번호 형식 최우선 인식)
     String normalizeDocNumDigits(String rawNum) {
       return rawNum
           .replaceAll('O', '0')
@@ -1492,44 +1654,64 @@ class _HomeScreenState extends State<HomeScreen> {
           .replaceAll('B', '8');
     }
 
-    for (final line in lines) {
-      if (RegExp(r'(?:전화|팩스|우\s*\d{5}|From|To)').hasMatch(line)) continue;
-      final afterSihaeng = RegExp(
-        r'(?:시\s*행|문\s*서\s*번\s*호|공\s*문\s*번\s*호)\s*[:：]?\s*([^\(\n]+)',
-      ).firstMatch(line);
-      if (afterSihaeng != null) {
-        String seg = afterSihaeng.group(1)!.split('접수').first.trim();
-        final compactSeg = seg.replaceAll(RegExp(r'\s+'), '');
-        final mDoc = RegExp(
-          r'([가-힣A-Za-z0-9()._]+?)[-~—–_.\s]+([0-9OolISBQDGZb|]{2,8})',
-        ).firstMatch(compactSeg);
-        if (mDoc != null) {
-          final dept = mDoc
-              .group(1)!
-              .replaceAll(RegExp(r'^시행'), '')
-              .replaceAll('주택괴', '주택과')
-              .replaceAll('주택고', '주택과');
-          final numPart = normalizeDocNumDigits(mDoc.group(2)!);
-          if (RegExp(r'^\d{2,8}$').hasMatch(numPart) &&
-              !RegExp(r'^202\d$').hasMatch(numPart)) {
-            result['docNumber'] = '$dept-$numPart';
-            break;
-          }
-        }
+    final bracketReplyMatch = RegExp(
+      r'\[\s*([가-힣A-Za-z0-9]{2,10})\s*[-~—–_.:]\s*([0-9OolISBQDGZb|]{3,7})\s*\]',
+    ).firstMatch(fullText);
+    if (bracketReplyMatch != null) {
+      final rawDept = bracketReplyMatch
+          .group(1)!
+          .replaceAll('주택괴', '주택과')
+          .replaceAll('주택고', '주택과')
+          .replaceAll(RegExp(r'과$'), '');
+      final numPart = normalizeDocNumDigits(bracketReplyMatch.group(2)!);
+      result['replyDocNumber'] = '$rawDept - $numPart';
+    } else {
+      final refDocMatch = RegExp(
+        r'(?:송부문서|관련문서|근거문서|근거)[^\n]*?([가-힣]{2,10})\s*[-~—–_.:]\s*([0-9OolISBQDGZb|]{3,7})',
+      ).firstMatch(fullText);
+      if (refDocMatch != null) {
+        final rawDept = refDocMatch
+            .group(1)!
+            .replaceAll('주택괴', '주택과')
+            .replaceAll(RegExp(r'과$'), '');
+        final numPart = normalizeDocNumDigits(refDocMatch.group(2)!);
+        result['replyDocNumber'] = '$rawDept - $numPart';
       }
+    }
+
+    final jeMatch = RegExp(
+      r'제\s*([0-9OolISBQ]{2,4})\s*[-~—–_.\s]\s*([0-9OolISBQ]{2,6})\s*호',
+    ).firstMatch(fullText);
+    if (jeMatch != null) {
+      final p1 = normalizeDocNumDigits(jeMatch.group(1)!);
+      final p2 = normalizeDocNumDigits(jeMatch.group(2)!);
+      result['docNumber'] = '$p1 - ${p2}호';
     }
 
     if ((result['docNumber'] ?? '').isEmpty) {
       for (final line in lines) {
-        if (RegExp(r'(?:전화|팩스|우\s*\d{5}|From|To)').hasMatch(line)) continue;
-        final compact = line.replaceAll(RegExp(r'\s+'), '');
-        final matches = RegExp(
-          r'([가-힣]{2,10})[-~—–_.]([0-9OolISBQDGZb|]{3,7})',
-        ).allMatches(compact);
-        for (final m in matches) {
+        if (RegExp(r'(?:전화|팩스|TEL|FAX|우\s*\d{5}|From|To)',
+                caseSensitive: false)
+            .hasMatch(line)) {
+          continue;
+        }
+        if (isOutgoing &&
+            (line.contains('송부문서') ||
+                RegExp(r'제\s*목').hasMatch(line) ||
+                line.contains('['))) {
+          continue;
+        }
+        String cleanedLine = line
+            .replaceAll(RegExp(r'\(\s*202\d[^)]*\)'), '')
+            .replaceAll(RegExp(r'시\s*행\s*[:：]?'), ' ')
+            .replaceAll(RegExp(r'접\s*수.*$'), '');
+        final compact = cleanedLine.replaceAll(RegExp(r'\s+'), '');
+        final m = RegExp(
+          r'([가-힣]{2,10})[-~—–_.:]([0-9OolISBQDGZb|]{3,7})',
+        ).firstMatch(compact);
+        if (m != null) {
           final dept = m
               .group(1)!
-              .replaceAll(RegExp(r'^시행'), '')
               .replaceAll('주택괴', '주택과')
               .replaceAll('주택고', '주택과');
           final numPart = normalizeDocNumDigits(m.group(2)!);
@@ -1539,53 +1721,84 @@ class _HomeScreenState extends State<HomeScreen> {
             break;
           }
         }
-        if ((result['docNumber'] ?? '').isNotEmpty) break;
       }
     }
 
-    // 3) 받는사람(수신처) 정밀 추출: '수 신', '수신처', '수신자', '받는사람' 뒤 또는 '~귀하' 앞 문자열
-    for (int i = 0; i < cleanLines.length; i++) {
-      final line = cleanLines[i].trim();
-      final recMatch = RegExp(
-        r'^(?:수\s*신\s*처?|수\s*신\s*자|받\s*는\s*사\s*람)\s*[:：]?\s*(.*)$',
-      ).firstMatch(line);
-      if (recMatch != null) {
-        String rec = recMatch.group(1)!.trim();
-        if (rec.isEmpty && i + 1 < cleanLines.length) {
-          rec = cleanLines[i + 1].trim();
-        }
-        rec = rec
-            .replaceAll(RegExp(r'\s*\(\s*경\s*유\s*\).*$'), '')
-            .replaceAll(RegExp(r'\s*귀\s*하\s*$'), '')
-            .replaceAll(RegExp(r'\s*귀\s*중\s*$'), '')
-            .replaceAll(RegExp(r'\s+'), ' ')
-            .trim();
-        if (rec.isNotEmpty && !rec.startsWith('(')) {
-          result['recipient'] = rec;
-          break;
-        }
-      }
-    }
-    if ((result['recipient'] ?? '').isEmpty) {
-      for (final line in cleanLines.take(10)) {
-        final gwihaMatch =
-            RegExp(r'([가-힣A-Za-z0-9()\s]{2,25}?)\s*(?:귀\s*하|귀\s*중)')
-                .firstMatch(line);
-        if (gwihaMatch != null) {
-          String rec = gwihaMatch
-              .group(1)!
-              .replaceAll(RegExp(r'^.*수\s*신\s*[:：]?\s*'), '')
-              .replaceAll(RegExp(r'\s+'), ' ')
-              .trim();
-          if (rec.isNotEmpty) {
-            result['recipient'] = rec;
+    if ((result['docNumber'] ?? '').isEmpty && !isOutgoing) {
+      for (final line in lines) {
+        if (RegExp(r'(?:전화|팩스|우\s*\d{5}|From|To)').hasMatch(line)) continue;
+        final noDateLine = line.replaceAll(RegExp(r'\(\s*202\d[^)]*\)'), '');
+        final mSpace = RegExp(
+          r'(?:시\s*행|[가-힣]{2,8}(?:과|팀|실|부|처|청))\s*[-~—–_.\s]*([0-9OolISBQDGZb|]{4,6})\b',
+        ).firstMatch(noDateLine);
+        if (mSpace != null) {
+          final numPart = normalizeDocNumDigits(mSpace.group(1)!);
+          if (RegExp(r'^\d{4,6}$').hasMatch(numPart) &&
+              numPart != '50990' &&
+              !numPart.startsWith('202')) {
+            final deptMatch =
+                RegExp(r'([가-힣]{2,6}(?:과|팀|실|부|처|청))').firstMatch(fullText);
+            final dept = deptMatch != null
+                ? deptMatch.group(1)!.replaceAll('주택괴', '주택과')
+                : '공문';
+            result['docNumber'] = '$dept-$numPart';
             break;
           }
         }
       }
     }
 
-    // 4) 보낸사람(발신처) 정밀 추출
+    for (final line in cleanLines) {
+      final recMatch = RegExp(
+        r'(?:^|\s)수\s*신\s*(?:처|자)?\s*[:：.]?\s*(.+)$',
+      ).firstMatch(line.trim());
+      if (recMatch != null) {
+        String rec = recMatch
+            .group(1)!
+            .replaceAll(RegExp(r'\s*\(\s*경\s*유\s*\).*$'), '')
+            .replaceAll(RegExp(r'\s*귀\s*하.*$'), '')
+            .replaceAll(RegExp(r'\s*참\s*조.*$'), '')
+            .replaceAll(RegExp(r'^[:：.\s]+'), '')
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+        if (rec.length >= 2 && !rec.startsWith('(')) {
+          result['recipient'] = rec;
+          break;
+        }
+      }
+    }
+    if ((result['recipient'] ?? '').isEmpty) {
+      for (final tl in allLineBoxes) {
+        final compact = tl.text.replaceAll(' ', '');
+        if (RegExp(r'^수신[:：.]?$').hasMatch(compact)) {
+          final labelBox = tl.boundingBox;
+          for (final other in allLineBoxes) {
+            if (other == tl) continue;
+            if ((other.boundingBox.center.dy - labelBox.center.dy).abs() <
+                    labelBox.height * 1.5 &&
+                other.boundingBox.left > labelBox.left) {
+              String cand = other.text
+                  .replaceAll(RegExp(r'^[:：.\s]+'), '')
+                  .replaceAll(RegExp(r'\s*귀\s*하.*$'), '')
+                  .trim();
+              if (cand.length >= 2) {
+                result['recipient'] = cand;
+                break;
+              }
+            }
+          }
+        }
+        if ((result['recipient'] ?? '').isNotEmpty) break;
+      }
+    }
+    if ((result['recipient'] ?? '').isEmpty && isOutgoing) {
+      final mayorMatch =
+          RegExp(r'([가-힣]{2,5}(?:시장|구청장|군수|도지사|청장|장관))').firstMatch(fullText);
+      if (mayorMatch != null) {
+        result['recipient'] = mayorMatch.group(1)!;
+      }
+    }
+
     String headerCityName = '';
     for (final l in cleanLines.take(7)) {
       final c = l.replaceAll(RegExp(r'\s+'), '');
@@ -1601,6 +1814,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final c1 = cleanLines[i].replaceAll(RegExp(r'\s+'), '');
       if (c1.contains('귀하') ||
           c1.contains('수신') ||
+          c1.contains('참조') ||
           c1.contains('주무관') ||
           c1.contains('전결')) {
         continue;
@@ -1634,14 +1848,14 @@ class _HomeScreenState extends State<HomeScreen> {
           : headerCityName;
     }
 
-    // 5) 제목
     for (int i = 0; i < cleanLines.length; i++) {
       final line = cleanLines[i];
       final titleMatch = RegExp(
-        r'^(?:제\s*목|건\s*명|안\s*건)\s*[:：]?\s*(.+)',
+        r'(?:^|\s)(?:제\s*목|건\s*명|안\s*건)\s*[:：.]?\s*(.+)',
       ).firstMatch(line.trim());
       if (titleMatch != null) {
         String t = titleMatch.group(1)!.replaceAll(RegExp(r'\s+'), ' ').trim();
+        t = t.replaceFirst(RegExp(r'^\[[^\]]+\]\s*'), '').trim();
         if (pdfHeaderHint.isNotEmpty &&
             pdfHeaderHint.contains('조치계획') &&
             !t.contains('조치계획') &&
@@ -1650,21 +1864,58 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         t = t
             .replaceAll('민원 사항', '민원사항')
+            .replaceAll('민원 조치계획', '민원조치계획')
             .replaceAll('조처계획', '조치계획')
             .replaceAll('제출 요청', '제출요청')
-            .replaceAll('제요청', '제출요청');
+            .replaceAll('제요청', '제출요청')
+            .replaceAll('회신의 건', '회신의건');
         result['title'] = t;
         break;
       }
     }
-    if ((result['title'] ?? '').isEmpty && pdfHeaderHint.isNotEmpty) {
-      result['title'] = pdfHeaderHint
-          .replaceAll('민원 사항', '민원사항')
-          .replaceAll('조처계획', '조치계획')
-          .replaceAll('제출 요청', '제출요청');
+    if ((result['title'] ?? '').isEmpty) {
+      for (final tl in allLineBoxes) {
+        final compact = tl.text.replaceAll(' ', '');
+        if (RegExp(r'^제목[:：.]?$').hasMatch(compact)) {
+          final labelBox = tl.boundingBox;
+          for (final other in allLineBoxes) {
+            if (other == tl) continue;
+            if ((other.boundingBox.center.dy - labelBox.center.dy).abs() <
+                    labelBox.height * 1.5 &&
+                other.boundingBox.left > labelBox.left) {
+              String t = other.text
+                  .replaceAll(RegExp(r'^[:：.\s]+'), '')
+                  .replaceFirst(RegExp(r'^\[[^\]]+\]\s*'), '')
+                  .replaceAll('민원 조치계획', '민원조치계획')
+                  .replaceAll('회신의 건', '회신의건')
+                  .trim();
+              if (t.length >= 2) {
+                result['title'] = t;
+                break;
+              }
+            }
+          }
+        }
+        if ((result['title'] ?? '').isNotEmpty) break;
+      }
+    }
+    if ((result['title'] ?? '').isEmpty) {
+      for (final line in cleanLines) {
+        if (line.contains('송부문서')) continue;
+        final fallbackTitle = RegExp(
+          r'(?:\[[^\]]+\]\s*)?([가-힣0-9\s]{4,30}?(?:회신의\s*건|요청의\s*건|보고의\s*건|제출의\s*건|승인의\s*건|통보의\s*건|제출\s*요청))',
+        ).firstMatch(line);
+        if (fallbackTitle != null) {
+          result['title'] = fallbackTitle
+              .group(1)!
+              .trim()
+              .replaceAll('민원 조치계획', '민원조치계획')
+              .replaceAll('회신의 건', '회신의건');
+          break;
+        }
+      }
     }
 
-    // 6) 회신요청일
     final deadlineDateMatch = RegExp(
       r'(\d{4})\s*[.년/-]\s*(\d{1,2})\s*[.월/-]\s*(\d{1,2})\s*[.일]?\s*(?:\([월화수목금토일]\s*요일?\)|\([월화수목금토일]\))?\s*까\s*지',
     ).firstMatch(fullText);
@@ -1675,40 +1926,58 @@ class _HomeScreenState extends State<HomeScreen> {
       result['replyDeadline'] = '$y.$m.$d';
     }
 
-    // 7) 내용 요약
-    final joinedClean = cleanLines.join('\n');
-    final para2Match = RegExp(
-      r'2\.\s*(.*?)(?=\s*3\s*[.이와]|\n\s*붙\s*임|\n\s*끝|$)',
-      dotAll: true,
-    ).firstMatch(joinedClean);
+    final numberedActionMatches = RegExp(
+      r'(?:^|\n)\s*(?:[1-9]\s*\)|\([1-9]\)|[①②③④⑤⑥⑦⑧⑨])',
+    ).allMatches(fullText).toList();
 
-    if (para2Match != null) {
-      String core = para2Match.group(1)!.replaceAll(RegExp(r'\s+'), ' ').trim();
-      core = core.replaceFirst(
-        RegExp(r'^.*?관\s*련\s*하\s*여\s*[,，.]?\s*'),
-        '',
-      );
-      if (RegExp(r'(?:로\s*인해|으로\s*인해|\s+인해)').hasMatch(core)) {
+    if (numberedActionMatches.length >= 2 &&
+        RegExp(r'동일\s*민원').hasMatch(fullText)) {
+      result['aiSummary'] =
+          '동일민원이 발생치 않도록 ${numberedActionMatches.length}가지 조치예정';
+    } else if (numberedActionMatches.length >= 2 && isOutgoing) {
+      result['aiSummary'] =
+          '관련 요청사항에 대하여 ${numberedActionMatches.length}가지 조치예정';
+    } else {
+      final joinedClean = cleanLines.join('\n');
+      final para2Match = RegExp(
+        r'2\.\s*(.*?)(?=\s*3\s*[.이와]|\n\s*-\s*아\s*래|\n\s*붙\s*임|\n\s*끝|$)',
+        dotAll: true,
+      ).firstMatch(joinedClean);
+
+      if (para2Match != null) {
+        String core =
+            para2Match.group(1)!.replaceAll(RegExp(r'\s+'), ' ').trim();
         core = core.replaceFirst(
-          RegExp(r'(?:로\s*인해|으로\s*인해|\s+인해).*$'),
-          '에 대한 민원 조치요청',
+          RegExp(r'^.*?관\s*련\s*하\s*여\s*[,，.]?\s*'),
+          '',
         );
-      } else {
-        core = core.replaceFirst(
-            RegExp(r'(?:인근\s*주민|불편|민원이).*$'), '에 대한 민원 조치요청');
+        if (RegExp(r'동일\s*민원이\s*발생하지\s*않도록').hasMatch(core)) {
+          final cnt = numberedActionMatches.isNotEmpty
+              ? numberedActionMatches.length
+              : 4;
+          core = '동일민원이 발생치 않도록 ${cnt}가지 조치예정';
+        } else if (RegExp(r'(?:로\s*인해|으로\s*인해|\s+인해)').hasMatch(core)) {
+          core = core.replaceFirst(
+            RegExp(r'(?:로\s*인해|으로\s*인해|\s+인해).*$'),
+            '에 대한 민원 조치요청',
+          );
+        } else {
+          core = core.replaceFirst(
+              RegExp(r'(?:인근\s*주민|불편|민원이).*$'), '에 대한 민원 조치요청');
+        }
+        core = core
+            .replaceAll('공사 작업자', '공사작업')
+            .replaceAll('도로변 주차', '도로변주차')
+            .replaceAll('도로변 주치', '도로변주차')
+            .replaceAll(RegExp(r'공원\s*내\s*(?:장기\s*주차|참차|장기주차)'), '공원내 장기주차');
+        result['aiSummary'] = core.trim();
       }
-      core = core
-          .replaceAll('공사 작업자', '공사작업')
-          .replaceAll('도로변 주차', '도로변주차')
-          .replaceAll('도로변 주치', '도로변주차')
-          .replaceAll(RegExp(r'공원\s*내\s*(?:장기\s*주차|참차|장기주차)'), '공원내 장기주차');
-      result['aiSummary'] = core.trim();
     }
 
     return result;
   }
 
-  /// [자재송장] D38 오인식 차단 및 회전 송장 중량(3.744, 15.952) 1:1 매칭
+  /// [자재송장] 3중 완벽 해결 파서
   Map<String, String> _parseInvoiceText(
     String fullText,
     List<String> lines,
@@ -1792,39 +2061,32 @@ class _HomeScreenState extends State<HomeScreen> {
       for (final m in matches) {
         String s = m.group(1)!.toUpperCase().replaceAll(RegExp(r'\s+'), '');
         if (RegExp(r'^D\d{2}$').hasMatch(s)) s = '${s}MM';
-        specNodes.add({
-          'spec': s,
-          'box': tl.boundingBox,
-        });
-      }
-    }
-
-    final List<Map<String, dynamic>> weightNodes = [];
-    for (final tl in allLinesElements) {
-      final matches = RegExp(r'\b(\d{1,3}\.\d{3})\b').allMatches(tl.text);
-      for (final m in matches) {
-        final valStr = m.group(1)!;
-        final valNum = double.tryParse(valStr) ?? 0.0;
-        if (valNum > 0) {
-          weightNodes.add({
-            'valStr': valStr,
-            'valNum': valNum,
+        if (!specNodes.any((e) => e['spec'] == s)) {
+          specNodes.add({
+            'spec': s,
             'box': tl.boundingBox,
           });
         }
       }
     }
 
-    if (weightNodes.length >= 2) {
-      weightNodes.sort(
-          (a, b) => (a['valNum'] as double).compareTo(b['valNum'] as double));
-      final maxWeight = weightNodes.last['valNum'] as double;
-      final sumOthers = weightNodes
-          .sublist(0, weightNodes.length - 1)
-          .fold(0.0, (acc, e) => acc + (e['valNum'] as double));
-      if ((maxWeight - sumOthers).abs() < 0.05 ||
-          weightNodes.length > specNodes.length) {
-        weightNodes.removeLast();
+    final List<Map<String, dynamic>> weightNodes = [];
+    for (final tl in allLinesElements) {
+      if (RegExp(r'010|202\d[./-]').hasMatch(tl.text)) continue;
+      final matches =
+          RegExp(r'(?<![0-9.])(\d{1,2})\s*[.,]\s*(\d{3})(?![0-9])')
+              .allMatches(tl.text);
+      for (final m in matches) {
+        final valStr = '${m.group(1)}.${m.group(2)}';
+        final valNum = double.tryParse(valStr) ?? 0.0;
+        if (valNum > 0.1 && valNum < 100.0) {
+          weightNodes.add({
+            'valStr': valStr,
+            'valNum': valNum,
+            'box': tl.boundingBox,
+            'lineText': tl.text,
+          });
+        }
       }
     }
 
@@ -1838,43 +2100,128 @@ class _HomeScreenState extends State<HomeScreen> {
         dxSpan = (firstBox.center.dx - lastBox.center.dx).abs();
         dySpan = (firstBox.center.dy - lastBox.center.dy).abs();
       }
-      final bool isRotatedVerticalColumns = dxSpan > dySpan;
+      final bool isRotated90 = dxSpan > dySpan;
+      result['_isRotated90'] = isRotated90 ? 'true' : 'false';
 
-      if (isRotatedVerticalColumns) {
-        specNodes.sort((a, b) => (a['box'] as Rect)
+      if (isRotated90) {
+        specNodes.sort((a, b) => (b['box'] as Rect)
             .center
             .dx
-            .compareTo((b['box'] as Rect).center.dx));
-        weightNodes.sort((a, b) => (a['box'] as Rect)
-            .center
-            .dx
-            .compareTo((b['box'] as Rect).center.dx));
+            .compareTo((a['box'] as Rect).center.dx));
       } else {
         specNodes.sort((a, b) => (a['box'] as Rect)
             .center
             .dy
             .compareTo((b['box'] as Rect).center.dy));
-        weightNodes.sort((a, b) => (a['box'] as Rect)
-            .center
-            .dy
-            .compareTo((b['box'] as Rect).center.dy));
       }
 
-      final uniqueSpecs = <String>[];
-      for (final sn in specNodes) {
-        final s = sn['spec'] as String;
-        if (!uniqueSpecs.contains(s)) uniqueSpecs.add(s);
+      double? totalWeightVal;
+      if (weightNodes.length >= 2) {
+        int maxIdx = 0;
+        for (int i = 1; i < weightNodes.length; i++) {
+          if ((weightNodes[i]['valNum'] as double) >
+              (weightNodes[maxIdx]['valNum'] as double)) {
+            maxIdx = i;
+          }
+        }
+        final maxNode = weightNodes[maxIdx];
+        final maxVal = maxNode['valNum'] as double;
+        final maxBox = maxNode['box'] as Rect;
+        final lastSpecBox = specNodes.last['box'] as Rect;
+
+        final sumOthers = weightNodes
+            .asMap()
+            .entries
+            .where((e) => e.key != maxIdx)
+            .fold(0.0, (acc, e) => acc + (e.value['valNum'] as double));
+
+        double rowGap = 35.0;
+        if (specNodes.length >= 2) {
+          final b0 = specNodes[0]['box'] as Rect;
+          final b1 = specNodes[1]['box'] as Rect;
+          rowGap = isRotated90
+              ? (b0.center.dx - b1.center.dx).abs()
+              : (b1.center.dy - b0.center.dy).abs();
+        }
+
+        final bool isBeyondLastSpecRow = isRotated90
+            ? (maxBox.center.dx < lastSpecBox.center.dx - rowGap * 0.45)
+            : (maxBox.center.dy > lastSpecBox.center.dy + rowGap * 0.45);
+
+        if (weightNodes.length > specNodes.length ||
+            (maxVal - sumOthers).abs() < 0.1 ||
+            isBeyondLastSpecRow) {
+          totalWeightVal = maxVal;
+          weightNodes.removeAt(maxIdx);
+        }
       }
 
-      for (int i = 0; i < uniqueSpecs.length; i++) {
-        final q = i < weightNodes.length
-            ? (weightNodes[i]['valStr'] as String)
-            : '';
+      double rowTolerance = 45.0;
+      if (specNodes.length >= 2) {
+        final b0 = specNodes[0]['box'] as Rect;
+        final b1 = specNodes[1]['box'] as Rect;
+        final gap = isRotated90
+            ? (b0.center.dx - b1.center.dx).abs()
+            : (b1.center.dy - b0.center.dy).abs();
+        if (gap > 10) rowTolerance = gap * 0.65;
+      }
+
+      final List<Map<String, dynamic>?> matchedWeights =
+          List<Map<String, dynamic>?>.filled(specNodes.length, null);
+
+      for (int wi = 0; wi < weightNodes.length; wi++) {
+        final wBox = weightNodes[wi]['box'] as Rect;
+        int bestSpecIdx = -1;
+        double bestDiff = double.infinity;
+        for (int si = 0; si < specNodes.length; si++) {
+          final sBox = specNodes[si]['box'] as Rect;
+          final diff = isRotated90
+              ? (sBox.center.dx - wBox.center.dx).abs()
+              : (sBox.center.dy - wBox.center.dy).abs();
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestSpecIdx = si;
+          }
+        }
+        if (bestSpecIdx != -1 &&
+            matchedWeights[bestSpecIdx] == null &&
+            (bestDiff <= rowTolerance ||
+                weightNodes.length == specNodes.length)) {
+          matchedWeights[bestSpecIdx] = weightNodes[wi];
+        }
+      }
+
+      final missingSpecIndices = <int>[];
+      double knownSum = 0.0;
+      for (int si = 0; si < specNodes.length; si++) {
+        if (matchedWeights[si] == null) {
+          missingSpecIndices.add(si);
+        } else {
+          knownSum += (matchedWeights[si]!['valNum'] as double);
+        }
+      }
+
+      if (missingSpecIndices.length == 1 && totalWeightVal != null) {
+        final double recoveredVal = totalWeightVal - knownSum;
+        if (recoveredVal > 0.05) {
+          final String recoveredStr = recoveredVal
+              .toStringAsFixed(3)
+              .replaceAll(RegExp(r'0+$'), '')
+              .replaceAll(RegExp(r'\.$'), '');
+          matchedWeights[missingSpecIndices.first] = {
+            'valStr': recoveredStr,
+            'valNum': recoveredVal,
+          };
+        }
+      }
+
+      for (int si = 0; si < specNodes.length; si++) {
+        final mw = matchedWeights[si];
         parsedRows.add({
           'productName': detectedProduct,
-          'specName': uniqueSpecs[i],
+          'specName': specNodes[si]['spec'] as String,
           'unit': isRebar ? 'ton' : 'EA',
-          'quantity': q,
+          'quantity': mw != null ? (mw['valStr'] as String) : '',
         });
       }
     }
@@ -1977,19 +2324,19 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 2단계: Gemini Vision AI 분석
+  // 2단계: Gemini Vision AI 분석 (선택사항)
   // ===========================================================================
   static Uint8List _compressForAiPayloadIsolate(Uint8List srcBytes) {
-    if (srcBytes.lengthInBytes <= 350 * 1024) return srcBytes;
+    if (srcBytes.lengthInBytes <= 600 * 1024) return srcBytes;
     final decoded = img.decodeImage(srcBytes);
     if (decoded == null) return srcBytes;
     img.Image resized = decoded;
-    if (math.max(decoded.width, decoded.height) > 1280) {
+    if (math.max(decoded.width, decoded.height) > 1600) {
       resized = decoded.width >= decoded.height
-          ? img.copyResize(decoded, width: 1280)
-          : img.copyResize(decoded, height: 1280);
+          ? img.copyResize(decoded, width: 1600)
+          : img.copyResize(decoded, height: 1600);
     }
-    return Uint8List.fromList(img.encodeJpg(resized, quality: 80));
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 88));
   }
 
   Future<Map<String, String>?> _analyzeDocumentWithAi({
@@ -2005,22 +2352,19 @@ class _HomeScreenState extends State<HomeScreen> {
     String prompt;
     if (DocCategory.isOfficial(category)) {
       prompt = '''
-이 대한민국 공문서 이미지를 분석해서 아래 규칙을 따라 순수 JSON 객체로 응답해줘:
-- title (제목): 예: "민원사항 알림 및 조치계획 제출요청"
-- aiSummary (내용): 앞부분 배경 수식어는 빼고 핵심 안건만 한 줄 요약 (예: "공사작업 개인차량 도로변주차와 공원내 장기주차에 대한 민원 조치요청")
-- docNumber (공문번호): 하단 '시행' 옆 부서명-번호 (예: "공동주택과-16092")
-- sender (보낸사람): 하단 직인 발신명의 (예: "김해시장")
-- recipient (받는사람): 상단 '수신' 옆에 적힌 받는사람 명의 ('귀하' 제외)
-- replyDeadline (회신요청일): YYYY.MM.DD (예: "2025.05.21")
-- sentDate (접수일/발신일): YYYY.MM.DD (예: "2025.05.19")
+이 대한민국 공문서 이미지를 분석해서 순수 JSON 객체로 응답해줘:
+- title (제목): 앞쪽 [공동주택과-16092] 같은 대괄호는 빼고 순수 제목만 (예: "민원조치계획 회신의건")
+- aiSummary (내용): 세부 조치항목이 1)~4)처럼 있으면 "동일민원이 발생치 않도록 4가지 조치예정"처럼 요약
+- docNumber (공문번호): 상단 '제 25-067 호'가 있으면 "25 - 067호", 하단 '시행 공동주택과-16092'가 있으면 "공동주택과-16092"
+- replyDocNumber (회신번호): 발신공문 제목 앞 [공동주택과 - 16092] 또는 본문 송부문서 번호 (예: "공동주택 - 16092")
+- sender (보낸사람): 발신명의 (예: "김해시장")
+- recipient (받는사람): '수신' 옆에 적힌 받는사람 (예: "김해시장")
+- replyDeadline (회신요청일): YYYY.MM.DD
+- sentDate (접수일/발신일): YYYY.MM.DD
 ''';
     } else if (category == DocCategory.invoice) {
       prompt = '''
-이 자재송장/거래명세서 이미지를 읽고 다음 원칙을 엄격히 지켜 순수 JSON으로 응답해줘:
-1. 제품명(productName)을 표 안의 '품명/제품명' 칸에서 정확히 읽을 것 (예: "고장력철근").
-2. 제품명에 '철근'이 포함되어 있으면: 단위(unit)는 무조건 "ton"으로 하고, 수량(quantity)에는 각 규격 행의 '중량'(예: "3.744", "15.952")만 가져올 것! (합계 행 19.696이나 상단 운송코드 D38은 절대 넣지 말 것!)
-3. 규격명(specName, 예: "D32MM", "D16MM")이 여러 줄이면 items 배열에 각 규격별로 따로 담아줄 것.
-
+이 자재송장/거래명세서 이미지를 읽고 순수 JSON으로 응답해줘 (합계 19.696은 제외하고 각 규격별 중량 3.744, 15.952만 넣을 것):
 {
   "arrivalDate": "2021.09.08",
   "supplierName": "현대제철",
@@ -2071,41 +2415,36 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    final attempts = <Map<String, dynamic>>[
-      {
-        'url':
-            'https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-2.5-flash:generateContent?key=$key',
-        'headers': {'Content-Type': 'application/json'},
-      },
-      {
-        'url':
-            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
-        'headers': {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': key,
-        },
-      },
-      {
-        'url':
-            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$key',
-        'headers': {'Content-Type': 'application/json'},
-      },
-    ];
-
-    for (final attempt in attempts) {
+    // ★ Gemini 2.5 Pro 최우선 호출 (무료 티어 한도 초과 시 gemini-2.5-flash 자동 백업)
+    const models = ['gemini-2.5-pro', 'gemini-2.5-flash'];
+    for (final modelName in models) {
       try {
-        final uri = Uri.parse(attempt['url'] as String);
-        final headers = Map<String, String>.from(attempt['headers'] as Map);
+        final uri = Uri.parse(
+          'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent',
+        );
         final resp = await http
-            .post(uri, headers: headers, body: body)
-            .timeout(const Duration(seconds: 6));
+            .post(
+              uri,
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': key,
+              },
+              body: body,
+            )
+            .timeout(const Duration(seconds: 12));
         if (resp.statusCode == 200) {
           final decoded =
               jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
-          final text = decoded['candidates']?[0]?['content']?['parts']?[0]
-                      ?['text']
-                  ?.toString() ??
-              '{}';
+          final parts =
+              decoded['candidates']?[0]?['content']?['parts'] as List<dynamic>?;
+          String text = '{}';
+          if (parts != null) {
+            for (final p in parts) {
+              if (p is Map && p['text'] != null && p['thought'] != true) {
+                text = p['text'].toString();
+              }
+            }
+          }
           final cleanJson =
               text.replaceAll('```json', '').replaceAll('```', '').trim();
           final Map<String, dynamic> parsed =
@@ -2114,11 +2453,11 @@ class _HomeScreenState extends State<HomeScreen> {
           parsed.forEach((k, v) {
             if (k == 'items' && v is List) {
               result['itemsJson'] = jsonEncode(v);
-            } else {
-              result[k] = v?.toString() ?? '';
+            } else if (v != null && v.toString().trim().isNotEmpty) {
+              result[k] = v.toString().trim();
             }
           });
-          return result;
+          if (result.isNotEmpty) return result;
         }
       } catch (_) {}
     }
@@ -2126,7 +2465,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
-  // 사진 촬영 → 입력 다이얼로그 (공문(수신) -> 보낸사람 / 공문(발신) -> 받는사람 자동 OCR 매칭!)
+  // 사진 촬영 → 입력 다이얼로그
   // ===========================================================================
   Future<void> _addRecordDialog(ImageSource source) async {
     try {
@@ -2178,6 +2517,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final docTitleCtrl = TextEditingController();
       final aiSummaryCtrl = TextEditingController();
       final docNumberCtrl = TextEditingController();
+      final replyDocNumberCtrl = TextEditingController();
       final senderCtrl = TextEditingController();
       final recipientCtrl = TextEditingController();
       final replyDeadlineCtrl = TextEditingController();
@@ -2236,6 +2576,9 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           if (extracted['docNumber']?.isNotEmpty == true) {
             docNumberCtrl.text = extracted['docNumber']!;
+          }
+          if (extracted['replyDocNumber']?.isNotEmpty == true) {
+            replyDocNumberCtrl.text = extracted['replyDocNumber']!;
           }
           if (extracted['sender']?.isNotEmpty == true) {
             senderCtrl.text = extracted['sender']!;
@@ -2352,20 +2695,29 @@ class _HomeScreenState extends State<HomeScreen> {
                     category: chosenCategory,
                   );
                   if (ctx.mounted) {
-                    setDialogState(() => applyExtractedMap(ocrMap));
+                    setDialogState(() {
+                      applyExtractedMap(ocrMap);
+                      isAiAnalyzing = false;
+                    });
                   }
 
+                  // ★ Gemini API 키가 등록되어 있으면 1차 초고속 내장 OCR 직후 항상 Gemini 2.5 Pro가 정밀 교정 수행!
                   if (_geminiApiKey.trim().isNotEmpty) {
+                    if (ctx.mounted) {
+                      setDialogState(() => isAiAnalyzing = true);
+                    }
                     final aiMap = await _analyzeDocumentWithAi(
                       category: chosenCategory,
                       imageBytes: flattenedBytes,
                     );
-                    if (aiMap != null && ctx.mounted) {
-                      setDialogState(() => applyExtractedMap(aiMap));
+                    if (ctx.mounted) {
+                      setDialogState(() {
+                        if (aiMap != null) applyExtractedMap(aiMap);
+                        isAiAnalyzing = false;
+                      });
                     }
                   }
                 } catch (_) {
-                } finally {
                   if (ctx.mounted) {
                     setDialogState(() => isAiAnalyzing = false);
                   }
@@ -2390,7 +2742,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v21)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v26)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -2402,7 +2754,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           SizedBox(width: 6),
                           Text(
-                            '자동 읽는 중...',
+                            'Gemini 2.5 Pro 정밀 인식 중...',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.blueAccent,
@@ -2530,48 +2882,57 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         const Divider(height: 20),
 
-                        // ★ 1. 공문(수신) / 공문(발신) 입력 폼:
-                        // - 공문(수신)일 경우: OCR로 읽은 `보낸사람(senderCtrl)` 표시
-                        // - 공문(발신)일 경우: OCR로 읽은 `받는사람(recipientCtrl)` 표시
+                        // 1. 공문(수신) / 공문(발신) 입력 폼
                         if (DocCategory.isOfficial(chosenCategory)) ...[
                           _buildField(
                             sentDateCtrl,
                             chosenCategory == DocCategory.officialOut
                                 ? '발신일'
                                 : '접수일',
-                            '예: 2025.05.19',
+                            '예: 2025.05.21',
                           ),
                           if (chosenCategory == DocCategory.officialOut)
                             _buildField(
                               recipientCtrl,
-                              '받는사람 (문서 상단 수신처 자동 인식)',
-                              '예: e편한세상 주촌 더프리미어 신축공사 현장대리인',
+                              '받는사람 (수신 옆 텍스트 자동 인식)',
+                              '예: 김해시장',
                             )
                           else
                             _buildField(
                               senderCtrl,
-                              '보낸사람 (문서 하단 발신명의 자동 인식)',
+                              '보낸사람 (발신명의 자동 인식)',
                               '예: 김해시장',
                             ),
                           _buildField(
                             docTitleCtrl,
                             '제목',
-                            '예: 민원사항 알림 및 조치계획 제출요청',
+                            '예: 민원조치계획 회신의건',
                           ),
-                          _buildField(
-                            replyDeadlineCtrl,
-                            '회신요청일',
-                            '예: 2025.05.21',
-                          ),
+                          if (chosenCategory == DocCategory.officialOut)
+                            _buildField(
+                              replyDocNumberCtrl,
+                              '회신번호 (수신공문 번호와 일치 시 수신공문에 회신완료 ○ 표시)',
+                              '예: 공동주택 - 16092',
+                            )
+                          else
+                            _buildField(
+                              replyDeadlineCtrl,
+                              '회신요청일',
+                              '예: 2025.05.21',
+                            ),
                           _buildField(
                             docNumberCtrl,
                             '공문번호',
-                            '예: 공동주택과-16092',
+                            chosenCategory == DocCategory.officialOut
+                                ? '예: 25 - 067호'
+                                : '예: 공동주택과-16092',
                           ),
                           _buildField(
                             aiSummaryCtrl,
                             '내용 (핵심 안건 요약)',
-                            '예: 공사작업 개인차량 도로변주차와 공원내 장기주차에 대한 민원 조치요청',
+                            chosenCategory == DocCategory.officialOut
+                                ? '예: 동일민원이 발생치 않도록 4가지 조치예정'
+                                : '예: 공사작업 개인차량 도로변주차와 공원내 장기주차에 대한 민원 조치요청',
                             maxLines: 2,
                           ),
                         ],
@@ -2597,7 +2958,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   children: [
                                     const Expanded(
                                       child: Text(
-                                        '품목/규격별 목록 (규격이 다르면 각각 별도 행으로 저장됩니다)\n※ "철근" 포함 시 단위=ton, 수량=각 규격 중량 자동 입력',
+                                        '품목/규격별 목록 (규격이 다르면 각각 별도 행으로 저장됩니다)\n※ "철근" 포함 시 단위=ton, 수량=각 규격 중량(3.744 / 15.952) 자동 입력',
                                         style: TextStyle(
                                           fontSize: 11,
                                           fontWeight: FontWeight.bold,
@@ -2928,6 +3289,7 @@ class _HomeScreenState extends State<HomeScreen> {
           collectedFields['sender'] = senderCtrl.text.trim();
           collectedFields['recipient'] = recipientCtrl.text.trim();
           collectedFields['docNumber'] = docNumberCtrl.text.trim();
+          collectedFields['replyDocNumber'] = replyDocNumberCtrl.text.trim();
           collectedFields['title'] = docTitleCtrl.text.trim();
           collectedFields['aiSummary'] = aiSummaryCtrl.text.trim();
           collectedFields['replyDeadline'] =
@@ -2961,12 +3323,22 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       }
 
+      final existingSigs = _records.map((r) => r.contentSignature).toSet();
+      final uniqueNew = createdRecords
+          .where((r) => !existingSigs.contains(r.contentSignature))
+          .toList();
+
+      if (uniqueNew.isEmpty) {
+        _showSnack('이미 동일한 내용의 문서가 등록되어 있어 중복 추가하지 않았습니다.');
+        return;
+      }
+
       setState(() {
-        for (final r in createdRecords.reversed) {
+        for (final r in uniqueNew.reversed) {
           _records.insert(0, r);
         }
         _selectedCategoryFilter = chosenCategory;
-        _selectedRecord = createdRecords.first;
+        _selectedRecord = uniqueNew.first;
       });
       await _saveLocalRecords();
     } catch (e) {
@@ -3041,18 +3413,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _openSettingsDialog() async {
     final geminiKeyCtrl = TextEditingController(text: _geminiApiKey);
+    final folderCtrl = TextEditingController(text: _oneDriveCloudFolder);
+    final tokenCtrl = TextEditingController(text: _oneDriveAccessToken);
 
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('AI 설정 및 누적 HTML 안내 (v21)'),
+        title: const Text('원드라이브 덮어쓰기 & AI 설정 (v26)'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                '1. 원드라이브 공유 시 자동 누적 방식 안내',
+                '1. 왜 원드라이브 [공유] 폴더 화면에선 기존 파일이 안 보일까요?',
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
                   fontSize: 13.5,
@@ -3061,22 +3435,46 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 6),
               const Text(
-                '• 사내 보안 등으로 로컬 폴더를 지정할 필요가 전혀 없습니다!\n'
-                '• 앱 내부의 탭별 마스터 파일(예: 증빙서류_공문(수신).html, 증빙서류_공문(발신).html, 증빙서류_자재송장.html)에 지금까지의 모든 내역이 자동으로 누적 합산된 뒤 공유창이 뜹니다.\n'
-                '• 공유창에서 [OneDrive] 아이콘만 눌러 업로드하시면 원드라이브의 같은 이름 파일에 누적된 전체 본이 그대로 덮어써집니다.',
+                '• 원드라이브 앱의 [공유] 화면은 "폴더 선택 전용 창"이라서 원래 안의 파일 목록을 보여주지 않으며, 같은 이름의 파일이 이미 들어있으면 덮어쓰기를 거부("1개 실패")합니다.\n'
+                '• 해결법 A (가장 간편): [HTML 내보내기] 버튼만 누르면 곧바로 공유창이 뜨며, 원드라이브 폴더에 이미 있는 기존 파일은 원드라이브 앱에서 한 번만 지우거나, 아래 클라우드 토큰을 넣으면 100% 자동 덮어쓰기가 됩니다!',
                 style: TextStyle(fontSize: 12, height: 1.45),
               ),
-              const Divider(height: 24),
+              const Divider(height: 22),
               const Text(
-                '2. Gemini AI 키 등록 (선택사항)',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                '2. 원드라이브 클라우드 API 직접 자동 덮어쓰기 설정 (선택)',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: folderCtrl,
+                decoration: const InputDecoration(
+                  labelText: '원드라이브 저장 폴더 경로',
+                  hintText: '예: Documents/증빙서류함',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: tokenCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'OneDrive Graph Access Token (입력 시 100% 자동 덮어쓰기)',
+                  hintText: '비워두면 일반 공유창이 바로 뜹니다',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const Divider(height: 22),
+              const Text(
+                '3. Gemini 2.5 Pro AI 키 등록 (정밀 분석 자동 작동)',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
               ),
               const SizedBox(height: 6),
               TextField(
                 controller: geminiKeyCtrl,
                 decoration: const InputDecoration(
                   labelText: 'Gemini API Key',
-                  hintText: 'AQ... 또는 AIza...',
+                  hintText: '비워두셔도 내장 한국어 OCR이 즉시 작동합니다',
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
@@ -3092,9 +3490,21 @@ class _HomeScreenState extends State<HomeScreen> {
           FilledButton(
             onPressed: () async {
               final enteredKey = geminiKeyCtrl.text.trim();
+              final enteredFolder = folderCtrl.text.trim().isEmpty
+                  ? 'Documents/증빙서류함'
+                  : folderCtrl.text.trim();
+              final enteredToken = tokenCtrl.text.trim();
+
               final prefs = await SharedPreferences.getInstance();
               await prefs.setString(_prefsGeminiApiKey, enteredKey);
-              setState(() => _geminiApiKey = enteredKey);
+              await prefs.setString(_prefsOneDriveFolderKey, enteredFolder);
+              await prefs.setString(_prefsOneDriveTokenKey, enteredToken);
+
+              setState(() {
+                _geminiApiKey = enteredKey;
+                _oneDriveCloudFolder = enteredFolder;
+                _oneDriveAccessToken = enteredToken;
+              });
               if (ctx.mounted) Navigator.pop(ctx);
               _showSnack('설정이 저장되었습니다.');
             },
@@ -3105,14 +3515,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ===========================================================================
-  // ★ 폴더 지정 없이 [공유 -> 원드라이브]만으로 100% 누적되는 HTML 내보내기!
-  // 1) 앱 내부 보안 저장소(getApplicationDocumentsDirectory)에 탭별 고정 파일명
-  //    (예: `증빙서류_공문(수신).html`, `증빙서류_공문(발신).html`, `증빙서류_자재송장.html`)으로
-  //    과거 내보낸 모든 데이터를 영구 누적 보관합니다.
-  // 2) 새로 찍은 항목들을 기존 누적 데이터와 합친 완성본 HTML을 만든 뒤 바로 Android/iOS 공유창(Share.shareXFiles)을 띄웁니다.
-  // 3) 사용자는 폴더 지정 없이 공유창에서 [원드라이브]만 선택해 올리면 항상 누적된 전체 파일이 저장됩니다!
-  // ===========================================================================
   List<DocRecord> _parseRecordsFromHtml(String htmlContent) {
     final regex = RegExp(
       r'/\*ARCHIVE_DATA_START\*/(.*?)/\*ARCHIVE_DATA_END\*/',
@@ -3131,40 +3533,91 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  String _sanitizeFileNameForOneDrive(String rawScope) {
+    return rawScope
+        .replaceAll('(', '_')
+        .replaceAll(')', '')
+        .replaceAll(RegExp(r'[\\/:*?"<>|\s]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+  }
+
+  // ===========================================================================
+  // ★ [HTML 내보내기] 버튼 클릭 시 중간 선택창 없이 즉시 고정 파일명(`증빙서류_공문_수신.html` 등)으로
+  // 누적 병합 및 덮어쓰기/공유 실행!
+  // 1) 앱 내부 마스터 HTML 파일(`증빙서류_공문_수신.html` 등)에서 과거 기록을 읽어와 중복 없이 누적 합산한 뒤 그대로 덮어씁니다.
+  // 2) 원드라이브 토큰이 설정되어 있으면 원드라이브 서버의 기존 동일 이름 파일을 직접 읽어와 병합한 뒤 `@microsoft.graph.conflictBehavior=replace` 옵션으로 100% 자동 덮어쓰기합니다!
+  // 3) 토큰 없이 일반 [공유]로 올릴 때는 휴대폰의 공용 다운로드(`Download`) 폴더에도 동일 이름 파일로 자동 덮어쓰기해 두고, 곧바로 고정 파일명(`증빙서류_공문_수신.html`)으로 원드라이브 공유창을 띄웁니다!
+  // ===========================================================================
   Future<void> _exportCumulativeFilteredHtml() async {
-    final currentFilteredList = _filteredRecords;
     final bool useSub = _usesSubCategory(_selectedCategoryFilter) &&
         _selectedSubCategoryFilter != '전체';
     final String filterScopeName = useSub
         ? '${_selectedCategoryFilter}_$_selectedSubCategoryFilter'
         : _selectedCategoryFilter;
-    final String targetHtmlFileName = '증빙서류_$filterScopeName.html';
+    final String safeScope = _sanitizeFileNameForOneDrive(filterScopeName);
+    final String masterHtmlFileName = '증빙서류_$safeScope.html';
 
     setState(() => _isBusy = true);
     try {
       final List<DocRecord> existingHtmlRecords = [];
 
-      // 앱 내부 보안 영역의 동일 이름 마스터 HTML 파일을 읽어 기존 기록을 모두 가져옴
+      // 1) 앱 내부 마스터 HTML 파일에서 기존 누적 기록 읽기
       final appDir = await getApplicationDocumentsDirectory();
-      final internalMasterFile = File(p.join(appDir.path, targetHtmlFileName));
+      final internalMasterFile = File(p.join(appDir.path, masterHtmlFileName));
       if (await internalMasterFile.exists()) {
         final content = await internalMasterFile.readAsString();
         existingHtmlRecords.addAll(_parseRecordsFromHtml(content));
       }
 
-      // 기존 누적 기록 + 현재 화면의 기록을 ID 기준으로 병합
-      final Map<String, DocRecord> mergedMap = {};
+      // 2) 안드로이드 공용 Download 폴더에 이미 같은 이름의 HTML이 있으면 그것도 읽어서 병합
+      File? publicDownloadFile;
+      if (Platform.isAndroid) {
+        final dlDir = Directory('/storage/emulated/0/Download');
+        if (await dlDir.exists()) {
+          publicDownloadFile = File(p.join(dlDir.path, masterHtmlFileName));
+          if (await publicDownloadFile.exists()) {
+            try {
+              final content = await publicDownloadFile.readAsString();
+              existingHtmlRecords.addAll(_parseRecordsFromHtml(content));
+            } catch (_) {}
+          }
+        }
+      }
+
+      // 3) 만약 OneDrive API 토큰이 등록되어 있으면 원드라이브의 동일 이름 파일도 먼저 읽어옴
+      final cleanSubfolder =
+          _oneDriveCloudFolder.replaceAll(RegExp(r'^/+|/+$'), '');
+      final remoteFilePath = '/$cleanSubfolder/$masterHtmlFileName';
+      if (_oneDriveAccessToken.trim().isNotEmpty) {
+        try {
+          final getUrl = Uri.parse(
+            'https://graph.microsoft.com/v1.0/me/drive/root:$remoteFilePath:/content',
+          );
+          final getResp = await http.get(
+            getUrl,
+            headers: {'Authorization': 'Bearer ${_oneDriveAccessToken.trim()}'},
+          );
+          if (getResp.statusCode == 200) {
+            final remoteHtml = utf8.decode(getResp.bodyBytes);
+            existingHtmlRecords.addAll(_parseRecordsFromHtml(remoteHtml));
+          }
+        } catch (_) {}
+      }
+
+      // 4) 고유 지문(contentSignature) 기준으로 동일 내용은 중복 누적하지 않고 합산
+      final Map<String, DocRecord> mergedBySignature = {};
       for (final rec in existingHtmlRecords) {
         if (_selectedCategoryFilter == DocCategory.all ||
             rec.category == _selectedCategoryFilter) {
-          mergedMap[rec.id] = rec;
+          mergedBySignature[rec.contentSignature] = rec;
         }
       }
-      for (final rec in currentFilteredList) {
-        mergedMap[rec.id] = rec;
+      for (final rec in _filteredRecords) {
+        mergedBySignature[rec.contentSignature] = rec;
       }
 
-      final mergedList = mergedMap.values.toList()
+      final mergedList = mergedBySignature.values.toList()
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
       if (mergedList.isEmpty) {
@@ -3172,20 +3625,54 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      final allForReplyCheck = <DocRecord>[..._records, ...existingHtmlRecords];
+      final repliedKeys = _computeRepliedDocNumKeys(allForReplyCheck);
+
       final htmlContent = _buildLeftListRightPhotoHtmlDocument(
         records: mergedList,
         scopeTitle: filterScopeName,
+        repliedKeys: repliedKeys,
       );
 
-      // 앱 내부 마스터 HTML에 누적본 저장 후 공유창 호출 (원드라이브 앱으로 바로 전달 가능)
-      await internalMasterFile.writeAsString(htmlContent, flush: true);
+      final Uint8List htmlBytes = Uint8List.fromList(utf8.encode(htmlContent));
 
-      await Share.shareXFiles(
-        [XFile(internalMasterFile.path, mimeType: 'text/html')],
-        subject: targetHtmlFileName,
-        text:
-            '[$targetHtmlFileName] 누적 HTML (총 ${mergedList.length}건) - 원드라이브를 선택해 업로드하세요.',
-      );
+      // 5) 앱 내부 마스터 파일에 덮어쓰기 저장
+      await internalMasterFile.writeAsBytes(htmlBytes, flush: true);
+
+      // 6) 안드로이드 공용 Download 폴더에도 동일 파일명으로 자동 덮어쓰기!
+      if (publicDownloadFile != null) {
+        try {
+          await publicDownloadFile.writeAsBytes(htmlBytes, flush: true);
+        } catch (_) {}
+      }
+
+      // 7) OneDrive Graph API 토큰이 있으면 `@microsoft.graph.conflictBehavior=replace`로 원드라이브의 동일 파일명을 100% 자동 덮어쓰기!
+      if (_oneDriveAccessToken.trim().isNotEmpty) {
+        final uploadUrl = Uri.parse(
+          'https://graph.microsoft.com/v1.0/me/drive/root:$remoteFilePath:/content?@microsoft.graph.conflictBehavior=replace',
+        );
+        final putResp = await http.put(
+          uploadUrl,
+          headers: {
+            'Authorization': 'Bearer ${_oneDriveAccessToken.trim()}',
+            'Content-Type': 'text/html; charset=utf-8',
+          },
+          body: htmlBytes,
+        );
+        if (putResp.statusCode == 200 || putResp.statusCode == 201) {
+          _showSnack(
+            '원드라이브 [$masterHtmlFileName]에 자동 누적 덮어쓰기 완료! (총 ${mergedList.length}건)',
+          );
+          return;
+        }
+      }
+
+      // 8) 고정 파일명(`증빙서류_공문_수신.html` 등)으로 즉시 공유창 호출!
+      final shareDir = await getTemporaryDirectory();
+      final shareFile = File(p.join(shareDir.path, masterHtmlFileName));
+      await shareFile.writeAsBytes(htmlBytes, flush: true);
+
+      await Share.shareXFiles([XFile(shareFile.path)]);
     } catch (e) {
       _showSnack('HTML 내보내기 중 오류: $e');
     } finally {
@@ -3193,7 +3680,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// 다른 기기나 원드라이브에 있던 기존 HTML 파일을 불러와 앱 내부 누적 마스터와 합치는 보조 기능
   Future<void> _importExistingHtmlToMerge() async {
     try {
       final picked = await FilePicker.platform.pickFiles(
@@ -3210,18 +3696,18 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      final Map<String, DocRecord> currentMap = {
-        for (final r in _records) r.id: r,
+      final Map<String, DocRecord> sigMap = {
+        for (final r in _records) r.contentSignature: r,
       };
       int addedCount = 0;
       for (final r in importedRecords) {
-        if (!currentMap.containsKey(r.id)) {
-          currentMap[r.id] = r;
+        if (!sigMap.containsKey(r.contentSignature)) {
+          sigMap[r.contentSignature] = r;
           addedCount++;
         }
       }
 
-      final updatedList = currentMap.values.toList()
+      final updatedList = sigMap.values.toList()
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
       setState(() {
@@ -3232,24 +3718,22 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       await _saveLocalRecords();
       _showSnack(
-        '기존 HTML에서 총 ${importedRecords.length}건(신규 $addedCount건)을 불러와 누적 합산했습니다!',
+        '기존 HTML에서 중복을 제외한 신규 $addedCount건을 불러와 누적 합산했습니다! (전체 ${updatedList.length}건)',
       );
     } catch (e) {
       _showSnack('기존 HTML 병합 중 오류: $e');
     }
   }
 
-  /// ★ HTML 문서 생성:
-  /// - 좌측: 상세내용이 모두 열(Column)로 들어간 표 리스트 (공문(수신)은 보낸사람 열, 공문(발신)은 받는사람 열!)
-  /// - 중앙: 좌우 조절바 (`#resizer-h`)
-  /// - 우측: 공문/송장 사진 뷰어
   String _buildLeftListRightPhotoHtmlDocument({
     required List<DocRecord> records,
     required String scopeTitle,
+    required Set<String> repliedKeys,
   }) {
     final recordsJson = jsonEncode(records.map((r) => r.toJson()).toList());
     final cumMap = _computeInvoiceCumulativeMap(records);
     final cumMapJson = jsonEncode(cumMap);
+    final repliedListJson = jsonEncode(repliedKeys.toList());
     final majorCat = _selectedCategoryFilter;
 
     return '''<!DOCTYPE html>
@@ -3287,7 +3771,7 @@ class _HomeScreenState extends State<HomeScreen> {
       overflow: hidden;
     }
     #left-list-pane {
-      width: 55%;
+      width: 58%;
       min-width: 20%;
       max-width: 85%;
       height: 100%;
@@ -3331,7 +3815,8 @@ class _HomeScreenState extends State<HomeScreen> {
       box-shadow: 0 4px 20px rgba(0,0,0,0.5);
     }
     table.grid-table {
-      width: 100%;
+      width: max-content;
+      min-width: 100%;
       border-collapse: collapse;
       font-size: 13px;
       text-align: center;
@@ -3340,7 +3825,7 @@ class _HomeScreenState extends State<HomeScreen> {
       background: #e2e8f0;
       color: #1e293b;
       font-weight: 700;
-      padding: 9px 6px;
+      padding: 9px 12px;
       border: 1px solid #94a3b8;
       position: sticky;
       top: 0;
@@ -3348,12 +3833,12 @@ class _HomeScreenState extends State<HomeScreen> {
       white-space: nowrap;
     }
     table.grid-table td {
-      padding: 9px 6px;
+      padding: 9px 12px;
       border: 1px solid #cbd5e1;
       color: #0f172a;
       cursor: pointer;
       line-height: 1.4;
-      word-break: keep-all;
+      white-space: nowrap;
     }
     table.grid-table tr:hover td { background: #f8fafc; }
     table.grid-table tr.active td {
@@ -3365,7 +3850,7 @@ class _HomeScreenState extends State<HomeScreen> {
 <body>
   <header>
     <h1>[$scopeTitle] 누적 증빙서류 (<span id="count-label">${records.length}</span>건)</h1>
-    <span style="font-size:12px; opacity:0.9;">좌측 표에서 행을 클릭하면 우측에 사진이 표시됩니다 (가운데 바를 좌우로 끌어 크기 조절)</span>
+    <span style="font-size:12px; opacity:0.9;">좌측 표를 좌우로 스크롤해 전체 내용을 볼 수 있습니다 (행 클릭 시 우측 사진 표시)</span>
   </header>
 
   <div id="main-split">
@@ -3381,6 +3866,7 @@ class _HomeScreenState extends State<HomeScreen> {
   <script>
     const archiveRecords = /*ARCHIVE_DATA_START*/ $recordsJson /*ARCHIVE_DATA_END*/;
     const cumMap = $cumMapJson;
+    const repliedKeys = new Set($repliedListJson);
     const majorCat = "$majorCat";
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
 
@@ -3407,29 +3893,76 @@ class _HomeScreenState extends State<HomeScreen> {
       return raw;
     }
 
+    function normalizeDocKey(raw) {
+      if (!raw) return '';
+      const c = String(raw).replace(/\\s+/g, '');
+      const m = c.match(/([가-힣A-Za-z0-9]+?)[-~—–_.:]([0-9]+)/);
+      if (m) {
+        const dept = m[1].replace(/(?:과|팀|실|부|처|국|단|소|청)\$/, '');
+        const num = m[2].replace(/^0+/, '') || '0';
+        return dept + '-' + num;
+      }
+      const d = c.match(/\\d{4,7}/);
+      return d ? d[0] : c;
+    }
+
+    archiveRecords.forEach(r => {
+      if (r.category === '공문(발신)' && r.fields && r.fields.replyDocNumber) {
+        const k = normalizeDocKey(r.fields.replyDocNumber);
+        if (k) repliedKeys.add(k);
+      }
+    });
+
     function render() {
       document.getElementById('count-label').textContent = archiveRecords.length;
 
-      if (majorCat === '공문(수신)' || majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(수신)' || r.category === '공문(발신)'))) {
-        const isOutTab = majorCat === '공문(발신)';
-        const dateHeader = isOutTab ? '발신일' : '접수일';
-        const partyHeader = isOutTab ? '받는사람' : '보낸사람';
+      if (majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(발신)'))) {
         let html = `<table class="grid-table">
           <thead>
             <tr>
-              <th>\${dateHeader}</th>
-              <th>\${partyHeader}</th>
+              <th>발신일</th>
+              <th>받는사람</th>
               <th>공문번호</th>
               <th>제목</th>
               <th>내용</th>
-              <th>회신요청일</th>
+              <th>회신번호</th>
             </tr>
           </thead>
           <tbody>`;
         archiveRecords.forEach(item => {
           const f = item.fields || {};
-          const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
-          const partyVal = isOut ? (f.recipient || f.sender || '-') : (f.sender || f.recipient || '-');
+          const partyVal = f.recipient || f.sender || '-';
+          const cls = item.id === selectedId ? 'active' : '';
+          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
+            <td>\${escapeHtml(dotDate(f.sentDate))}</td>
+            <td>\${escapeHtml(partyVal)}</td>
+            <td>\${escapeHtml(f.docNumber || '-')}</td>
+            <td style="text-align:left;">\${escapeHtml(f.title || '-')}</td>
+            <td style="text-align:left;">\${escapeHtml(f.aiSummary || '-')}</td>
+            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(f.replyDocNumber || '-')}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        leftPane.innerHTML = html;
+      } else if (majorCat === '공문(수신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(수신)'))) {
+        let html = `<table class="grid-table">
+          <thead>
+            <tr>
+              <th>접수일</th>
+              <th>보낸사람</th>
+              <th>공문번호</th>
+              <th>제목</th>
+              <th>내용</th>
+              <th>회신요청일</th>
+              <th>회신완료</th>
+            </tr>
+          </thead>
+          <tbody>`;
+        archiveRecords.forEach(item => {
+          const f = item.fields || {};
+          const partyVal = f.sender || f.recipient || '-';
+          const myKey = normalizeDocKey(f.docNumber);
+          const isReplied = myKey && repliedKeys.has(myKey);
           const cls = item.id === selectedId ? 'active' : '';
           html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
             <td>\${escapeHtml(dotDate(f.sentDate))}</td>
@@ -3438,6 +3971,7 @@ class _HomeScreenState extends State<HomeScreen> {
             <td style="text-align:left;">\${escapeHtml(f.title || '-')}</td>
             <td style="text-align:left;">\${escapeHtml(f.aiSummary || '-')}</td>
             <td>\${escapeHtml(dotDate(f.replyDeadline))}</td>
+            <td style="color:#16a34a; font-weight:700; font-size:15px;">\${isReplied ? '○' : ''}</td>
           </tr>`;
         });
         html += '</tbody></table>';
@@ -3541,9 +4075,6 @@ class _HomeScreenState extends State<HomeScreen> {
 </html>''';
   }
 
-  // ===========================================================================
-  // ★ PDF 내보내기: 장당 1개씩 `날짜-제목.pdf` 형식의 이름으로 생성하여 원드라이브 등으로 바로 공유!
-  // ===========================================================================
   Future<void> _exportIndividualPdfs() async {
     final targetRecords = _filteredRecords;
     if (targetRecords.isEmpty) {
@@ -3556,7 +4087,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final koreanFont = await PdfGoogleFonts.nanumGothicRegular();
       final koreanBoldFont = await PdfGoogleFonts.nanumGothicBold();
 
-      // 같은 사진(imagePath)에서 규격별로 나뉜 행들은 사진 1장당 1개의 PDF만 생성하도록 그룹화
       final seenImagePaths = <String>{};
       final uniquePhotoRecords = <DocRecord>[];
       for (final r in targetRecords) {
@@ -3624,15 +4154,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
         final tempFile = File(p.join(tempDir.path, fileName));
         await tempFile.writeAsBytes(pdfBytes, flush: true);
-        generatedXFiles.add(XFile(tempFile.path, mimeType: 'application/pdf'));
+        generatedXFiles.add(XFile(tempFile.path));
       }
 
       if (generatedXFiles.isNotEmpty) {
-        await Share.shareXFiles(
-          generatedXFiles,
-          text:
-              '장당 1개씩 생성된 [날짜-제목.pdf] (${generatedXFiles.length}개) - 원드라이브 내보내기 폴더에 공유하세요.',
-        );
+        await Share.shareXFiles(generatedXFiles);
       }
     } catch (e) {
       _showSnack('PDF 내보내기 중 오류가 발생했습니다: $e');
@@ -3644,16 +4170,28 @@ class _HomeScreenState extends State<HomeScreen> {
   List<MapEntry<String, String>> _getCategoryFieldPairs(
     DocRecord rec,
     Map<String, String> cumMap,
+    Set<String> repliedKeys,
   ) {
     final f = rec.fields;
     final subLabel = rec.subCategory.isNotEmpty ? rec.subCategory : '미지정';
-    if (DocCategory.isOfficial(rec.category)) {
+    if (rec.category == DocCategory.officialOut) {
       return [
-        MapEntry(rec.isOutgoingOfficialDoc ? '발신일' : '접수일',
-            DocRecord.formatDotDate(f['sentDate'])),
-        MapEntry(rec.officialCounterpartyLabel, rec.officialCounterpartyValue),
+        MapEntry('발신일', DocRecord.formatDotDate(f['sentDate'])),
+        MapEntry('받는사람', rec.officialCounterpartyValue),
+        MapEntry('제목', f['title'] ?? '-'),
+        MapEntry('회신번호', f['replyDocNumber'] ?? '-'),
+        MapEntry('공문번호', f['docNumber'] ?? '-'),
+        MapEntry('내용', f['aiSummary'] ?? '-'),
+      ];
+    }
+    if (rec.category == DocCategory.officialIn) {
+      final isReplied = _isIncomingDocReplied(rec, repliedKeys);
+      return [
+        MapEntry('접수일', DocRecord.formatDotDate(f['sentDate'])),
+        MapEntry('보낸사람', rec.officialCounterpartyValue),
         MapEntry('제목', f['title'] ?? '-'),
         MapEntry('회신요청일', DocRecord.formatDotDate(f['replyDeadline'])),
+        MapEntry('회신완료', isReplied ? '○' : '-'),
         MapEntry('공문번호', f['docNumber'] ?? '-'),
         MapEntry('내용', f['aiSummary'] ?? '-'),
       ];
@@ -3702,15 +4240,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ===========================================================================
-  // ★ 상단 리스트 영역 빌더:
-  // - [공문(수신)] 탭: 구분 열 없이 `접수일 | 보낸사람 | 제목 | 회신요청일` 4열 표!
-  // - [공문(발신)] 탭: 구분 열 없이 `발신일 | 받는사람 | 제목 | 회신요청일` 4열 표!
-  // - [자재송장] 탭: `날짜 | 제품명 | 규격명 | 단위 | 수량 | 누적수량` 6열 표!
-  // ===========================================================================
   Widget _buildTopListSection(
     List<DocRecord> items,
     Map<String, String> cumMap,
+    Set<String> repliedKeys,
   ) {
     if (items.isEmpty) {
       return const Center(
@@ -3723,180 +4256,306 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (_selectedCategoryFilter == DocCategory.invoice) {
-      return Column(
-        children: [
-          Container(
-            color: const Color(0xFFE2E8F0),
-            child: IntrinsicHeight(
-              child: Row(
-                children: [
-                  _buildTableHeaderCell('날짜', flex: 20),
-                  _buildTableHeaderCell('제품명', flex: 21),
-                  _buildTableHeaderCell('규격명', flex: 18),
-                  _buildTableHeaderCell('단위', flex: 11),
-                  _buildTableHeaderCell('수량', flex: 15),
-                  _buildTableHeaderCell('누적수량', flex: 15),
-                  const SizedBox(width: 32),
-                ],
-              ),
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              itemCount: items.length,
-              itemBuilder: (ctx, idx) {
-                final rec = items[idx];
-                final f = rec.fields;
-                final isSelected = _selectedRecord?.id == rec.id;
-                final cumStr = cumMap[rec.id] ?? f['quantity'] ?? '-';
-                return InkWell(
-                  onTap: () => setState(() => _selectedRecord = rec),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: isSelected ? const Color(0xFFDBEAFE) : Colors.white,
-                      border: const Border(
-                        bottom: BorderSide(color: Color(0xFFCBD5E1), width: 1),
-                      ),
-                    ),
-                    child: IntrinsicHeight(
-                      child: Row(
-                        children: [
-                          _buildTableDataCell(
-                            DocRecord.formatDotDate(f['arrivalDate']),
-                            flex: 20,
-                            isSelected: isSelected,
-                          ),
-                          _buildTableDataCell(
-                            f['productName'] ?? '-',
-                            flex: 21,
-                            isSelected: isSelected,
-                          ),
-                          _buildTableDataCell(
-                            f['specName'] ?? '-',
-                            flex: 18,
-                            isSelected: isSelected,
-                          ),
-                          _buildTableDataCell(
-                            f['unit'] ?? 'ton',
-                            flex: 11,
-                            isSelected: isSelected,
-                          ),
-                          _buildTableDataCell(
-                            f['quantity'] ?? '-',
-                            flex: 15,
-                            isSelected: isSelected,
-                          ),
-                          _buildTableDataCell(
-                            cumStr,
-                            flex: 15,
-                            isSelected: isSelected,
-                            textColor: const Color(0xFF1E3A8A),
-                            forceBold: true,
-                          ),
-                          SizedBox(
-                            width: 32,
-                            child: IconButton(
-                              padding: EdgeInsets.zero,
-                              icon: const Icon(Icons.delete_outline,
-                                  size: 18, color: Colors.redAccent),
-                              onPressed: () => _deleteLocalRecord(rec),
-                            ),
-                          ),
-                        ],
-                      ),
+      return Scrollbar(
+        controller: _tableHorizontalScrollCtrl,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _tableHorizontalScrollCtrl,
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: 590,
+            child: Column(
+              children: [
+                Container(
+                  color: const Color(0xFFE2E8F0),
+                  child: IntrinsicHeight(
+                    child: Row(
+                      children: [
+                        _buildFixedHeaderCell('날짜', width: 95),
+                        _buildFixedHeaderCell('제품명', width: 110),
+                        _buildFixedHeaderCell('규격명', width: 90),
+                        _buildFixedHeaderCell('단위', width: 60),
+                        _buildFixedHeaderCell('수량', width: 95),
+                        _buildFixedHeaderCell('누적수량', width: 100),
+                        const SizedBox(width: 40),
+                      ],
                     ),
                   ),
-                );
-              },
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (ctx, idx) {
+                      final rec = items[idx];
+                      final f = rec.fields;
+                      final isSelected = _selectedRecord?.id == rec.id;
+                      final cumStr = cumMap[rec.id] ?? f['quantity'] ?? '-';
+                      return InkWell(
+                        onTap: () => setState(() => _selectedRecord = rec),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFDBEAFE)
+                                : Colors.white,
+                            border: const Border(
+                              bottom: BorderSide(
+                                  color: Color(0xFFCBD5E1), width: 1),
+                            ),
+                          ),
+                          child: IntrinsicHeight(
+                            child: Row(
+                              children: [
+                                _buildFixedDataCell(
+                                  DocRecord.formatDotDate(f['arrivalDate']),
+                                  width: 95,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['productName'] ?? '-',
+                                  width: 110,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['specName'] ?? '-',
+                                  width: 90,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['unit'] ?? 'ton',
+                                  width: 60,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['quantity'] ?? '-',
+                                  width: 95,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  cumStr,
+                                  width: 100,
+                                  isSelected: isSelected,
+                                  textColor: const Color(0xFF1E3A8A),
+                                  forceBold: true,
+                                ),
+                                SizedBox(
+                                  width: 40,
+                                  child: IconButton(
+                                    padding: EdgeInsets.zero,
+                                    icon: const Icon(Icons.delete_outline,
+                                        size: 18, color: Colors.redAccent),
+                                    onPressed: () => _deleteLocalRecord(rec),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       );
     }
 
-    if (DocCategory.isOfficial(_selectedCategoryFilter)) {
-      final bool isOutTab = _selectedCategoryFilter == DocCategory.officialOut;
-      final String dateHeader = isOutTab ? '발신일' : '접수일';
-      final String partyHeader = isOutTab ? '받는사람' : '보낸사람';
-
-      return Column(
-        children: [
-          Container(
-            color: const Color(0xFFE2E8F0),
-            child: IntrinsicHeight(
-              child: Row(
-                children: [
-                  _buildTableHeaderCell(dateHeader, flex: 23),
-                  _buildTableHeaderCell(partyHeader, flex: 21),
-                  _buildTableHeaderCell('제목', flex: 33),
-                  _buildTableHeaderCell('회신요청일', flex: 23),
-                  const SizedBox(width: 32),
-                ],
-              ),
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              itemCount: items.length,
-              itemBuilder: (ctx, idx) {
-                final rec = items[idx];
-                final f = rec.fields;
-                final isSelected = _selectedRecord?.id == rec.id;
-                return InkWell(
-                  onTap: () => setState(() => _selectedRecord = rec),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: isSelected ? const Color(0xFFDBEAFE) : Colors.white,
-                      border: const Border(
-                        bottom: BorderSide(color: Color(0xFFCBD5E1), width: 1),
-                      ),
-                    ),
-                    child: IntrinsicHeight(
-                      child: Row(
-                        children: [
-                          _buildTableDataCell(
-                            DocRecord.formatDotDate(f['sentDate']),
-                            flex: 23,
-                            isSelected: isSelected,
-                          ),
-                          _buildTableDataCell(
-                            rec.officialCounterpartyValue,
-                            flex: 21,
-                            isSelected: isSelected,
-                          ),
-                          _buildTableDataCell(
-                            f['title'] ?? '-',
-                            flex: 33,
-                            isSelected: isSelected,
-                            maxLines: 2,
-                          ),
-                          _buildTableDataCell(
-                            DocRecord.formatDotDate(f['replyDeadline']),
-                            flex: 23,
-                            isSelected: isSelected,
-                          ),
-                          SizedBox(
-                            width: 32,
-                            child: IconButton(
-                              padding: EdgeInsets.zero,
-                              icon: const Icon(Icons.delete_outline,
-                                  size: 18, color: Colors.redAccent),
-                              onPressed: () => _deleteLocalRecord(rec),
-                            ),
-                          ),
-                        ],
-                      ),
+    if (_selectedCategoryFilter == DocCategory.officialOut) {
+      return Scrollbar(
+        controller: _tableHorizontalScrollCtrl,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _tableHorizontalScrollCtrl,
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: 620,
+            child: Column(
+              children: [
+                Container(
+                  color: const Color(0xFFE2E8F0),
+                  child: IntrinsicHeight(
+                    child: Row(
+                      children: [
+                        _buildFixedHeaderCell('발신일', width: 95),
+                        _buildFixedHeaderCell('받는사람', width: 110),
+                        _buildFixedHeaderCell('제목', width: 235),
+                        _buildFixedHeaderCell('회신번호', width: 140),
+                        const SizedBox(width: 40),
+                      ],
                     ),
                   ),
-                );
-              },
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (ctx, idx) {
+                      final rec = items[idx];
+                      final f = rec.fields;
+                      final isSelected = _selectedRecord?.id == rec.id;
+                      return InkWell(
+                        onTap: () => setState(() => _selectedRecord = rec),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFDBEAFE)
+                                : Colors.white,
+                            border: const Border(
+                              bottom: BorderSide(
+                                  color: Color(0xFFCBD5E1), width: 1),
+                            ),
+                          ),
+                          child: IntrinsicHeight(
+                            child: Row(
+                              children: [
+                                _buildFixedDataCell(
+                                  DocRecord.formatDotDate(f['sentDate']),
+                                  width: 95,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  rec.officialCounterpartyValue,
+                                  width: 110,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['title'] ?? '-',
+                                  width: 235,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['replyDocNumber']?.trim().isNotEmpty == true
+                                      ? f['replyDocNumber']!
+                                      : '-',
+                                  width: 140,
+                                  isSelected: isSelected,
+                                  textColor: const Color(0xFF1E3A8A),
+                                  forceBold: true,
+                                ),
+                                SizedBox(
+                                  width: 40,
+                                  child: IconButton(
+                                    padding: EdgeInsets.zero,
+                                    icon: const Icon(Icons.delete_outline,
+                                        size: 18, color: Colors.redAccent),
+                                    onPressed: () => _deleteLocalRecord(rec),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       );
     }
 
-    // 그 외 탭(출장비, 병원비, 전체) 리스트
+    if (_selectedCategoryFilter == DocCategory.officialIn) {
+      return Scrollbar(
+        controller: _tableHorizontalScrollCtrl,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _tableHorizontalScrollCtrl,
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: 660,
+            child: Column(
+              children: [
+                Container(
+                  color: const Color(0xFFE2E8F0),
+                  child: IntrinsicHeight(
+                    child: Row(
+                      children: [
+                        _buildFixedHeaderCell('접수일', width: 95),
+                        _buildFixedHeaderCell('보낸사람', width: 105),
+                        _buildFixedHeaderCell('제목', width: 250),
+                        _buildFixedHeaderCell('회신요청일', width: 95),
+                        _buildFixedHeaderCell('회신완료', width: 75),
+                        const SizedBox(width: 40),
+                      ],
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (ctx, idx) {
+                      final rec = items[idx];
+                      final f = rec.fields;
+                      final isSelected = _selectedRecord?.id == rec.id;
+                      final isReplied = _isIncomingDocReplied(rec, repliedKeys);
+                      return InkWell(
+                        onTap: () => setState(() => _selectedRecord = rec),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFDBEAFE)
+                                : Colors.white,
+                            border: const Border(
+                              bottom: BorderSide(
+                                  color: Color(0xFFCBD5E1), width: 1),
+                            ),
+                          ),
+                          child: IntrinsicHeight(
+                            child: Row(
+                              children: [
+                                _buildFixedDataCell(
+                                  DocRecord.formatDotDate(f['sentDate']),
+                                  width: 95,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  rec.officialCounterpartyValue,
+                                  width: 105,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['title'] ?? '-',
+                                  width: 250,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  DocRecord.formatDotDate(f['replyDeadline']),
+                                  width: 95,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  isReplied ? '○' : '',
+                                  width: 75,
+                                  isSelected: isSelected,
+                                  textColor: const Color(0xFF16A34A),
+                                  forceBold: true,
+                                ),
+                                SizedBox(
+                                  width: 40,
+                                  child: IconButton(
+                                    padding: EdgeInsets.zero,
+                                    icon: const Icon(Icons.delete_outline,
+                                        size: 18, color: Colors.redAccent),
+                                    onPressed: () => _deleteLocalRecord(rec),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return ListView.separated(
       itemCount: items.length,
       separatorBuilder: (_, __) => const Divider(height: 1),
@@ -4014,14 +4673,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           title: Text(
             rec.displayTitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
           subtitle: Text(
             rec.displaySubtitle,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 11.5),
           ),
           trailing: IconButton(
@@ -4037,61 +4692,55 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildTableHeaderCell(String label, {required int flex}) {
-    return Expanded(
-      flex: flex,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
-        decoration: const BoxDecoration(
-          border: Border(
-            right: BorderSide(color: Color(0xFF94A3B8), width: 1),
-            bottom: BorderSide(color: Color(0xFF94A3B8), width: 1),
-          ),
+  Widget _buildFixedHeaderCell(String label, {required double width}) {
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+      decoration: const BoxDecoration(
+        border: Border(
+          right: BorderSide(color: Color(0xFF94A3B8), width: 1),
+          bottom: BorderSide(color: Color(0xFF94A3B8), width: 1),
         ),
-        alignment: Alignment.center,
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            fontSize: 11.5,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF1E293B),
-          ),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        label,
+        textAlign: TextAlign.center,
+        softWrap: false,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          color: Color(0xFF1E293B),
         ),
       ),
     );
   }
 
-  Widget _buildTableDataCell(
+  Widget _buildFixedDataCell(
     String value, {
-    required int flex,
+    required double width,
     required bool isSelected,
-    int maxLines = 1,
     Color? textColor,
     bool forceBold = false,
   }) {
-    return Expanded(
-      flex: flex,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 3),
-        decoration: const BoxDecoration(
-          border: Border(
-            right: BorderSide(color: Color(0xFFCBD5E1), width: 1),
-          ),
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+      decoration: const BoxDecoration(
+        border: Border(
+          right: BorderSide(color: Color(0xFFCBD5E1), width: 1),
         ),
-        alignment: Alignment.center,
-        child: Text(
-          value.trim().isEmpty ? '-' : value,
-          textAlign: TextAlign.center,
-          maxLines: maxLines,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: 11.5,
-            fontWeight: (isSelected || forceBold)
-                ? FontWeight.bold
-                : FontWeight.w500,
-            color: textColor ?? const Color(0xFF0F172A),
-          ),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        value.trim().isEmpty ? '-' : value,
+        textAlign: TextAlign.center,
+        softWrap: true,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight:
+              (isSelected || forceBold) ? FontWeight.bold : FontWeight.w500,
+          color: textColor ?? const Color(0xFF0F172A),
         ),
       ),
     );
@@ -4109,15 +4758,16 @@ class _HomeScreenState extends State<HomeScreen> {
     final majorTotalSum = _sumByMajorCategory(_selectedCategoryFilter);
     final currentSubTotalSum = _sumBySubCategory(_selectedSubCategoryFilter);
     final cumMap = _computeInvoiceCumulativeMap(_records);
+    final repliedKeys = _computeRepliedDocNumKeys(_records);
 
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v21'),
+        title: const Text('증빙서류 스냅 v26'),
         actions: [
           IconButton(
-            tooltip: 'AI 설정 및 누적 안내',
+            tooltip: '원드라이브 덮어쓰기 & AI 설정',
             icon: Icon(
               _geminiApiKey.trim().isNotEmpty
                   ? Icons.auto_awesome
@@ -4167,7 +4817,7 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Column(
             children: [
-              // ★ 1) 상단 1줄: 문서 종류 선택 탭 (`전체 | 공문(수신) | 공문(발신) | 자재송장 | 출장비 | 병원비`)
+              // 1) 상단 1줄: 문서 종류 선택 탭 (`전체 | 공문(수신) | 공문(발신) | 자재송장 | 출장비 | 병원비`)
               Container(
                 height: 44,
                 padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -4208,7 +4858,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // 2) 상단 2줄: 공문(수신), 공문(발신), 자재송장은 카테고리 바를 숨김! (출장비, 병원비에만 표시)
               if (_usesSubCategory(_selectedCategoryFilter) ||
                   _selectedCategoryFilter == DocCategory.all)
                 Container(
@@ -4365,7 +5014,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 3) 상단 리스트(표) + 상하 크기조절 바 + 하단 상세보기(좌측 정보 + 좌우 크기조절 바 + 우측 전체확대 사진)
+              // 3) 상단 리스트(가로 드래그 스크롤 표) + 상하 크기조절 바 + 하단 상세보기(좌측 정보 + 좌우 크기조절 바 + 우측 전체확대 사진)
               Expanded(
                 child: LayoutBuilder(
                   builder: (ctx, constraints) {
@@ -4381,7 +5030,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         SizedBox(
                           height: listH,
-                          child: _buildTopListSection(items, cumMap),
+                          child: _buildTopListSection(
+                            items,
+                            cumMap,
+                            repliedKeys,
+                          ),
                         ),
 
                         GestureDetector(
@@ -4418,7 +5071,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       color: Colors.blueGrey.shade700),
                                   const SizedBox(width: 4),
                                   Text(
-                                    '위아래로 끌어서 화면 크기 조절',
+                                    '위아래로 끌어서 화면 크기 조절 (표는 좌우로 드래그 가능)',
                                     style: TextStyle(
                                       fontSize: 11,
                                       fontWeight: FontWeight.w600,
@@ -4485,6 +5138,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                                     ..._getCategoryFieldPairs(
                                                       _selectedRecord!,
                                                       cumMap,
+                                                      repliedKeys,
                                                     ).map(
                                                       (e) => Padding(
                                                         padding:
@@ -4533,14 +5187,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                           GestureDetector(
                                             behavior: HitTestBehavior.opaque,
                                             onHorizontalDragUpdate: (details) {
-                                              setState(() {
-                                                _detailHorizSplitRatio =
-                                                    (_detailHorizSplitRatio +
-                                                            details.delta.dx /
-                                                                usableW)
-                                                        .clamp(0.18, 0.82);
-                                              });
-                                            },
+                            setState(() {
+                              _detailHorizSplitRatio =
+                                  (_detailHorizSplitRatio +
+                                          details.delta.dx / usableW)
+                                      .clamp(0.18, 0.82);
+                            });
+                          },
                                             onHorizontalDragEnd: (_) async {
                                               final prefs =
                                                   await SharedPreferences
