@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v28',
+      title: '증빙서류 스냅 v33',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -322,7 +322,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v28)'),
+        title: const Text('가로/세로 정비율 스캔 (v33)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -648,6 +648,12 @@ class DocRecord {
   }
 
   /// 수신공문의 공문번호('공동주택과-16092')와 발신공문의 회신번호('공동주택 - 16092') 비교용 정규화 키
+  /// ★ 공문번호 및 회신번호에서 모든 띄어쓰기를 완전히 제거하는 함수
+  static String stripDocNumSpaces(String? raw) {
+    if (raw == null) return '';
+    return raw.replaceAll(RegExp(r'\s+'), '');
+  }
+
   static String normalizeDocNumKey(String? raw) {
     if (raw == null || raw.trim().isEmpty || raw.trim() == '-') return '';
     final c = raw.replaceAll(RegExp(r'\s+'), '');
@@ -745,7 +751,13 @@ class DocRecord {
         final merchant = fields['merchantName']?.trim() ?? '';
         if (div == TravelDivision.car) {
           final km = fields['distanceKm'] ?? '0';
-          return '[자차] ${km}km × 2 × 300원 = $total원';
+          final mult = fields['carMultiplier']?.trim().isNotEmpty == true
+              ? fields['carMultiplier']!
+              : '2';
+          final rate = fields['carUnitPrice']?.trim().isNotEmpty == true
+              ? fields['carUnitPrice']!
+              : '300';
+          return '[자차] ${km}km × $mult × ${rate}원 = $total원';
         }
         return '[$div] ${merchant.isNotEmpty ? "$merchant " : ""}($total원)';
       case DocCategory.medical:
@@ -772,7 +784,13 @@ class DocRecord {
         final div = travelDivision;
         if (div == TravelDivision.car) {
           final km = fields['distanceKm'] ?? '0';
-          return '구분: 자차 (실시간추천 ${km}km × 2(왕복) × 300원 = ${_formatCurrency(fields['totalAmount'])}원) | 일자: ${fields['date'] ?? createdAt.split(' ').first}';
+          final mult = fields['carMultiplier']?.trim().isNotEmpty == true
+              ? fields['carMultiplier']!
+              : '2';
+          final rate = fields['carUnitPrice']?.trim().isNotEmpty == true
+              ? fields['carUnitPrice']!
+              : '300';
+          return '구분: 자차 (실시간추천 ${km}km × $mult × ${rate}원 = ${_formatCurrency(fields['totalAmount'])}원) | 일자: ${fields['date'] ?? createdAt.split(' ').first}';
         }
         return '구분: $div | 상호/내역: ${fields['merchantName'] ?? '-'} | 금액: ${_formatCurrency(fields['totalAmount'])}원';
       case DocCategory.medical:
@@ -800,8 +818,13 @@ class DocRecord {
 
   factory DocRecord.fromJson(Map<String, dynamic> json) {
     final rawFields = json['fields'] as Map<String, dynamic>? ?? {};
-    final fieldsMap =
-        rawFields.map((k, v) => MapEntry(k, v?.toString() ?? ''));
+    final fieldsMap = rawFields.map((k, v) {
+      String valStr = v?.toString() ?? '';
+      if (k == 'docNumber' || k == 'replyDocNumber') {
+        valStr = stripDocNumSpaces(valStr);
+      }
+      return MapEntry(k, valStr);
+    });
     String rawCat = json['category'] as String? ?? DocCategory.officialIn;
     if (rawCat == '대외공문') {
       rawCat = fieldsMap['docDirection'] == '발신'
@@ -835,11 +858,25 @@ class _HomeScreenState extends State<HomeScreen> {
       'detail_left_right_split_ratio_v1';
   static const String _prefsOneDriveFolderKey = 'onedrive_cloud_folder_v25';
   static const String _prefsOneDriveTokenKey = 'onedrive_access_token_v25';
+  static const String _prefsPeriodAnchorDayKey = 'period_anchor_day_v30';
 
   List<DocRecord> _records = [];
   String _selectedCategoryFilter = DocCategory.officialIn;
   String _selectedSubCategoryFilter = '전체';
   String _selectedTravelDivisionFilter = '전체';
+  String _selectedInvoiceProductFilter = '전체';
+
+  // ★ 자재송장 & 병원비 전용 기간별 필터 상태 ('전체' 또는 '○월')
+  // 처음에 기준 기간(시작일~종료일)을 한 번 셋팅하면 다음부터는 [<] [>] 버튼으로 그 기간과 똑같은 한 달 단위로 넘길 수 있음!
+  int _periodAnchorStartDay = 1; // 예: 25일 시작이면 매월 25일 ~ 익월 24일
+  final Map<String, bool> _periodFilterAllMap = {
+    DocCategory.invoice: true,
+    DocCategory.medical: true,
+  };
+  final Map<String, DateTime> _periodTargetMonthMap = {
+    DocCategory.invoice: DateTime(DateTime.now().year, DateTime.now().month, 1),
+    DocCategory.medical: DateTime(DateTime.now().year, DateTime.now().month, 1),
+  };
   DocRecord? _selectedRecord;
   bool _isBusy = false;
 
@@ -976,6 +1013,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedRecord = _records.first;
       }
       _geminiApiKey = prefs.getString(_prefsGeminiApiKey) ?? '';
+      _periodAnchorStartDay =
+          (prefs.getInt(_prefsPeriodAnchorDayKey) ?? 1).clamp(1, 28);
       _oneDriveCloudFolder =
           prefs.getString(_prefsOneDriveFolderKey) ?? 'Documents/증빙서류함';
       _oneDriveAccessToken = prefs.getString(_prefsOneDriveTokenKey) ?? '';
@@ -1034,6 +1073,46 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// ★ 생성한 카테고리를 우측 작은 [x] 버튼으로 삭제하는 함수
+  Future<void> _deleteUserSubCategory(String majorCat, String subCat) async {
+    final clean = subCat.trim();
+    if (clean.isEmpty) return;
+    final list = List<String>.from(_userSubCategoriesMap[majorCat] ?? []);
+    list.remove(clean);
+
+    // 기존 기록 중 해당 카테고리를 쓰던 항목도 미지정('')으로 정리하여 탭에서도 즉시 사라지게 처리
+    for (int i = 0; i < _records.length; i++) {
+      final r = _records[i];
+      if (r.category == majorCat && r.subCategory == clean) {
+        final newFields = Map<String, String>.from(r.fields);
+        newFields['subCategory'] = '';
+        _records[i] = DocRecord(
+          id: r.id,
+          category: r.category,
+          createdAt: r.createdAt,
+          imagePath: r.imagePath,
+          base64Image: r.base64Image,
+          fields: newFields,
+        );
+      }
+    }
+
+    setState(() {
+      _userSubCategoriesMap[majorCat] = list;
+      if (_selectedSubCategoryFilter == clean) {
+        _selectedSubCategoryFilter = '전체';
+      }
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _prefsUserSubCatsKey,
+      jsonEncode(_userSubCategoriesMap),
+    );
+    await _saveLocalRecords();
+    _showSnack('[$clean] 카테고리가 삭제되었습니다.');
+  }
+
   Future<String?> _promptAddNewSubCategory(String parentCategory) async {
     final ctrl = TextEditingController();
     final added = await showDialog<String>(
@@ -1069,10 +1148,373 @@ class _HomeScreenState extends State<HomeScreen> {
     return null;
   }
 
+  /// 문서의 기준 날짜(자재송장: arrivalDate, 병원비: issueDate 등)를 DateTime으로 변환
+  DateTime? _parseRecordDate(DocRecord r) {
+    String? raw;
+    if (r.category == DocCategory.invoice) {
+      raw = r.fields['arrivalDate'];
+    } else if (r.category == DocCategory.medical) {
+      raw = r.fields['issueDate'];
+    } else if (r.category == DocCategory.travel) {
+      raw = r.fields['date'];
+    } else if (DocCategory.isOfficial(r.category)) {
+      raw = r.fields['sentDate'];
+    }
+    raw ??= r.createdAt;
+    final m = RegExp(r'(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})')
+        .firstMatch(raw);
+    if (m != null) {
+      final y = int.tryParse(m.group(1)!) ?? 2026;
+      final mo = int.tryParse(m.group(2)!) ?? 1;
+      final d = int.tryParse(m.group(3)!) ?? 1;
+      return DateTime(y, mo, d);
+    }
+    return null;
+  }
+
+  /// 지정된 기준월(targetMonth)과 시작일(_periodAnchorStartDay)에 따른 정확히 한 달 기간(시작일~종료일) 계산
+  /// 예: 처음에 9.25 ~ 10.24로 셋팅하면 기준 시작일이 25일로 저장되어,
+  /// 이전/다음 달로 넘길 때마다 8.25~9.24, 9.25~10.24, 10.25~11.24처럼 똑같은 한 달 단위로 넘어갑니다!
+  DateTimeRange _getMonthlyPeriodRange(DateTime targetMonth) {
+    final int y = targetMonth.year;
+    final int m = targetMonth.month;
+    final int anchor = _periodAnchorStartDay.clamp(1, 28);
+    if (anchor == 1) {
+      final start = DateTime(y, m, 1);
+      final end = DateTime(y, m + 1, 0, 23, 59, 59);
+      return DateTimeRange(start: start, end: end);
+    } else {
+      // 시작일이 2일~28일인 경우: 전월 anchor일 ~ 당월 (anchor-1)일 (또는 당월 anchor일 ~ 익월 anchor-1일 중 종료월 기준)
+      final start = DateTime(y, m, anchor);
+      final end = DateTime(y, m + 1, anchor - 1, 23, 59, 59);
+      return DateTimeRange(start: start, end: end);
+    }
+  }
+
+  bool _usesPeriodFilter(String cat) {
+    return cat == DocCategory.invoice || cat == DocCategory.medical;
+  }
+
+  bool _matchesCurrentPeriodFilter(DocRecord r) {
+    if (!_usesPeriodFilter(r.category)) return true;
+    final isAll = _periodFilterAllMap[r.category] ?? true;
+    if (isAll) return true;
+    final dt = _parseRecordDate(r);
+    if (dt == null) return false;
+    final targetMonth = _periodTargetMonthMap[r.category] ??
+        DateTime(DateTime.now().year, DateTime.now().month, 1);
+    final range = _getMonthlyPeriodRange(targetMonth);
+    final dayOnly = DateTime(dt.year, dt.month, dt.day);
+    final startDay =
+        DateTime(range.start.year, range.start.month, range.start.day);
+    final endDay = DateTime(range.end.year, range.end.month, range.end.day);
+    return !dayOnly.isBefore(startDay) && !dayOnly.isAfter(endDay);
+  }
+
+  String _currentPeriodButtonLabel(String cat) {
+    final isAll = _periodFilterAllMap[cat] ?? true;
+    if (isAll) return '전체';
+    final targetMonth = _periodTargetMonthMap[cat] ??
+        DateTime(DateTime.now().year, DateTime.now().month, 1);
+    return '${targetMonth.month}월';
+  }
+
+  String _currentPeriodRangeDescription(String cat) {
+    final isAll = _periodFilterAllMap[cat] ?? true;
+    if (isAll) return '전체 기간';
+    final targetMonth = _periodTargetMonthMap[cat] ??
+        DateTime(DateTime.now().year, DateTime.now().month, 1);
+    final range = _getMonthlyPeriodRange(targetMonth);
+    final fmt = DateFormat('yyyy.MM.dd');
+    return '${fmt.format(range.start)} ~ ${fmt.format(range.end)}';
+  }
+
+  void _shiftPeriodMonth(String cat, int deltaMonths) {
+    final cur = _periodTargetMonthMap[cat] ??
+        DateTime(DateTime.now().year, DateTime.now().month, 1);
+    setState(() {
+      _periodFilterAllMap[cat] = false;
+      _periodTargetMonthMap[cat] = DateTime(cur.year, cur.month + deltaMonths, 1);
+      final currentList = _filteredRecords;
+      if (!currentList.any((r) => r.id == _selectedRecord?.id)) {
+        _selectedRecord = currentList.isNotEmpty ? currentList.first : null;
+      }
+    });
+  }
+
+  /// ★[전체] 또는 [○월] 버튼을 누르면 열리는 기간별 필터 & 한 달 기준일 설정 창
+  Future<void> _openPeriodFilterDialog(String cat) async {
+    bool tempIsAll = _periodFilterAllMap[cat] ?? true;
+    DateTime tempMonth = _periodTargetMonthMap[cat] ??
+        DateTime(DateTime.now().year, DateTime.now().month, 1);
+    int tempAnchorDay = _periodAnchorStartDay;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            DateTimeRange previewRange;
+            if (tempAnchorDay == 1) {
+              previewRange = DateTimeRange(
+                start: DateTime(tempMonth.year, tempMonth.month, 1),
+                end: DateTime(tempMonth.year, tempMonth.month + 1, 0),
+              );
+            } else {
+              previewRange = DateTimeRange(
+                start: DateTime(tempMonth.year, tempMonth.month, tempAnchorDay),
+                end: DateTime(
+                    tempMonth.year, tempMonth.month + 1, tempAnchorDay - 1),
+              );
+            }
+            final fmt = DateFormat('yyyy.MM.dd');
+
+            return AlertDialog(
+              title: Text('[$cat] 기간별 필터 설정',
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Center(child: Text('전체 기간 보기')),
+                            selected: tempIsAll,
+                            selectedColor: Colors.indigo.shade100,
+                            onSelected: (_) {
+                              setModalState(() => tempIsAll = true);
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ChoiceChip(
+                            label: Center(child: Text('${tempMonth.month}월 기간 보기')),
+                            selected: !tempIsAll,
+                            selectedColor: Colors.amber.shade300,
+                            onSelected: (_) {
+                              setModalState(() => tempIsAll = false);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(Icons.chevron_left),
+                                onPressed: () {
+                                  setModalState(() {
+                                    tempIsAll = false;
+                                    tempMonth = DateTime(
+                                        tempMonth.year, tempMonth.month - 1, 1);
+                                  });
+                                },
+                              ),
+                              Text(
+                                '${tempMonth.year}년 ${tempMonth.month}월',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF1E3A8A),
+                                ),
+                              ),
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(Icons.chevron_right),
+                                onPressed: () {
+                                  setModalState(() {
+                                    tempIsAll = false;
+                                    tempMonth = DateTime(
+                                        tempMonth.year, tempMonth.month + 1, 1);
+                                  });
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '적용 기간: ${fmt.format(previewRange.start)} ~ ${fmt.format(previewRange.end)}',
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.indigo,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: List.generate(12, (index) {
+                              final m = index + 1;
+                              final isSel = !tempIsAll && tempMonth.month == m;
+                              return InkWell(
+                                onTap: () {
+                                  setModalState(() {
+                                    tempIsAll = false;
+                                    tempMonth = DateTime(tempMonth.year, m, 1);
+                                  });
+                                },
+                                child: Container(
+                                  width: 52,
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: isSel
+                                        ? const Color(0xFF1E3A8A)
+                                        : Colors.white,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border:
+                                        Border.all(color: Colors.blue.shade200),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    '$m월',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color:
+                                          isSel ? Colors.white : Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.date_range, size: 18),
+                      label: Text(
+                        tempAnchorDay == 1
+                            ? '한 달 기준일 설정 (현재: 매월 1일 ~ 말일)'
+                            : '한 달 기준일 설정 (현재: 매월 $tempAnchorDay일 ~ 익월 ${tempAnchorDay - 1}일)',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      onPressed: () async {
+                        final pickedStart = await showDatePicker(
+                          context: ctx,
+                          initialDate: previewRange.start,
+                          firstDate: DateTime(2018, 1, 1),
+                          lastDate: DateTime(2035, 12, 31),
+                          helpText:
+                              '한 달 기간의 시작 기준일을 선택하세요 (다음 달부터 같은 날짜로 한 달씩 넘어갑니다)',
+                        );
+                        if (pickedStart != null) {
+                          setModalState(() {
+                            tempIsAll = false;
+                            tempAnchorDay = pickedStart.day.clamp(1, 28);
+                            tempMonth = DateTime(
+                                pickedStart.year, pickedStart.month, 1);
+                          });
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setInt(_prefsPeriodAnchorDayKey, tempAnchorDay);
+                    setState(() {
+                      _periodAnchorStartDay = tempAnchorDay;
+                      _periodFilterAllMap[cat] = tempIsAll;
+                      _periodTargetMonthMap[cat] = tempMonth;
+                      final currentList = _filteredRecords;
+                      if (!currentList
+                          .any((r) => r.id == _selectedRecord?.id)) {
+                        _selectedRecord =
+                            currentList.isNotEmpty ? currentList.first : null;
+                      }
+                    });
+                    if (ctx.mounted) Navigator.pop(ctx);
+                  },
+                  child: const Text('적용'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static String _formatQtyClean(double val) {
+    if (val == 0) return '0';
+    if ((val - val.roundToDouble()).abs() < 0.0001) {
+      return val.round().toString();
+    }
+    return val
+        .toStringAsFixed(3)
+        .replaceAll(RegExp(r'0+$'), '')
+        .replaceAll(RegExp(r'\.$'), '');
+  }
+
+  /// 자재송장 탭에서 기간 필터가 적용된 목록 내의 제품명 목록
+  List<String> get _invoiceProductNamesInCurrentPeriod {
+    final periodInvoices = _records
+        .where((r) =>
+            r.category == DocCategory.invoice && _matchesCurrentPeriodFilter(r))
+        .toList();
+    final Set<String> prods = {};
+    for (final r in periodInvoices) {
+      final p = (r.fields['productName'] ?? '').trim();
+      if (p.isNotEmpty) prods.add(p);
+    }
+    return ['전체', ...prods];
+  }
+
+  /// 자재송장 제품명별 합계수량 표기: 예) 고장력철근(19.6ton)
+  String _invoiceProductChipLabel(String prodName) {
+    final periodInvoices = _records
+        .where((r) =>
+            r.category == DocCategory.invoice && _matchesCurrentPeriodFilter(r))
+        .toList();
+    if (prodName == '전체') {
+      return '구분전체 (${periodInvoices.length}건)';
+    }
+    final matching = periodInvoices
+        .where((r) => (r.fields['productName'] ?? '').trim() == prodName)
+        .toList();
+    double sumQty = 0.0;
+    String unit = 'ton';
+    for (final r in matching) {
+      sumQty += r.numericInvoiceQuantity;
+      final u = (r.fields['unit'] ?? '').trim();
+      if (u.isNotEmpty) unit = u;
+    }
+    return '$prodName(${_formatQtyClean(sumQty)}$unit)';
+  }
+
   List<DocRecord> get _recordsInSelectedMajorCategory {
     if (_selectedCategoryFilter == DocCategory.all) return _records;
     return _records
-        .where((r) => r.category == _selectedCategoryFilter)
+        .where((r) =>
+            r.category == _selectedCategoryFilter &&
+            _matchesCurrentPeriodFilter(r))
         .toList();
   }
 
@@ -1094,6 +1536,14 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedTravelDivisionFilter != '전체') {
       return subFiltered
           .where((r) => r.travelDivision == _selectedTravelDivisionFilter)
+          .toList();
+    }
+    if (_selectedCategoryFilter == DocCategory.invoice &&
+        _selectedInvoiceProductFilter != '전체') {
+      return subFiltered
+          .where((r) =>
+              (r.fields['productName'] ?? '').trim() ==
+              _selectedInvoiceProductFilter)
           .toList();
     }
     return subFiltered;
@@ -1184,7 +1634,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return _records.fold(0, (sum, r) => sum + r.numericAmount);
     }
     return _records
-        .where((r) => r.category == majorCat)
+        .where((r) => r.category == majorCat && _matchesCurrentPeriodFilter(r))
         .fold(0, (sum, r) => sum + r.numericAmount);
   }
 
@@ -1664,7 +2114,7 @@ class _HomeScreenState extends State<HomeScreen> {
           .replaceAll('주택고', '주택과')
           .replaceAll(RegExp(r'과$'), '');
       final numPart = normalizeDocNumDigits(bracketReplyMatch.group(2)!);
-      result['replyDocNumber'] = '$rawDept - $numPart';
+      result['replyDocNumber'] = '$rawDept-$numPart'.replaceAll(RegExp(r'\s+'), '');
     } else {
       final refDocMatch = RegExp(
         r'(?:송부문서|관련문서|근거문서|근거)[^\n]*?([가-힣]{2,10})\s*[-~—–_.:]\s*([0-9OolISBQDGZb|]{3,7})',
@@ -1675,7 +2125,7 @@ class _HomeScreenState extends State<HomeScreen> {
             .replaceAll('주택괴', '주택과')
             .replaceAll(RegExp(r'과$'), '');
         final numPart = normalizeDocNumDigits(refDocMatch.group(2)!);
-        result['replyDocNumber'] = '$rawDept - $numPart';
+        result['replyDocNumber'] = '$rawDept-$numPart'.replaceAll(RegExp(r'\s+'), '');
       }
     }
 
@@ -1685,7 +2135,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (jeMatch != null) {
       final p1 = normalizeDocNumDigits(jeMatch.group(1)!);
       final p2 = normalizeDocNumDigits(jeMatch.group(2)!);
-      result['docNumber'] = '$p1 - ${p2}호';
+      result['docNumber'] = '$p1-${p2}호'.replaceAll(RegExp(r'\s+'), '');
     }
 
     if ((result['docNumber'] ?? '').isEmpty) {
@@ -1717,7 +2167,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final numPart = normalizeDocNumDigits(m.group(2)!);
           if (RegExp(r'^\d{3,7}$').hasMatch(numPart) &&
               !RegExp(r'^202\d$').hasMatch(numPart)) {
-            result['docNumber'] = '$dept-$numPart';
+            result['docNumber'] = '$dept-$numPart'.replaceAll(RegExp(r'\s+'), '');
             break;
           }
         }
@@ -1741,7 +2191,7 @@ class _HomeScreenState extends State<HomeScreen> {
             final dept = deptMatch != null
                 ? deptMatch.group(1)!.replaceAll('주택괴', '주택과')
                 : '공문';
-            result['docNumber'] = '$dept-$numPart';
+            result['docNumber'] = '$dept-$numPart'.replaceAll(RegExp(r'\s+'), '');
             break;
           }
         }
@@ -2355,8 +2805,8 @@ class _HomeScreenState extends State<HomeScreen> {
 이 대한민국 공문서 이미지를 분석해서 순수 JSON 객체로 응답해줘:
 - title (제목): 앞쪽 [공동주택과-16092] 같은 대괄호는 빼고 순수 제목만 (예: "민원조치계획 회신의건")
 - aiSummary (내용): 세부 조치항목이 1)~4)처럼 있으면 "동일민원이 발생치 않도록 4가지 조치예정"처럼 요약
-- docNumber (공문번호): 상단 '제 25-067 호'가 있으면 "25 - 067호", 하단 '시행 공동주택과-16092'가 있으면 "공동주택과-16092"
-- replyDocNumber (회신번호): 발신공문 제목 앞 [공동주택과 - 16092] 또는 본문 송부문서 번호 (예: "공동주택 - 16092")
+- docNumber (공문번호): 띄어쓰기 없이 붙여 쓸 것! 상단 '제 25-067 호'가 있으면 "25-067호", 하단 '시행 공동주택과-16092'가 있으면 "공동주택과-16092"
+- replyDocNumber (회신번호): 띄어쓰기 없이 붙여 쓸 것! 발신공문 제목 앞 [공동주택과 - 16092] 또는 본문 송부문서 번호 (예: "공동주택과-16092")
 - sender (보낸사람): 발신명의 (예: "김해시장")
 - recipient (받는사람): '수신' 옆에 적힌 받는사람 (예: "김해시장")
 - replyDeadline (회신요청일): YYYY.MM.DD
@@ -2541,11 +2991,13 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // 3. 출장비 컨트롤러
+      // 3. 출장비 컨트롤러 (기본값: × 2 × 300원, 사용자가 2와 300을 직접 수정 가능)
       String chosenTravelDivision = _selectedTravelDivisionFilter != '전체'
           ? _selectedTravelDivisionFilter
           : TravelDivision.car;
       final travelDistanceKmCtrl = TextEditingController(text: '0');
+      final travelCarMultiplierCtrl = TextEditingController(text: '2');
+      final travelCarUnitPriceCtrl = TextEditingController(text: '300');
       final travelAmountCtrl = TextEditingController(text: '0');
       final travelMerchantCtrl = TextEditingController();
       final travelDateCtrl = TextEditingController(text: todayDotStr);
@@ -2556,7 +3008,15 @@ class _HomeScreenState extends State<HomeScreen> {
               travelDistanceKmCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
             ) ??
             0;
-        final int fare = (km * 2 * 300).round();
+        final double mult = double.tryParse(
+              travelCarMultiplierCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+            ) ??
+            2;
+        final double unitPrice = double.tryParse(
+              travelCarUnitPriceCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+            ) ??
+            300;
+        final int fare = (km * mult * unitPrice).round();
         travelAmountCtrl.text = fare.toString();
       }
 
@@ -2575,10 +3035,12 @@ class _HomeScreenState extends State<HomeScreen> {
             aiSummaryCtrl.text = extracted['aiSummary']!;
           }
           if (extracted['docNumber']?.isNotEmpty == true) {
-            docNumberCtrl.text = extracted['docNumber']!;
+            docNumberCtrl.text =
+                DocRecord.stripDocNumSpaces(extracted['docNumber']);
           }
           if (extracted['replyDocNumber']?.isNotEmpty == true) {
-            replyDocNumberCtrl.text = extracted['replyDocNumber']!;
+            replyDocNumberCtrl.text =
+                DocRecord.stripDocNumSpaces(extracted['replyDocNumber']);
           }
           if (extracted['sender']?.isNotEmpty == true) {
             senderCtrl.text = extracted['sender']!;
@@ -2736,13 +3198,24 @@ class _HomeScreenState extends State<HomeScreen> {
                         .replaceAll(RegExp(r'[^0-9.]'), ''),
                   ) ??
                   0;
-              final int calculatedCarFare = (parsedKm * 2 * 300).round();
+              final double parsedMult = double.tryParse(
+                    travelCarMultiplierCtrl.text
+                        .replaceAll(RegExp(r'[^0-9.]'), ''),
+                  ) ??
+                  2;
+              final double parsedUnitPrice = double.tryParse(
+                    travelCarUnitPriceCtrl.text
+                        .replaceAll(RegExp(r'[^0-9.]'), ''),
+                  ) ??
+                  300;
+              final int calculatedCarFare =
+                  (parsedKm * parsedMult * parsedUnitPrice).round();
 
               return AlertDialog(
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v28)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v33)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -2854,7 +3327,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     children: mySavedCats.map((sub) {
                                       final isSel =
                                           subCategoryCtrl.text.trim() == sub;
-                                      return ChoiceChip(
+                                      return InputChip(
                                         visualDensity: VisualDensity.compact,
                                         label: Text(sub),
                                         selected: isSel,
@@ -2862,6 +3335,19 @@ class _HomeScreenState extends State<HomeScreen> {
                                         onSelected: (_) {
                                           setDialogState(() {
                                             subCategoryCtrl.text = sub;
+                                          });
+                                        },
+                                        deleteIcon:
+                                            const Icon(Icons.close, size: 15),
+                                        deleteButtonTooltipMessage: '카테고리 삭제',
+                                        onDeleted: () async {
+                                          await _deleteUserSubCategory(
+                                              chosenCategory, sub);
+                                          setDialogState(() {
+                                            if (subCategoryCtrl.text.trim() ==
+                                                sub) {
+                                              subCategoryCtrl.clear();
+                                            }
                                           });
                                         },
                                       );
@@ -2912,7 +3398,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             _buildField(
                               replyDocNumberCtrl,
                               '회신번호 (수신공문 번호와 일치 시 수신공문에 회신완료 ○ 표시)',
-                              '예: 공동주택 - 16092',
+                              '예: 공동주택과-16092',
                             )
                           else
                             _buildField(
@@ -2924,7 +3410,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             docNumberCtrl,
                             '공문번호',
                             chosenCategory == DocCategory.officialOut
-                                ? '예: 25 - 067호'
+                                ? '예: 25-067호'
                                 : '예: 공동주택과-16092',
                           ),
                           _buildField(
@@ -3159,19 +3645,93 @@ class _HomeScreenState extends State<HomeScreen> {
                                   setDialogState(recalcCarDistanceCost),
                             ),
                             Container(
-                              padding: const EdgeInsets.all(10),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
                               margin: const EdgeInsets.only(bottom: 10),
                               decoration: BoxDecoration(
                                 color: Colors.indigo.shade50,
                                 borderRadius: BorderRadius.circular(6),
                               ),
-                              child: Text(
-                                '자차 계산식: ${travelDistanceKmCtrl.text.isEmpty ? "0" : travelDistanceKmCtrl.text}km × 2(왕복) × 300원 = ${NumberFormat('#,###').format(calculatedCarFare)}원',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF1E3A8A),
-                                  fontSize: 13,
-                                ),
+                              child: Wrap(
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                spacing: 4,
+                                runSpacing: 6,
+                                children: [
+                                  Text(
+                                    '계산식: ${travelDistanceKmCtrl.text.isEmpty ? "0" : travelDistanceKmCtrl.text}km ×',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1E3A8A),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 46,
+                                    height: 30,
+                                    child: TextField(
+                                      controller: travelCarMultiplierCtrl,
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                              decimal: true),
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1E3A8A),
+                                        fontSize: 13,
+                                      ),
+                                      decoration: const InputDecoration(
+                                        contentPadding:
+                                            EdgeInsets.symmetric(vertical: 4),
+                                        filled: true,
+                                        fillColor: Colors.white,
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                      ),
+                                      onChanged: (_) =>
+                                          setDialogState(recalcCarDistanceCost),
+                                    ),
+                                  ),
+                                  const Text(
+                                    '×',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1E3A8A),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 64,
+                                    height: 30,
+                                    child: TextField(
+                                      controller: travelCarUnitPriceCtrl,
+                                      keyboardType: TextInputType.number,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1E3A8A),
+                                        fontSize: 13,
+                                      ),
+                                      decoration: const InputDecoration(
+                                        contentPadding:
+                                            EdgeInsets.symmetric(vertical: 4),
+                                        filled: true,
+                                        fillColor: Colors.white,
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                      ),
+                                      onChanged: (_) =>
+                                          setDialogState(recalcCarDistanceCost),
+                                    ),
+                                  ),
+                                  Text(
+                                    '원 = ${NumberFormat('#,###').format(calculatedCarFare)}원',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1E3A8A),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
@@ -3288,8 +3848,8 @@ class _HomeScreenState extends State<HomeScreen> {
               DocRecord.formatDotDate(sentDateCtrl.text.trim());
           collectedFields['sender'] = senderCtrl.text.trim();
           collectedFields['recipient'] = recipientCtrl.text.trim();
-          collectedFields['docNumber'] = docNumberCtrl.text.trim();
-          collectedFields['replyDocNumber'] = replyDocNumberCtrl.text.trim();
+          collectedFields['docNumber'] = DocRecord.stripDocNumSpaces(docNumberCtrl.text);
+          collectedFields['replyDocNumber'] = DocRecord.stripDocNumSpaces(replyDocNumberCtrl.text);
           collectedFields['title'] = docTitleCtrl.text.trim();
           collectedFields['aiSummary'] = aiSummaryCtrl.text.trim();
           collectedFields['replyDeadline'] =
@@ -3301,6 +3861,14 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           collectedFields['travelDivision'] = chosenTravelDivision;
           collectedFields['distanceKm'] = travelDistanceKmCtrl.text.trim();
+          collectedFields['carMultiplier'] =
+              travelCarMultiplierCtrl.text.trim().isNotEmpty
+                  ? travelCarMultiplierCtrl.text.trim()
+                  : '2';
+          collectedFields['carUnitPrice'] =
+              travelCarUnitPriceCtrl.text.trim().isNotEmpty
+                  ? travelCarUnitPriceCtrl.text.trim()
+                  : '300';
           collectedFields['totalAmount'] = travelAmountCtrl.text.trim();
           collectedFields['merchantName'] = travelMerchantCtrl.text.trim();
           collectedFields['date'] = travelDateCtrl.text.trim();
@@ -3413,12 +3981,22 @@ class _HomeScreenState extends State<HomeScreen> {
         TextEditingController(text: f['supplierName'] ?? '');
     final orderNumberCtrl = TextEditingController(text: f['orderNumber'] ?? '');
 
-    // 3. 출장비 컨트롤러
+    // 3. 출장비 컨트롤러 (기본값 2와 300을 자유롭게 수정 가능)
     String chosenTravelDivision = record.travelDivision;
     final travelDateCtrl =
         TextEditingController(text: DocRecord.formatDotDate(f['date']));
     final travelDistanceKmCtrl =
         TextEditingController(text: f['distanceKm'] ?? '0');
+    final travelCarMultiplierCtrl = TextEditingController(
+      text: f['carMultiplier']?.trim().isNotEmpty == true
+          ? f['carMultiplier']!
+          : '2',
+    );
+    final travelCarUnitPriceCtrl = TextEditingController(
+      text: f['carUnitPrice']?.trim().isNotEmpty == true
+          ? f['carUnitPrice']!
+          : '300',
+    );
     final travelMerchantCtrl =
         TextEditingController(text: f['merchantName'] ?? '');
     final travelAmountCtrl =
@@ -3430,7 +4008,15 @@ class _HomeScreenState extends State<HomeScreen> {
             travelDistanceKmCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
           ) ??
           0;
-      final int fare = (km * 2 * 300).round();
+      final double mult = double.tryParse(
+            travelCarMultiplierCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+          ) ??
+          2;
+      final double unitPrice = double.tryParse(
+            travelCarUnitPriceCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+          ) ??
+          300;
+      final int fare = (km * mult * unitPrice).round();
       travelAmountCtrl.text = fare.toString();
     }
 
@@ -3453,7 +4039,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   travelDistanceKmCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
                 ) ??
                 0;
-            final int calculatedCarFare = (parsedKm * 2 * 300).round();
+            final double parsedMult = double.tryParse(
+                  travelCarMultiplierCtrl.text
+                      .replaceAll(RegExp(r'[^0-9.]'), ''),
+                ) ??
+                2;
+            final double parsedUnitPrice = double.tryParse(
+                  travelCarUnitPriceCtrl.text
+                      .replaceAll(RegExp(r'[^0-9.]'), ''),
+                ) ??
+                300;
+            final int calculatedCarFare =
+                (parsedKm * parsedMult * parsedUnitPrice).round();
 
             return AlertDialog(
               title: const Text('저장된 내용 수정', style: TextStyle(fontSize: 18)),
@@ -3496,7 +4093,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             children: mySavedCats.map((sub) {
                               final isSel =
                                   subCategoryCtrl.text.trim() == sub;
-                              return ChoiceChip(
+                              return InputChip(
                                 visualDensity: VisualDensity.compact,
                                 label: Text(sub),
                                 selected: isSel,
@@ -3504,6 +4101,17 @@ class _HomeScreenState extends State<HomeScreen> {
                                 onSelected: (_) {
                                   setDialogState(() {
                                     subCategoryCtrl.text = sub;
+                                  });
+                                },
+                                deleteIcon: const Icon(Icons.close, size: 15),
+                                deleteButtonTooltipMessage: '카테고리 삭제',
+                                onDeleted: () async {
+                                  await _deleteUserSubCategory(
+                                      chosenCategory, sub);
+                                  setDialogState(() {
+                                    if (subCategoryCtrl.text.trim() == sub) {
+                                      subCategoryCtrl.clear();
+                                    }
                                   });
                                 },
                               );
@@ -3524,7 +4132,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           docNumberCtrl,
                           '공문번호',
                           chosenCategory == DocCategory.officialOut
-                              ? '예: 25 - 067호'
+                              ? '예: 25-067호'
                               : '예: 공동주택과-16092',
                         ),
                         if (chosenCategory == DocCategory.officialOut)
@@ -3543,7 +4151,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           _buildField(
                             replyDocNumberCtrl,
                             '회신번호 (수신공문 번호와 일치 시 회신완료 ○)',
-                            '예: 공동주택 - 16092',
+                            '예: 공동주택과-16092',
                           ),
                         _buildField(docTitleCtrl, '제목', '예: 민원조치계획 회신의건'),
                         _buildField(
@@ -3616,15 +4224,94 @@ class _HomeScreenState extends State<HomeScreen> {
                             onChanged: (_) =>
                                 setDialogState(recalcCarDistanceCost),
                           ),
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: Text(
-                              '계산식: ${travelDistanceKmCtrl.text}km × 2 × 300원 = ${NumberFormat('#,###').format(calculatedCarFare)}원',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF1E3A8A),
-                                fontSize: 12.5,
-                              ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 6),
+                            margin: const EdgeInsets.only(bottom: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.indigo.shade50,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 4,
+                              runSpacing: 6,
+                              children: [
+                                Text(
+                                  '계산식: ${travelDistanceKmCtrl.text.isEmpty ? "0" : travelDistanceKmCtrl.text}km ×',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF1E3A8A),
+                                    fontSize: 12.5,
+                                  ),
+                                ),
+                                SizedBox(
+                                  width: 44,
+                                  height: 28,
+                                  child: TextField(
+                                    controller: travelCarMultiplierCtrl,
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                            decimal: true),
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1E3A8A),
+                                      fontSize: 12.5,
+                                    ),
+                                    decoration: const InputDecoration(
+                                      contentPadding:
+                                          EdgeInsets.symmetric(vertical: 3),
+                                      filled: true,
+                                      fillColor: Colors.white,
+                                      border: OutlineInputBorder(),
+                                      isDense: true,
+                                    ),
+                                    onChanged: (_) =>
+                                        setDialogState(recalcCarDistanceCost),
+                                  ),
+                                ),
+                                const Text(
+                                  '×',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF1E3A8A),
+                                    fontSize: 12.5,
+                                  ),
+                                ),
+                                SizedBox(
+                                  width: 62,
+                                  height: 28,
+                                  child: TextField(
+                                    controller: travelCarUnitPriceCtrl,
+                                    keyboardType: TextInputType.number,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1E3A8A),
+                                      fontSize: 12.5,
+                                    ),
+                                    decoration: const InputDecoration(
+                                      contentPadding:
+                                          EdgeInsets.symmetric(vertical: 3),
+                                      filled: true,
+                                      fillColor: Colors.white,
+                                      border: OutlineInputBorder(),
+                                      isDense: true,
+                                    ),
+                                    onChanged: (_) =>
+                                        setDialogState(recalcCarDistanceCost),
+                                  ),
+                                ),
+                                Text(
+                                  '원 = ${NumberFormat('#,###').format(calculatedCarFare)}원',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF1E3A8A),
+                                    fontSize: 12.5,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
@@ -3687,8 +4374,8 @@ class _HomeScreenState extends State<HomeScreen> {
           DocRecord.formatDotDate(sentDateCtrl.text.trim());
       updatedFields['sender'] = senderCtrl.text.trim();
       updatedFields['recipient'] = recipientCtrl.text.trim();
-      updatedFields['docNumber'] = docNumberCtrl.text.trim();
-      updatedFields['replyDocNumber'] = replyDocNumberCtrl.text.trim();
+      updatedFields['docNumber'] = DocRecord.stripDocNumSpaces(docNumberCtrl.text);
+      updatedFields['replyDocNumber'] = DocRecord.stripDocNumSpaces(replyDocNumberCtrl.text);
       updatedFields['title'] = docTitleCtrl.text.trim();
       updatedFields['aiSummary'] = aiSummaryCtrl.text.trim();
       updatedFields['replyDeadline'] =
@@ -3712,6 +4399,14 @@ class _HomeScreenState extends State<HomeScreen> {
       updatedFields['date'] =
           DocRecord.formatDotDate(travelDateCtrl.text.trim());
       updatedFields['distanceKm'] = travelDistanceKmCtrl.text.trim();
+      updatedFields['carMultiplier'] =
+          travelCarMultiplierCtrl.text.trim().isNotEmpty
+              ? travelCarMultiplierCtrl.text.trim()
+              : '2';
+      updatedFields['carUnitPrice'] =
+          travelCarUnitPriceCtrl.text.trim().isNotEmpty
+              ? travelCarUnitPriceCtrl.text.trim()
+              : '300';
       updatedFields['merchantName'] = travelMerchantCtrl.text.trim();
       updatedFields['totalAmount'] = travelAmountCtrl.text.trim();
     } else if (chosenCategory == DocCategory.medical) {
@@ -3785,7 +4480,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('원드라이브 덮어쓰기 & AI 설정 (v28)'),
+        title: const Text('원드라이브 덮어쓰기 & AI 설정 (v33)'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -4115,6 +4810,7 @@ class _HomeScreenState extends State<HomeScreen> {
       background: #f1f5f9;
       color: #1e293b;
       height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -4122,30 +4818,35 @@ class _HomeScreenState extends State<HomeScreen> {
     header {
       background: #1e3a8a;
       color: #ffffff;
-      padding: 10px 16px;
+      padding: 9px 14px;
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-shrink: 0;
+      gap: 8px;
     }
-    header h1 { font-size: 16px; font-weight: 700; }
+    header h1 { font-size: 15px; font-weight: 700; white-space: nowrap; }
+    header span.hint { font-size: 11.5px; opacity: 0.9; text-align: right; }
+
+    /* ★ 기본(가로 모드 / 스마트폰을 눕혔을 때): 좌측에 리스트, 우측에 사진 */
     #main-split {
       flex: 1;
       display: flex;
       flex-direction: row;
       width: 100%;
+      height: 100%;
       overflow: hidden;
     }
     #left-list-pane {
-      width: 58%;
-      min-width: 20%;
-      max-width: 85%;
+      width: 55%;
       height: 100%;
       overflow: auto;
       background: #ffffff;
+      flex-shrink: 0;
     }
-    #resizer-h {
+    #resizer-bar {
       width: 14px;
+      height: 100%;
       background: #cbd5e1;
       cursor: ew-resize;
       display: flex;
@@ -4159,12 +4860,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     #resizer-pill {
       width: 4px;
-      height: 44px;
+      height: 42px;
       background: #1e3a8a;
       border-radius: 999px;
     }
     #right-photo-pane {
       flex: 1;
+      width: auto;
       height: 100%;
       background: #0f172a;
       display: flex;
@@ -4173,6 +4875,36 @@ class _HomeScreenState extends State<HomeScreen> {
       overflow: auto;
       padding: 8px;
     }
+
+    /* ★ 세로 모드(스마트폰을 세웠을 때): 위쪽에 리스트, 아래쪽에 사진 */
+    @media (orientation: portrait) {
+      #main-split {
+        flex-direction: column;
+      }
+      #left-list-pane {
+        width: 100% !important;
+        height: 46%;
+      }
+      #resizer-bar {
+        width: 100%;
+        height: 16px;
+        cursor: ns-resize;
+        border-left: none;
+        border-right: none;
+        border-top: 1px solid #94a3b8;
+        border-bottom: 1px solid #94a3b8;
+      }
+      #resizer-pill {
+        width: 46px;
+        height: 4px;
+      }
+      #right-photo-pane {
+        width: 100%;
+        height: auto;
+        flex: 1;
+      }
+    }
+
     #preview-img {
       max-width: 100%;
       max-height: 100%;
@@ -4184,14 +4916,14 @@ class _HomeScreenState extends State<HomeScreen> {
       width: max-content;
       min-width: 100%;
       border-collapse: collapse;
-      font-size: 13px;
+      font-size: 12px;
       text-align: center;
     }
     table.grid-table th {
       background: #e2e8f0;
       color: #1e293b;
       font-weight: 700;
-      padding: 9px 12px;
+      padding: 8px 8px;
       border: 1px solid #94a3b8;
       position: sticky;
       top: 0;
@@ -4199,12 +4931,14 @@ class _HomeScreenState extends State<HomeScreen> {
       white-space: nowrap;
     }
     table.grid-table td {
-      padding: 9px 12px;
+      padding: 8px 8px;
       border: 1px solid #cbd5e1;
       color: #0f172a;
       cursor: pointer;
-      line-height: 1.4;
-      white-space: nowrap;
+      line-height: 1.35;
+      max-width: 170px;
+      word-break: keep-all;
+      overflow-wrap: break-word;
     }
     table.grid-table tr:hover td { background: #f8fafc; }
     table.grid-table tr.active td {
@@ -4216,12 +4950,12 @@ class _HomeScreenState extends State<HomeScreen> {
 <body>
   <header>
     <h1>[$scopeTitle] 누적 증빙서류 (<span id="count-label">${records.length}</span>건)</h1>
-    <span style="font-size:12px; opacity:0.9;">좌측 표를 좌우로 스크롤해 전체 내용을 볼 수 있습니다 (행 클릭 시 우측 사진 표시)</span>
+    <span class="hint">세로: 위 리스트·아래 사진 / 가로: 좌 리스트·우 사진</span>
   </header>
 
   <div id="main-split">
     <div id="left-list-pane"></div>
-    <div id="resizer-h" title="좌우로 끌어서 리스트와 사진 폭 조절">
+    <div id="resizer-bar" title="끌어서 리스트와 사진 크기 조절">
       <div id="resizer-pill"></div>
     </div>
     <div id="right-photo-pane">
@@ -4236,39 +4970,63 @@ class _HomeScreenState extends State<HomeScreen> {
     const majorCat = "$majorCat";
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
 
-    const resizerH = document.getElementById('resizer-h');
+    const resizerBar = document.getElementById('resizer-bar');
     const leftPane = document.getElementById('left-list-pane');
     const mainSplit = document.getElementById('main-split');
     let isResizing = false;
-    resizerH.addEventListener('pointerdown', (e) => {
-      isResizing = true;
-      resizerH.setPointerCapture(e.pointerId);
+
+    function isPortraitMode() {
+      return window.matchMedia("(orientation: portrait)").matches;
+    }
+
+    window.addEventListener('resize', () => {
+      if (isPortraitMode()) {
+        leftPane.style.width = '100%';
+        if (!leftPane.style.height || leftPane.style.height === '100%') {
+          leftPane.style.height = '46%';
+        }
+      } else {
+        leftPane.style.height = '100%';
+        if (!leftPane.style.width || leftPane.style.width === '100%') {
+          leftPane.style.width = '55%';
+        }
+      }
     });
-    resizerH.addEventListener('pointermove', (e) => {
+
+    resizerBar.addEventListener('pointerdown', (e) => {
+      isResizing = true;
+      resizerBar.setPointerCapture(e.pointerId);
+    });
+    resizerBar.addEventListener('pointermove', (e) => {
       if (!isResizing) return;
       const rect = mainSplit.getBoundingClientRect();
-      const newW = ((e.clientX - rect.left) / rect.width) * 100;
-      leftPane.style.width = Math.max(20, Math.min(85, newW)) + '%';
+      if (isPortraitMode()) {
+        const newH = ((e.clientY - rect.top) / rect.height) * 100;
+        leftPane.style.height = Math.max(18, Math.min(82, newH)) + '%';
+      } else {
+        const newW = ((e.clientX - rect.left) / rect.width) * 100;
+        leftPane.style.width = Math.max(20, Math.min(82, newW)) + '%';
+      }
     });
-    resizerH.addEventListener('pointerup', () => { isResizing = false; });
+    resizerBar.addEventListener('pointerup', () => { isResizing = false; });
 
     function dotDate(raw) {
       if (!raw) return '-';
-      const m = String(raw).match(/(\\d{4})\\s*[-./년]\\s*(\\d{1,2})\\s*[-./월]\\s*(\\d{1,2})/);
+      const m = String(raw).match(/(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})/);
       if (m) return `\${m[1]}.\${m[2].padStart(2,'0')}.\${m[3].padStart(2,'0')}`;
       return raw;
     }
 
     function normalizeDocKey(raw) {
       if (!raw) return '';
-      const c = String(raw).replace(/\\s+/g, '');
+      const c = String(raw).replace(/\s+/g, '');
       const m = c.match(/([가-힣A-Za-z0-9]+?)[-~—–_.:]([0-9]+)/);
       if (m) {
         const dept = m[1].replace(/(?:과|팀|실|부|처|국|단|소|청)\$/, '');
         const num = m[2].replace(/^0+/, '') || '0';
         return dept + '-' + num;
       }
-      const d = c.match(/\\d{4,7}/);
+      const d = c.match(/\d{4,7}/);
       return d ? d[0] : c;
     }
 
@@ -4283,7 +5041,7 @@ class _HomeScreenState extends State<HomeScreen> {
       document.getElementById('count-label').textContent = archiveRecords.length;
 
       if (majorCat === '공문(수신)' || majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(수신)' || r.category === '공문(발신)'))) {
-        const isOutTab = majorCat === '공문(발신)';
+        const isOutTab = majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(발신)'));
         const partyHeader = isOutTab ? '받는사람' : '보낸사람';
         let html = `<table class="grid-table">
           <thead>
@@ -4295,7 +5053,7 @@ class _HomeScreenState extends State<HomeScreen> {
               <th>제목</th>
               <th>내용</th>
               <th>회신요청일</th>
-              <th>회신완료</th>
+              \${isOutTab ? '' : '<th>회신완료</th>'}
             </tr>
           </thead>
           <tbody>`;
@@ -4305,7 +5063,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const partyVal = isOut ? (f.recipient || f.sender || '-') : (f.sender || f.recipient || '-');
           const secondDocNum = isOut ? (f.replyDocNumber || f.docNumber || '-') : (f.docNumber || '-');
           const myKey = normalizeDocKey(f.docNumber);
-          const isReplied = isOut ? Boolean(f.replyDocNumber) : Boolean(myKey && repliedKeys.has(myKey));
+          const isReplied = Boolean(myKey && repliedKeys.has(myKey));
           const cls = item.id === selectedId ? 'active' : '';
           html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
             <td>\${escapeHtml(dotDate(f.sentDate))}</td>
@@ -4315,7 +5073,7 @@ class _HomeScreenState extends State<HomeScreen> {
             <td style="text-align:left;">\${escapeHtml(f.title || '-')}</td>
             <td style="text-align:left;">\${escapeHtml(f.aiSummary || '-')}</td>
             <td>\${escapeHtml(dotDate(f.replyDeadline))}</td>
-            <td style="color:#16a34a; font-weight:700; font-size:15px;">\${isReplied ? '○' : ''}</td>
+            \${isOutTab ? '' : `<td style="color:#16a34a; font-weight:700; font-size:15px;">\${isReplied ? '○' : ''}</td>`}
           </tr>`;
         });
         html += '</tbody></table>';
@@ -4369,7 +5127,9 @@ class _HomeScreenState extends State<HomeScreen> {
           const sub = f.subCategory || '미지정';
           const dateStr = dotDate(f.date || item.createdAt.split(' ')[0]);
           const div = f.travelDivision || '식대';
-          const desc = div === '자차' ? (f.merchantName || `\${f.distanceKm || 0}km × 2 × 300원`) : (f.merchantName || '-');
+          const mult = f.carMultiplier || '2';
+          const rate = f.carUnitPrice || '300';
+          const desc = div === '자차' ? (f.merchantName || `\${f.distanceKm || 0}km × \${mult} × \${rate}원`) : (f.merchantName || '-');
           const amt = Number(f.totalAmount || 0).toLocaleString() + '원';
           html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
             <td>\${escapeHtml(sub)}<br/>(\${escapeHtml(dateStr)})</td>
@@ -4430,7 +5190,9 @@ class _HomeScreenState extends State<HomeScreen> {
           if (item.category === '출장비') {
             sub = f.travelDivision || '식대';
             dateStr = dotDate(f.date);
-            desc = sub === '자차' ? `\${f.distanceKm || 0}km × 2 × 300원` : (f.merchantName || '-');
+            const mult = f.carMultiplier || '2';
+            const rate = f.carUnitPrice || '300';
+            desc = sub === '자차' ? `\${f.distanceKm || 0}km × \${mult} × \${rate}원` : (f.merchantName || '-');
             amt = Number(f.totalAmount || 0).toLocaleString() + '원';
           } else if (item.category === '병원비') {
             dateStr = dotDate(f.issueDate);
@@ -4690,9 +5452,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ★ 1) 자재송장: 날짜 - 제품명 - 규격명 - 단위 - 수량 - 누적수량 - 공급자 - 주문송장번호 + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.invoice) {
-      return Scrollbar(
-        controller: _tableHorizontalScrollCtrl,
-        thumbVisibility: true,
+      return ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: SingleChildScrollView(
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
@@ -4806,15 +5567,15 @@ class _HomeScreenState extends State<HomeScreen> {
     if (DocCategory.isOfficial(_selectedCategoryFilter)) {
       final bool isOutTab = _selectedCategoryFilter == DocCategory.officialOut;
       final String partyHeader = isOutTab ? '받는사람' : '보낸사람';
+      final double tableTotalWidth = isOutTab ? 686 : 742;
 
-      return Scrollbar(
-        controller: _tableHorizontalScrollCtrl,
-        thumbVisibility: true,
+      return ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: SingleChildScrollView(
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 742,
+            width: tableTotalWidth,
             child: Column(
               children: [
                 Container(
@@ -4831,7 +5592,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell('제목', width: 118),
                         _buildFixedHeaderCell('내용', width: 152),
                         _buildFixedHeaderCell('회신요청일', width: 64),
-                        _buildFixedHeaderCell('회신완료', width: 56),
+                        if (!isOutTab)
+                          _buildFixedHeaderCell('회신완료', width: 56),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
@@ -4845,9 +5607,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       final f = rec.fields;
                       final isSelected = _selectedRecord?.id == rec.id;
                       final bool isOut = rec.isOutgoingOfficialDoc;
-                      final bool isReplied = isOut
-                          ? (f['replyDocNumber']?.trim().isNotEmpty == true)
-                          : _isIncomingDocReplied(rec, repliedKeys);
+                      final bool isReplied =
+                          _isIncomingDocReplied(rec, repliedKeys);
                       final String secondDocNum = isOut
                           ? (f['replyDocNumber']?.trim().isNotEmpty == true
                               ? f['replyDocNumber']!
@@ -4906,13 +5667,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                   width: 64,
                                   isSelected: isSelected,
                                 ),
-                                _buildFixedDataCell(
-                                  isReplied ? '○' : '',
-                                  width: 56,
-                                  isSelected: isSelected,
-                                  textColor: const Color(0xFF16A34A),
-                                  forceBold: true,
-                                ),
+                                if (!isOutTab)
+                                  _buildFixedDataCell(
+                                    isReplied ? '○' : '',
+                                    width: 56,
+                                    isSelected: isSelected,
+                                    textColor: const Color(0xFF16A34A),
+                                    forceBold: true,
+                                  ),
                                 _buildRowActionButtons(rec),
                               ],
                             ),
@@ -4931,9 +5693,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ★ 3) 출장비: 카테고리(날짜 같이표시) - 구분 - 상호 - 금액 + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.travel) {
-      return Scrollbar(
-        controller: _tableHorizontalScrollCtrl,
-        thumbVisibility: true,
+      return ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: SingleChildScrollView(
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
@@ -4968,10 +5729,17 @@ class _HomeScreenState extends State<HomeScreen> {
                           f['date'] ?? rec.createdAt.split(' ').first);
                       final catWithDate = '$catName\n($dateStr)';
                       final div = rec.travelDivision;
+                      final mult =
+                          f['carMultiplier']?.trim().isNotEmpty == true
+                              ? f['carMultiplier']!
+                              : '2';
+                      final rate = f['carUnitPrice']?.trim().isNotEmpty == true
+                          ? f['carUnitPrice']!
+                          : '300';
                       final merchantStr = div == TravelDivision.car
                           ? (f['merchantName']?.trim().isNotEmpty == true
                               ? f['merchantName']!
-                              : '${f['distanceKm'] ?? 0}km × 2 × 300원')
+                              : '${f['distanceKm'] ?? 0}km × $mult × ${rate}원')
                           : (f['merchantName'] ?? '-');
                       final amtStr =
                           '${DocRecord._formatCurrency(f['totalAmount'])}원';
@@ -5034,9 +5802,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ★ 4) 병원비: 카테고리 - 날짜 - 상호 - 금액 - 사업자등록번호 + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.medical) {
-      return Scrollbar(
-        controller: _tableHorizontalScrollCtrl,
-        thumbVisibility: true,
+      return ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: SingleChildScrollView(
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
@@ -5133,9 +5900,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // 5) [전체] 탭에서도 깔끔한 표 형식으로 표시 + 수정/삭제 지원
-    return Scrollbar(
-      controller: _tableHorizontalScrollCtrl,
-      thumbVisibility: true,
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
       child: SingleChildScrollView(
         controller: _tableHorizontalScrollCtrl,
         scrollDirection: Axis.horizontal,
@@ -5301,7 +6067,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v28'),
+        title: const Text('증빙서류 스냅 v33'),
         actions: [
           IconButton(
             tooltip: '원드라이브 덮어쓰기 & AI 설정',
@@ -5381,6 +6147,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           _selectedCategoryFilter = cat;
                           _selectedSubCategoryFilter = '전체';
                           _selectedTravelDivisionFilter = '전체';
+                          _selectedInvoiceProductFilter = '전체';
                           final currentList = _filteredRecords;
                           if (!currentList
                               .any((r) => r.id == _selectedRecord?.id)) {
@@ -5395,7 +6162,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              if (_usesSubCategory(_selectedCategoryFilter) ||
+              // ★ 2) 자재송장 / 출장비 / 병원비 / 전체 상단 요약 & 기간·품목·카테고리 필터 영역
+              if (_selectedCategoryFilter == DocCategory.invoice ||
+                  _usesSubCategory(_selectedCategoryFilter) ||
                   _selectedCategoryFilter == DocCategory.all)
                 Container(
                   width: double.infinity,
@@ -5410,106 +6179,110 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            '$_selectedCategoryFilter 전체 합계 (${_recordsInSelectedMajorCategory.length}건): ${NumberFormat('#,###').format(majorTotalSum)}원',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13.5,
-                              color: Color(0xFF1E3A8A),
-                            ),
-                          ),
-                          if (_usesSubCategory(_selectedCategoryFilter) &&
-                              _selectedSubCategoryFilter != '전체')
-                            Text(
-                              '[$_selectedSubCategoryFilter 합계: ${NumberFormat('#,###').format(currentSubTotalSum)}원]',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12.5,
-                                color: Colors.indigo,
-                              ),
-                            )
-                          else if (_usesSubCategory(_selectedCategoryFilter))
+                      // ★ 자재송장 & 병원비 전용: 상단 기간별 필터 바 ([전체] 또는 [○월] 클릭 시 기간 설정창 열림 + 좌우 한 달 넘기기)
+                      if (_usesPeriodFilter(_selectedCategoryFilter)) ...[
+                        Row(
+                          children: [
                             InkWell(
-                              onTap: () => _promptAddNewSubCategory(
+                              onTap: () => _openPeriodFilterDialog(
                                   _selectedCategoryFilter),
-                              child: const Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 4),
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1E3A8A),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.calendar_month,
+                                        size: 15, color: Colors.amberAccent),
+                                    const SizedBox(width: 5),
+                                    Text(
+                                      '기간필터: ${_currentPeriodButtonLabel(_selectedCategoryFilter)}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 2),
+                                    const Icon(Icons.arrow_drop_down,
+                                        size: 16, color: Colors.white),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            InkWell(
+                              onTap: () => _shiftPeriodMonth(
+                                  _selectedCategoryFilter, -1),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border:
+                                      Border.all(color: Colors.blue.shade200),
+                                ),
+                                child: const Icon(Icons.chevron_left,
+                                    size: 18, color: Color(0xFF1E3A8A)),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            InkWell(
+                              onTap: () =>
+                                  _shiftPeriodMonth(_selectedCategoryFilter, 1),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border:
+                                      Border.all(color: Colors.blue.shade200),
+                                ),
+                                child: const Icon(Icons.chevron_right,
+                                    size: 18, color: Color(0xFF1E3A8A)),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => _openPeriodFilterDialog(
+                                    _selectedCategoryFilter),
                                 child: Text(
-                                  '+ 내 카테고리 등록',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.blueAccent,
+                                  _currentPeriodRangeDescription(
+                                      _selectedCategoryFilter),
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1E3A8A),
                                   ),
                                 ),
                               ),
                             ),
-                        ],
-                      ),
-                      if (_usesSubCategory(_selectedCategoryFilter) &&
-                          subCategories.length > 1) ...[
-                        const SizedBox(height: 6),
-                        SizedBox(
-                          height: 32,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: subCategories.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(width: 6),
-                            itemBuilder: (ctx, idx) {
-                              final subCat = subCategories[idx];
-                              final selected =
-                                  subCat == _selectedSubCategoryFilter;
-                              final cnt = _countBySubCategory(subCat);
-                              final sum = _sumBySubCategory(subCat);
-                              final labelText = subCat == '전체'
-                                  ? '전체 ($cnt건 · ${NumberFormat('#,###').format(sum)}원)'
-                                  : '$subCat ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
-                              return ChoiceChip(
-                                visualDensity: VisualDensity.compact,
-                                selectedColor: Colors.indigo.shade100,
-                                label: Text(
-                                  labelText,
-                                  style: TextStyle(
-                                    fontSize: 11.5,
-                                    fontWeight: selected
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                  ),
-                                ),
-                                selected: selected,
-                                onSelected: (_) {
-                                  setState(() {
-                                    _selectedSubCategoryFilter = subCat;
-                                    final currentList = _filteredRecords;
-                                    if (!currentList.any(
-                                        (r) => r.id == _selectedRecord?.id)) {
-                                      _selectedRecord = currentList.isNotEmpty
-                                          ? currentList.first
-                                          : null;
-                                    }
-                                  });
-                                },
-                              );
-                            },
-                          ),
+                          ],
                         ),
-                      ],
-                      if (_selectedCategoryFilter == DocCategory.travel) ...[
                         const SizedBox(height: 6),
+                      ],
+
+                      // ★ 자재송장: 출장비와 동일한 박스 형태로 제품명별 합계수량 표시 (예: 고장력철근(19.6ton))
+                      if (_selectedCategoryFilter == DocCategory.invoice) ...[
                         SizedBox(
                           height: 32,
                           child: ListView(
                             scrollDirection: Axis.horizontal,
-                            children:
-                                ['전체', ...TravelDivision.list].map((div) {
+                            children: _invoiceProductNamesInCurrentPeriod
+                                .map((prodName) {
                               final isSel =
-                                  _selectedTravelDivisionFilter == div;
-                              final cnt = _countByTravelDivision(div);
-                              final sum = _sumByTravelDivision(div);
+                                  _selectedInvoiceProductFilter == prodName;
+                              final labelStr =
+                                  _invoiceProductChipLabel(prodName);
                               return Padding(
                                 padding: const EdgeInsets.only(right: 6),
                                 child: ChoiceChip(
@@ -5517,21 +6290,19 @@ class _HomeScreenState extends State<HomeScreen> {
                                   backgroundColor: Colors.amber.shade50,
                                   selectedColor: Colors.amber.shade300,
                                   label: Text(
-                                    div == '전체'
-                                        ? '구분전체 ($cnt건)'
-                                        : '$div (${NumberFormat('#,###').format(sum)}원)',
+                                    labelStr,
                                     style: TextStyle(
                                       fontSize: 11.5,
                                       fontWeight: isSel
                                           ? FontWeight.bold
-                                          : FontWeight.w500,
+                                          : FontWeight.w600,
                                       color: Colors.brown.shade900,
                                     ),
                                   ),
                                   selected: isSel,
                                   onSelected: (_) {
                                     setState(() {
-                                      _selectedTravelDivisionFilter = div;
+                                      _selectedInvoiceProductFilter = prodName;
                                       final currentList = _filteredRecords;
                                       if (!currentList.any(
                                           (r) => r.id == _selectedRecord?.id)) {
@@ -5547,15 +6318,267 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
                       ],
+
+                      // ★ 출장비 / 병원비 / 전체: 금액 합계 및 내 카테고리 칩
+                      if (_usesSubCategory(_selectedCategoryFilter) ||
+                          _selectedCategoryFilter == DocCategory.all) ...[
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '$_selectedCategoryFilter 합계 (${_recordsInSelectedMajorCategory.length}건): ${NumberFormat('#,###').format(majorTotalSum)}원',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13.5,
+                                color: Color(0xFF1E3A8A),
+                              ),
+                            ),
+                            if (_usesSubCategory(_selectedCategoryFilter) &&
+                                _selectedSubCategoryFilter != '전체')
+                              Text(
+                                '[$_selectedSubCategoryFilter 합계: ${NumberFormat('#,###').format(currentSubTotalSum)}원]',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12.5,
+                                  color: Colors.indigo,
+                                ),
+                              )
+                            else if (_usesSubCategory(_selectedCategoryFilter))
+                              InkWell(
+                                onTap: () => _promptAddNewSubCategory(
+                                    _selectedCategoryFilter),
+                                child: const Padding(
+                                  padding: EdgeInsets.symmetric(horizontal: 4),
+                                  child: Text(
+                                    '+ 내 카테고리 등록',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.blueAccent,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (_usesSubCategory(_selectedCategoryFilter) &&
+                            subCategories.length > 1) ...[
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            height: 32,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: subCategories.length,
+                              separatorBuilder: (_, __) =>
+                                  const SizedBox(width: 6),
+                              itemBuilder: (ctx, idx) {
+                                final subCat = subCategories[idx];
+                                final selected =
+                                    subCat == _selectedSubCategoryFilter;
+                                final cnt = _countBySubCategory(subCat);
+                                final sum = _sumBySubCategory(subCat);
+                                final labelText = subCat == '전체'
+                                    ? '전체 ($cnt건 · ${NumberFormat('#,###').format(sum)}원)'
+                                    : '$subCat ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
+                                final canDelete =
+                                    subCat != '전체' && subCat != '미지정';
+                                return InputChip(
+                                  visualDensity: VisualDensity.compact,
+                                  selectedColor: Colors.indigo.shade100,
+                                  label: Text(
+                                    labelText,
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: selected
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                    ),
+                                  ),
+                                  selected: selected,
+                                  onSelected: (_) {
+                                    setState(() {
+                                      _selectedSubCategoryFilter = subCat;
+                                      final currentList = _filteredRecords;
+                                      if (!currentList.any(
+                                          (r) => r.id == _selectedRecord?.id)) {
+                                        _selectedRecord = currentList.isNotEmpty
+                                            ? currentList.first
+                                            : null;
+                                      }
+                                    });
+                                  },
+                                  deleteIcon: canDelete
+                                      ? const Icon(Icons.close, size: 14)
+                                      : null,
+                                  onDeleted: canDelete
+                                      ? () => _deleteUserSubCategory(
+                                          _selectedCategoryFilter, subCat)
+                                      : null,
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                        if (_selectedCategoryFilter == DocCategory.travel) ...[
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            height: 32,
+                            child: ListView(
+                              scrollDirection: Axis.horizontal,
+                              children:
+                                  ['전체', ...TravelDivision.list].map((div) {
+                                final isSel =
+                                    _selectedTravelDivisionFilter == div;
+                                final cnt = _countByTravelDivision(div);
+                                final sum = _sumByTravelDivision(div);
+                                return Padding(
+                                  padding: const EdgeInsets.only(right: 6),
+                                  child: ChoiceChip(
+                                    visualDensity: VisualDensity.compact,
+                                    backgroundColor: Colors.amber.shade50,
+                                    selectedColor: Colors.amber.shade300,
+                                    label: Text(
+                                      div == '전체'
+                                          ? '구분전체 ($cnt건)'
+                                          : '$div (${NumberFormat('#,###').format(sum)}원)',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: isSel
+                                            ? FontWeight.bold
+                                            : FontWeight.w500,
+                                        color: Colors.brown.shade900,
+                                      ),
+                                    ),
+                                    selected: isSel,
+                                    onSelected: (_) {
+                                      setState(() {
+                                        _selectedTravelDivisionFilter = div;
+                                        final currentList = _filteredRecords;
+                                        if (!currentList.any((r) =>
+                                            r.id == _selectedRecord?.id)) {
+                                          _selectedRecord =
+                                              currentList.isNotEmpty
+                                                  ? currentList.first
+                                                  : null;
+                                        }
+                                      });
+                                    },
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                          ),
+                        ],
+                      ],
                     ],
                   ),
                 ),
 
-              // 3) 상단 리스트(가로 드래그 스크롤 표) + 상하 크기조절 바 + 하단 상세보기(좌측 정보 + 좌우 크기조절 바 + 우측 전체확대 사진)
+              // ★ 3) 스마트폰 세로 모드: [위쪽 리스트 + 상하 조절바 + 아래쪽 사진]
+              //      스마트폰 가로 모드(눕혔을 때): [좌측 리스트 + 좌우 조절바 + 우측 사진]
               Expanded(
                 child: LayoutBuilder(
                   builder: (ctx, constraints) {
+                    final totalW = constraints.maxWidth;
                     final totalH = constraints.maxHeight;
+                    final isLandscape =
+                        MediaQuery.of(ctx).orientation == Orientation.landscape ||
+                            totalW > totalH;
+
+                    if (isLandscape) {
+                      const double dividerBarWidth = 22.0;
+                      final double usableW =
+                          math.max(120.0, totalW - dividerBarWidth);
+                      final double listW = (usableW * _detailHorizSplitRatio)
+                          .clamp(120.0, usableW - 120.0);
+                      final double photoW = usableW - listW;
+
+                      return Row(
+                        children: [
+                          SizedBox(
+                            width: listW,
+                            height: totalH,
+                            child: _buildTopListSection(
+                              items,
+                              cumMap,
+                              repliedKeys,
+                            ),
+                          ),
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onHorizontalDragUpdate: (details) {
+                              setState(() {
+                                _detailHorizSplitRatio =
+                                    (_detailHorizSplitRatio +
+                                            details.delta.dx / usableW)
+                                        .clamp(0.20, 0.82);
+                              });
+                            },
+                            onHorizontalDragEnd: (_) async {
+                              final prefs =
+                                  await SharedPreferences.getInstance();
+                              await prefs.setDouble(_prefsHorizSplitRatioKey,
+                                  _detailHorizSplitRatio);
+                            },
+                            child: Container(
+                              width: dividerBarWidth,
+                              height: double.infinity,
+                              decoration: BoxDecoration(
+                                color: Colors.blueGrey.shade100,
+                                border: Border.symmetric(
+                                  vertical: BorderSide(
+                                      color: Colors.blueGrey.shade300,
+                                      width: 1),
+                                ),
+                              ),
+                              child: Center(
+                                child: Container(
+                                  width: 4,
+                                  height: 44,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF1E3A8A),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          SizedBox(
+                            width: photoW,
+                            height: totalH,
+                            child: Container(
+                              width: double.infinity,
+                              height: double.infinity,
+                              color: const Color(0xFF0F172A),
+                              child: _selectedRecord == null
+                                  ? const Center(
+                                      child: Text(
+                                        '좌측 목록에서 항목을 선택하면\n우측에 증빙사진이 크게 표시됩니다.',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(color: Colors.white70),
+                                      ),
+                                    )
+                                  : ClipRect(
+                                      child: InteractiveViewer(
+                                        clipBehavior: Clip.none,
+                                        boundaryMargin:
+                                            const EdgeInsets.all(400),
+                                        minScale: 0.6,
+                                        maxScale: 8.0,
+                                        child: SizedBox(
+                                          width: photoW,
+                                          height: totalH,
+                                          child: _buildRecordImage(
+                                              _selectedRecord!),
+                                        ),
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ],
+                      );
+                    }
+
                     const double dividerBarHeight = 24.0;
                     final double usableH =
                         math.max(100.0, totalH - dividerBarHeight);
@@ -5573,7 +6596,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             repliedKeys,
                           ),
                         ),
-
                         GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onVerticalDragUpdate: (details) {
@@ -5620,8 +6642,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                         ),
-
-                        // ★ 하단 영역: 상세정보 텍스트 칸을 없애고 오직 증빙서류 사진만 100% 전체화면으로 표시!
                         SizedBox(
                           height: detailH,
                           child: Container(
@@ -5649,7 +6669,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                             _selectedRecord!),
                                       ),
                                     ),
-                                  ),                          ),
+                                  ),
+                          ),
                         ),
                       ],
                     );
