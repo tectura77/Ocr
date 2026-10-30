@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v26',
+      title: '증빙서류 스냅 v27',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -322,7 +322,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v26)'),
+        title: const Text('가로/세로 정비율 스캔 (v27)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -2742,7 +2742,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v26)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v27)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -3376,6 +3376,372 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ===========================================================================
+  // ★ 이미 저장된 항목 수정 다이얼로그 (연필 아이콘 또는 길게 누르기로 언제든 수정!)
+  // ===========================================================================
+  Future<void> _editLocalRecord(DocRecord record) async {
+    String chosenCategory = record.category;
+    final f = record.fields;
+
+    final subCategoryCtrl = TextEditingController(text: f['subCategory'] ?? '');
+
+    // 1. 공문(수신) / 공문(발신) 컨트롤러
+    final sentDateCtrl =
+        TextEditingController(text: DocRecord.formatDotDate(f['sentDate']));
+    final senderCtrl = TextEditingController(text: f['sender'] ?? '');
+    final recipientCtrl = TextEditingController(text: f['recipient'] ?? '');
+    final docNumberCtrl = TextEditingController(text: f['docNumber'] ?? '');
+    final replyDocNumberCtrl =
+        TextEditingController(text: f['replyDocNumber'] ?? '');
+    final docTitleCtrl = TextEditingController(text: f['title'] ?? '');
+    final aiSummaryCtrl = TextEditingController(text: f['aiSummary'] ?? '');
+    final replyDeadlineCtrl = TextEditingController(
+      text: f['replyDeadline']?.isNotEmpty == true
+          ? DocRecord.formatDotDate(f['replyDeadline'])
+          : '',
+    );
+
+    // 2. 자재송장 컨트롤러
+    final arrivalDateCtrl =
+        TextEditingController(text: DocRecord.formatDotDate(f['arrivalDate']));
+    final productNameCtrl = TextEditingController(text: f['productName'] ?? '');
+    final specNameCtrl = TextEditingController(text: f['specName'] ?? '');
+    final unitCtrl = TextEditingController(text: f['unit'] ?? 'ton');
+    final quantityCtrl =
+        TextEditingController(text: f['quantity'] ?? f['weight'] ?? '');
+    final supplierNameCtrl =
+        TextEditingController(text: f['supplierName'] ?? '');
+    final orderNumberCtrl = TextEditingController(text: f['orderNumber'] ?? '');
+
+    // 3. 출장비 컨트롤러
+    String chosenTravelDivision = record.travelDivision;
+    final travelDateCtrl =
+        TextEditingController(text: DocRecord.formatDotDate(f['date']));
+    final travelDistanceKmCtrl =
+        TextEditingController(text: f['distanceKm'] ?? '0');
+    final travelMerchantCtrl =
+        TextEditingController(text: f['merchantName'] ?? '');
+    final travelAmountCtrl =
+        TextEditingController(text: f['totalAmount'] ?? '0');
+
+    void recalcCarDistanceCost() {
+      if (chosenTravelDivision != TravelDivision.car) return;
+      final double km = double.tryParse(
+            travelDistanceKmCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+          ) ??
+          0;
+      final int fare = (km * 2 * 300).round();
+      travelAmountCtrl.text = fare.toString();
+    }
+
+    // 4. 병원비 컨트롤러
+    final issueDateCtrl =
+        TextEditingController(text: DocRecord.formatDotDate(f['issueDate']));
+    final clinicNameCtrl = TextEditingController(text: f['clinicName'] ?? '');
+    final totalPaidCtrl = TextEditingController(text: f['totalPaid'] ?? '');
+    final bizRegNumberCtrl =
+        TextEditingController(text: f['bizRegNumber'] ?? '');
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final mySavedCats =
+                _userSubCategoriesMap[chosenCategory] ?? <String>[];
+            final double parsedKm = double.tryParse(
+                  travelDistanceKmCtrl.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+                ) ??
+                0;
+            final int calculatedCarFare = (parsedKm * 2 * 300).round();
+
+            return AlertDialog(
+              title: const Text('저장된 내용 수정', style: TextStyle(fontSize: 18)),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      DropdownButtonFormField<String>(
+                        value: chosenCategory,
+                        decoration: const InputDecoration(
+                          labelText: '문서 종류 변경',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        items: DocCategory.inputList
+                            .map((c) =>
+                                DropdownMenuItem(value: c, child: Text(c)))
+                            .toList(),
+                        onChanged: (v) {
+                          if (v != null) {
+                            setDialogState(() => chosenCategory = v);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      if (_usesSubCategory(chosenCategory)) ...[
+                        _buildField(
+                          subCategoryCtrl,
+                          '카테고리',
+                          '예: 여의도출장, 갑상선 등',
+                          onChanged: (_) => setDialogState(() {}),
+                        ),
+                        if (mySavedCats.isNotEmpty) ...[
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: mySavedCats.map((sub) {
+                              final isSel =
+                                  subCategoryCtrl.text.trim() == sub;
+                              return ChoiceChip(
+                                visualDensity: VisualDensity.compact,
+                                label: Text(sub),
+                                selected: isSel,
+                                selectedColor: Colors.indigo.shade100,
+                                onSelected: (_) {
+                                  setDialogState(() {
+                                    subCategoryCtrl.text = sub;
+                                  });
+                                },
+                              );
+                            }).toList(),
+                          ),
+                          const SizedBox(height: 10),
+                        ],
+                      ],
+                      if (DocCategory.isOfficial(chosenCategory)) ...[
+                        _buildField(
+                          sentDateCtrl,
+                          chosenCategory == DocCategory.officialOut
+                              ? '날짜 (발신일)'
+                              : '날짜 (접수일)',
+                          '예: 2025.05.21',
+                        ),
+                        _buildField(
+                          docNumberCtrl,
+                          '공문번호',
+                          chosenCategory == DocCategory.officialOut
+                              ? '예: 25 - 067호'
+                              : '예: 공동주택과-16092',
+                        ),
+                        if (chosenCategory == DocCategory.officialOut)
+                          _buildField(
+                            recipientCtrl,
+                            '받는사람',
+                            '예: 김해시장',
+                          )
+                        else
+                          _buildField(
+                            senderCtrl,
+                            '보낸사람',
+                            '예: 김해시장',
+                          ),
+                        if (chosenCategory == DocCategory.officialOut)
+                          _buildField(
+                            replyDocNumberCtrl,
+                            '회신번호 (수신공문 번호와 일치 시 회신완료 ○)',
+                            '예: 공동주택 - 16092',
+                          ),
+                        _buildField(docTitleCtrl, '제목', '예: 민원조치계획 회신의건'),
+                        _buildField(
+                          aiSummaryCtrl,
+                          '내용',
+                          '핵심 안건 요약',
+                          maxLines: 2,
+                        ),
+                        _buildField(
+                          replyDeadlineCtrl,
+                          '회신요청일',
+                          '예: 2025.05.21',
+                        ),
+                      ],
+                      if (chosenCategory == DocCategory.invoice) ...[
+                        _buildField(arrivalDateCtrl, '날짜', '예: 2021.09.08'),
+                        _buildField(
+                          productNameCtrl,
+                          '제품명',
+                          '예: 고장력철근',
+                          onChanged: (v) {
+                            if (v.contains('철근')) {
+                              setDialogState(() => unitCtrl.text = 'ton');
+                            }
+                          },
+                        ),
+                        _buildField(specNameCtrl, '규격명', '예: D32MM'),
+                        _buildField(unitCtrl, '단위', '예: ton'),
+                        _buildField(
+                          quantityCtrl,
+                          '수량(중량)',
+                          '예: 3.744',
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
+                        ),
+                        _buildField(supplierNameCtrl, '공급자', '예: 현대제철'),
+                        _buildField(
+                            orderNumberCtrl, '주문송장번호', '예: 212021090449'),
+                      ],
+                      if (chosenCategory == DocCategory.travel) ...[
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: TravelDivision.list.map((div) {
+                            final isSel = chosenTravelDivision == div;
+                            return ChoiceChip(
+                              visualDensity: VisualDensity.compact,
+                              label: Text(div),
+                              selected: isSel,
+                              selectedColor: Colors.amber.shade300,
+                              onSelected: (_) {
+                                setDialogState(() {
+                                  chosenTravelDivision = div;
+                                  if (div == TravelDivision.car) {
+                                    recalcCarDistanceCost();
+                                  }
+                                });
+                              },
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildField(travelDateCtrl, '날짜', '예: 2026.10.30'),
+                        if (chosenTravelDivision == TravelDivision.car) ...[
+                          _buildField(
+                            travelDistanceKmCtrl,
+                            '실시간 추천 거리 (편도 km)',
+                            '예: 25',
+                            keyboardType: TextInputType.number,
+                            onChanged: (_) =>
+                                setDialogState(recalcCarDistanceCost),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Text(
+                              '계산식: ${travelDistanceKmCtrl.text}km × 2 × 300원 = ${NumberFormat('#,###').format(calculatedCarFare)}원',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF1E3A8A),
+                                fontSize: 12.5,
+                              ),
+                            ),
+                          ),
+                        ],
+                        _buildField(travelMerchantCtrl, '상호 / 내역', '예: 카카오택시'),
+                        _buildField(
+                          travelAmountCtrl,
+                          '금액 (원)',
+                          '예: 15000',
+                          keyboardType: TextInputType.number,
+                        ),
+                      ],
+                      if (chosenCategory == DocCategory.medical) ...[
+                        _buildField(issueDateCtrl, '날짜 (발행일)', '예: 2026.10.01'),
+                        _buildField(clinicNameCtrl, '상호', '예: 맘온누리약국'),
+                        _buildField(
+                          totalPaidCtrl,
+                          '금액 (원)',
+                          '예: 4600',
+                          keyboardType: TextInputType.number,
+                        ),
+                        _buildField(
+                            bizRegNumberCtrl, '사업자등록번호', '예: 276-63-00432'),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('수정 저장'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (saved != true) return;
+
+    final enteredSub = _usesSubCategory(chosenCategory)
+        ? subCategoryCtrl.text.trim()
+        : '';
+    if (enteredSub.isNotEmpty) {
+      await _registerUserSubCategory(chosenCategory, enteredSub);
+    }
+
+    final updatedFields = Map<String, String>.from(record.fields);
+    updatedFields['subCategory'] = enteredSub;
+
+    if (DocCategory.isOfficial(chosenCategory)) {
+      updatedFields['docDirection'] =
+          chosenCategory == DocCategory.officialOut ? '발신' : '수신';
+      updatedFields['sentDate'] =
+          DocRecord.formatDotDate(sentDateCtrl.text.trim());
+      updatedFields['sender'] = senderCtrl.text.trim();
+      updatedFields['recipient'] = recipientCtrl.text.trim();
+      updatedFields['docNumber'] = docNumberCtrl.text.trim();
+      updatedFields['replyDocNumber'] = replyDocNumberCtrl.text.trim();
+      updatedFields['title'] = docTitleCtrl.text.trim();
+      updatedFields['aiSummary'] = aiSummaryCtrl.text.trim();
+      updatedFields['replyDeadline'] =
+          replyDeadlineCtrl.text.trim().isNotEmpty
+              ? DocRecord.formatDotDate(replyDeadlineCtrl.text.trim())
+              : '';
+    } else if (chosenCategory == DocCategory.invoice) {
+      updatedFields['arrivalDate'] =
+          DocRecord.formatDotDate(arrivalDateCtrl.text.trim());
+      updatedFields['productName'] = productNameCtrl.text.trim();
+      updatedFields['specName'] = specNameCtrl.text.trim();
+      updatedFields['unit'] = unitCtrl.text.trim().isNotEmpty
+          ? unitCtrl.text.trim()
+          : 'ton';
+      updatedFields['quantity'] = quantityCtrl.text.trim();
+      updatedFields['weight'] = quantityCtrl.text.trim();
+      updatedFields['supplierName'] = supplierNameCtrl.text.trim();
+      updatedFields['orderNumber'] = orderNumberCtrl.text.trim();
+    } else if (chosenCategory == DocCategory.travel) {
+      updatedFields['travelDivision'] = chosenTravelDivision;
+      updatedFields['date'] =
+          DocRecord.formatDotDate(travelDateCtrl.text.trim());
+      updatedFields['distanceKm'] = travelDistanceKmCtrl.text.trim();
+      updatedFields['merchantName'] = travelMerchantCtrl.text.trim();
+      updatedFields['totalAmount'] = travelAmountCtrl.text.trim();
+    } else if (chosenCategory == DocCategory.medical) {
+      updatedFields['issueDate'] =
+          DocRecord.formatDotDate(issueDateCtrl.text.trim());
+      updatedFields['clinicName'] = clinicNameCtrl.text.trim();
+      updatedFields['totalPaid'] = totalPaidCtrl.text.trim();
+      updatedFields['bizRegNumber'] = bizRegNumberCtrl.text.trim();
+    }
+
+    final idx = _records.indexWhere((r) => r.id == record.id);
+    if (idx == -1) return;
+
+    final updatedRecord = DocRecord(
+      id: record.id,
+      category: chosenCategory,
+      createdAt: record.createdAt,
+      imagePath: record.imagePath,
+      base64Image: record.base64Image,
+      fields: updatedFields,
+    );
+
+    setState(() {
+      _records[idx] = updatedRecord;
+      _selectedRecord = updatedRecord;
+    });
+    await _saveLocalRecords();
+    _showSnack('내용이 수정되었습니다.');
+  }
+
   Future<void> _deleteLocalRecord(DocRecord record) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -3419,7 +3785,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('원드라이브 덮어쓰기 & AI 설정 (v26)'),
+        title: const Text('원드라이브 덮어쓰기 & AI 설정 (v27)'),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -3916,40 +4282,15 @@ class _HomeScreenState extends State<HomeScreen> {
     function render() {
       document.getElementById('count-label').textContent = archiveRecords.length;
 
-      if (majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(발신)'))) {
+      if (majorCat === '공문(수신)' || majorCat === '공문(발신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(수신)' || r.category === '공문(발신)'))) {
+        const isOutTab = majorCat === '공문(발신)';
+        const partyHeader = isOutTab ? '받는사람' : '보낸사람';
         let html = `<table class="grid-table">
           <thead>
             <tr>
-              <th>발신일</th>
-              <th>받는사람</th>
+              <th>날짜</th>
               <th>공문번호</th>
-              <th>제목</th>
-              <th>내용</th>
-              <th>회신번호</th>
-            </tr>
-          </thead>
-          <tbody>`;
-        archiveRecords.forEach(item => {
-          const f = item.fields || {};
-          const partyVal = f.recipient || f.sender || '-';
-          const cls = item.id === selectedId ? 'active' : '';
-          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
-            <td>\${escapeHtml(dotDate(f.sentDate))}</td>
-            <td>\${escapeHtml(partyVal)}</td>
-            <td>\${escapeHtml(f.docNumber || '-')}</td>
-            <td style="text-align:left;">\${escapeHtml(f.title || '-')}</td>
-            <td style="text-align:left;">\${escapeHtml(f.aiSummary || '-')}</td>
-            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(f.replyDocNumber || '-')}</td>
-          </tr>`;
-        });
-        html += '</tbody></table>';
-        leftPane.innerHTML = html;
-      } else if (majorCat === '공문(수신)' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '공문(수신)'))) {
-        let html = `<table class="grid-table">
-          <thead>
-            <tr>
-              <th>접수일</th>
-              <th>보낸사람</th>
+              <th>\${partyHeader}</th>
               <th>공문번호</th>
               <th>제목</th>
               <th>내용</th>
@@ -3960,14 +4301,17 @@ class _HomeScreenState extends State<HomeScreen> {
           <tbody>`;
         archiveRecords.forEach(item => {
           const f = item.fields || {};
-          const partyVal = f.sender || f.recipient || '-';
+          const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
+          const partyVal = isOut ? (f.recipient || f.sender || '-') : (f.sender || f.recipient || '-');
+          const secondDocNum = isOut ? (f.replyDocNumber || f.docNumber || '-') : (f.docNumber || '-');
           const myKey = normalizeDocKey(f.docNumber);
-          const isReplied = myKey && repliedKeys.has(myKey);
+          const isReplied = isOut ? Boolean(f.replyDocNumber) : Boolean(myKey && repliedKeys.has(myKey));
           const cls = item.id === selectedId ? 'active' : '';
           html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
             <td>\${escapeHtml(dotDate(f.sentDate))}</td>
-            <td>\${escapeHtml(partyVal)}</td>
             <td>\${escapeHtml(f.docNumber || '-')}</td>
+            <td>\${escapeHtml(partyVal)}</td>
+            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(secondDocNum)}</td>
             <td style="text-align:left;">\${escapeHtml(f.title || '-')}</td>
             <td style="text-align:left;">\${escapeHtml(f.aiSummary || '-')}</td>
             <td>\${escapeHtml(dotDate(f.replyDeadline))}</td>
@@ -3986,8 +4330,8 @@ class _HomeScreenState extends State<HomeScreen> {
               <th>단위</th>
               <th>수량</th>
               <th>누적수량</th>
-              <th>공급자상호</th>
-              <th>송장번호</th>
+              <th>공급자</th>
+              <th>주문송장번호</th>
             </tr>
           </thead>
           <tbody>`;
@@ -4004,6 +4348,62 @@ class _HomeScreenState extends State<HomeScreen> {
             <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(cumVal)}</td>
             <td>\${escapeHtml(f.supplierName || '-')}</td>
             <td>\${escapeHtml(f.orderNumber || '-')}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        leftPane.innerHTML = html;
+      } else if (majorCat === '출장비' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '출장비'))) {
+        let html = `<table class="grid-table">
+          <thead>
+            <tr>
+              <th>카테고리(날짜)</th>
+              <th>구분</th>
+              <th>상호</th>
+              <th>금액</th>
+            </tr>
+          </thead>
+          <tbody>`;
+        archiveRecords.forEach(item => {
+          const f = item.fields || {};
+          const cls = item.id === selectedId ? 'active' : '';
+          const sub = f.subCategory || '미지정';
+          const dateStr = dotDate(f.date || item.createdAt.split(' ')[0]);
+          const div = f.travelDivision || '식대';
+          const desc = div === '자차' ? (f.merchantName || `\${f.distanceKm || 0}km × 2 × 300원`) : (f.merchantName || '-');
+          const amt = Number(f.totalAmount || 0).toLocaleString() + '원';
+          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
+            <td>\${escapeHtml(sub)}<br/>(\${escapeHtml(dateStr)})</td>
+            <td>\${escapeHtml(div)}</td>
+            <td style="text-align:left;">\${escapeHtml(desc)}</td>
+            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(amt)}</td>
+          </tr>`;
+        });
+        html += '</tbody></table>';
+        leftPane.innerHTML = html;
+      } else if (majorCat === '병원비' || (archiveRecords.length > 0 && archiveRecords.every(r => r.category === '병원비'))) {
+        let html = `<table class="grid-table">
+          <thead>
+            <tr>
+              <th>카테고리</th>
+              <th>날짜</th>
+              <th>상호</th>
+              <th>금액</th>
+              <th>사업자등록번호</th>
+            </tr>
+          </thead>
+          <tbody>`;
+        archiveRecords.forEach(item => {
+          const f = item.fields || {};
+          const cls = item.id === selectedId ? 'active' : '';
+          const sub = f.subCategory || '미지정';
+          const dateStr = dotDate(f.issueDate || item.createdAt.split(' ')[0]);
+          const amt = Number(f.totalPaid || 0).toLocaleString() + '원';
+          html += `<tr class="\${cls}" onclick="selectedId='\${item.id}'; render();">
+            <td>\${escapeHtml(sub)}</td>
+            <td>\${escapeHtml(dateStr)}</td>
+            <td>\${escapeHtml(f.clinicName || '-')}</td>
+            <td style="color:#1e3a8a; font-weight:700;">\${escapeHtml(amt)}</td>
+            <td>\${escapeHtml(f.bizRegNumber || '-')}</td>
           </tr>`;
         });
         html += '</tbody></table>';
@@ -4240,6 +4640,39 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Widget _buildRowActionButtons(DocRecord rec) {
+    return Container(
+      width: 68,
+      decoration: const BoxDecoration(
+        border: Border(
+          right: BorderSide(color: Color(0xFFCBD5E1), width: 1),
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          InkWell(
+            onTap: () => _editLocalRecord(rec),
+            child: const Padding(
+              padding: EdgeInsets.all(5),
+              child: Icon(Icons.edit_outlined,
+                  size: 17, color: Color(0xFF1E3A8A)),
+            ),
+          ),
+          InkWell(
+            onTap: () => _deleteLocalRecord(rec),
+            child: const Padding(
+              padding: EdgeInsets.all(5),
+              child:
+                  Icon(Icons.delete_outline, size: 17, color: Colors.redAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopListSection(
     List<DocRecord> items,
     Map<String, String> cumMap,
@@ -4255,6 +4688,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
+    // ★ 1) 자재송장: 날짜 - 제품명 - 규격명 - 단위 - 수량 - 누적수량 - 공급자 - 주문송장번호 + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.invoice) {
       return Scrollbar(
         controller: _tableHorizontalScrollCtrl,
@@ -4263,7 +4697,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 590,
+            width: 642,
             child: Column(
               children: [
                 Container(
@@ -4271,13 +4705,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: IntrinsicHeight(
                     child: Row(
                       children: [
-                        _buildFixedHeaderCell('날짜', width: 95),
-                        _buildFixedHeaderCell('제품명', width: 110),
-                        _buildFixedHeaderCell('규격명', width: 90),
-                        _buildFixedHeaderCell('단위', width: 60),
-                        _buildFixedHeaderCell('수량', width: 95),
-                        _buildFixedHeaderCell('누적수량', width: 100),
-                        const SizedBox(width: 40),
+                        _buildFixedHeaderCell('날짜', width: 64),
+                        _buildFixedHeaderCell('제품명', width: 72),
+                        _buildFixedHeaderCell('규격명', width: 62),
+                        _buildFixedHeaderCell('단위', width: 44),
+                        _buildFixedHeaderCell('수량', width: 64),
+                        _buildFixedHeaderCell('누적수량', width: 68),
+                        _buildFixedHeaderCell('공급자', width: 78),
+                        _buildFixedHeaderCell('주문송장번호', width: 122),
+                        _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
                   ),
@@ -4292,6 +4728,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       final cumStr = cumMap[rec.id] ?? f['quantity'] ?? '-';
                       return InkWell(
                         onTap: () => setState(() => _selectedRecord = rec),
+                        onLongPress: () => _editLocalRecord(rec),
                         child: Container(
                           decoration: BoxDecoration(
                             color: isSelected
@@ -4307,45 +4744,47 @@ class _HomeScreenState extends State<HomeScreen> {
                               children: [
                                 _buildFixedDataCell(
                                   DocRecord.formatDotDate(f['arrivalDate']),
-                                  width: 95,
+                                  width: 64,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   f['productName'] ?? '-',
-                                  width: 110,
+                                  width: 72,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   f['specName'] ?? '-',
-                                  width: 90,
+                                  width: 62,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   f['unit'] ?? 'ton',
-                                  width: 60,
+                                  width: 44,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   f['quantity'] ?? '-',
-                                  width: 95,
+                                  width: 64,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   cumStr,
-                                  width: 100,
+                                  width: 68,
                                   isSelected: isSelected,
                                   textColor: const Color(0xFF1E3A8A),
                                   forceBold: true,
                                 ),
-                                SizedBox(
-                                  width: 40,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    icon: const Icon(Icons.delete_outline,
-                                        size: 18, color: Colors.redAccent),
-                                    onPressed: () => _deleteLocalRecord(rec),
-                                  ),
+                                _buildFixedDataCell(
+                                  f['supplierName'] ?? '-',
+                                  width: 78,
+                                  isSelected: isSelected,
                                 ),
+                                _buildFixedDataCell(
+                                  f['orderNumber'] ?? '-',
+                                  width: 122,
+                                  isSelected: isSelected,
+                                ),
+                                _buildRowActionButtons(rec),
                               ],
                             ),
                           ),
@@ -4361,7 +4800,13 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    if (_selectedCategoryFilter == DocCategory.officialOut) {
+    // ★ 2) 공문(수신) & 공문(발신) (및 전체 탭 공문):
+    // 순서: 날짜 - 공문번호 - 보낸사람(받는사람) - 공문번호(회신번호) - 제목 - 내용 - 회신요청일 - 회신완료 + 수정/삭제
+    // 열 너비는 칸마다 글자가 2줄로 들어갈 정도로 좁혀서 한눈에 들어오도록 구성!
+    if (DocCategory.isOfficial(_selectedCategoryFilter)) {
+      final bool isOutTab = _selectedCategoryFilter == DocCategory.officialOut;
+      final String partyHeader = isOutTab ? '받는사람' : '보낸사람';
+
       return Scrollbar(
         controller: _tableHorizontalScrollCtrl,
         thumbVisibility: true,
@@ -4369,7 +4814,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 620,
+            width: 742,
             child: Column(
               children: [
                 Container(
@@ -4377,11 +4822,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: IntrinsicHeight(
                     child: Row(
                       children: [
-                        _buildFixedHeaderCell('발신일', width: 95),
-                        _buildFixedHeaderCell('받는사람', width: 110),
-                        _buildFixedHeaderCell('제목', width: 235),
-                        _buildFixedHeaderCell('회신번호', width: 140),
-                        const SizedBox(width: 40),
+                        _buildFixedHeaderCell('날짜', width: 64),
+                        _buildFixedHeaderCell('공문번호', width: 76),
+                        _buildFixedHeaderCell(partyHeader, width: 68),
+                        _buildFixedHeaderCell(
+                            isOutTab ? '공문번호
+(회신번호)' : '공문번호',
+                            width: 76),
+                        _buildFixedHeaderCell('제목', width: 118),
+                        _buildFixedHeaderCell('내용', width: 152),
+                        _buildFixedHeaderCell('회신요청일', width: 64),
+                        _buildFixedHeaderCell('회신완료', width: 56),
+                        _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
                   ),
@@ -4393,8 +4845,19 @@ class _HomeScreenState extends State<HomeScreen> {
                       final rec = items[idx];
                       final f = rec.fields;
                       final isSelected = _selectedRecord?.id == rec.id;
+                      final bool isOut = rec.isOutgoingOfficialDoc;
+                      final bool isReplied = isOut
+                          ? (f['replyDocNumber']?.trim().isNotEmpty == true)
+                          : _isIncomingDocReplied(rec, repliedKeys);
+                      final String secondDocNum = isOut
+                          ? (f['replyDocNumber']?.trim().isNotEmpty == true
+                              ? f['replyDocNumber']!
+                              : (f['docNumber'] ?? '-'))
+                          : (f['docNumber'] ?? '-');
+
                       return InkWell(
                         onTap: () => setState(() => _selectedRecord = rec),
+                        onLongPress: () => _editLocalRecord(rec),
                         child: Container(
                           decoration: BoxDecoration(
                             color: isSelected
@@ -4410,137 +4873,48 @@ class _HomeScreenState extends State<HomeScreen> {
                               children: [
                                 _buildFixedDataCell(
                                   DocRecord.formatDotDate(f['sentDate']),
-                                  width: 95,
+                                  width: 64,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['docNumber'] ?? '-',
+                                  width: 76,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   rec.officialCounterpartyValue,
-                                  width: 110,
+                                  width: 68,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
-                                  f['title'] ?? '-',
-                                  width: 235,
-                                  isSelected: isSelected,
-                                ),
-                                _buildFixedDataCell(
-                                  f['replyDocNumber']?.trim().isNotEmpty == true
-                                      ? f['replyDocNumber']!
-                                      : '-',
-                                  width: 140,
+                                  secondDocNum,
+                                  width: 76,
                                   isSelected: isSelected,
                                   textColor: const Color(0xFF1E3A8A),
-                                  forceBold: true,
-                                ),
-                                SizedBox(
-                                  width: 40,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    icon: const Icon(Icons.delete_outline,
-                                        size: 18, color: Colors.redAccent),
-                                    onPressed: () => _deleteLocalRecord(rec),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (_selectedCategoryFilter == DocCategory.officialIn) {
-      return Scrollbar(
-        controller: _tableHorizontalScrollCtrl,
-        thumbVisibility: true,
-        child: SingleChildScrollView(
-          controller: _tableHorizontalScrollCtrl,
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: 660,
-            child: Column(
-              children: [
-                Container(
-                  color: const Color(0xFFE2E8F0),
-                  child: IntrinsicHeight(
-                    child: Row(
-                      children: [
-                        _buildFixedHeaderCell('접수일', width: 95),
-                        _buildFixedHeaderCell('보낸사람', width: 105),
-                        _buildFixedHeaderCell('제목', width: 250),
-                        _buildFixedHeaderCell('회신요청일', width: 95),
-                        _buildFixedHeaderCell('회신완료', width: 75),
-                        const SizedBox(width: 40),
-                      ],
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: items.length,
-                    itemBuilder: (ctx, idx) {
-                      final rec = items[idx];
-                      final f = rec.fields;
-                      final isSelected = _selectedRecord?.id == rec.id;
-                      final isReplied = _isIncomingDocReplied(rec, repliedKeys);
-                      return InkWell(
-                        onTap: () => setState(() => _selectedRecord = rec),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? const Color(0xFFDBEAFE)
-                                : Colors.white,
-                            border: const Border(
-                              bottom: BorderSide(
-                                  color: Color(0xFFCBD5E1), width: 1),
-                            ),
-                          ),
-                          child: IntrinsicHeight(
-                            child: Row(
-                              children: [
-                                _buildFixedDataCell(
-                                  DocRecord.formatDotDate(f['sentDate']),
-                                  width: 95,
-                                  isSelected: isSelected,
-                                ),
-                                _buildFixedDataCell(
-                                  rec.officialCounterpartyValue,
-                                  width: 105,
-                                  isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   f['title'] ?? '-',
-                                  width: 250,
+                                  width: 118,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['aiSummary'] ?? '-',
+                                  width: 152,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   DocRecord.formatDotDate(f['replyDeadline']),
-                                  width: 95,
+                                  width: 64,
                                   isSelected: isSelected,
                                 ),
                                 _buildFixedDataCell(
                                   isReplied ? '○' : '',
-                                  width: 75,
+                                  width: 56,
                                   isSelected: isSelected,
                                   textColor: const Color(0xFF16A34A),
                                   forceBold: true,
                                 ),
-                                SizedBox(
-                                  width: 40,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    icon: const Icon(Icons.delete_outline,
-                                        size: 18, color: Colors.redAccent),
-                                    onPressed: () => _deleteLocalRecord(rec),
-                                  ),
-                                ),
+                                _buildRowActionButtons(rec),
                               ],
                             ),
                           ),
@@ -4556,146 +4930,308 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    return ListView.separated(
-      itemCount: items.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
-      itemBuilder: (ctx, idx) {
-        final rec = items[idx];
-        final isSelected = _selectedRecord?.id == rec.id;
-        final mySubOptions = _userSubCategoriesMap[rec.category] ?? <String>[];
-        final badgeText =
-            rec.subCategory.isNotEmpty ? rec.subCategory : '카테고리 지정';
-
-        return ListTile(
-          dense: true,
-          selected: isSelected,
-          selectedTileColor: Colors.blue.shade50,
-          leading: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_usesSubCategory(rec.category))
-                PopupMenuButton<String>(
-                  tooltip: '내 카테고리 선택 또는 신규 등록',
-                  onSelected: (newSub) => _changeRecordSubCategory(rec, newSub),
-                  itemBuilder: (_) => [
-                    ...mySubOptions.map(
-                      (sc) => PopupMenuItem(
-                        value: sc,
-                        child: Text(sc),
-                      ),
-                    ),
-                    if (mySubOptions.isNotEmpty) const PopupMenuDivider(),
-                    const PopupMenuItem(
-                      value: '__ADD_NEW__',
-                      child: Row(
-                        children: [
-                          Icon(Icons.add, size: 16, color: Colors.blueAccent),
-                          SizedBox(width: 6),
-                          Text(
-                            '새 카테고리 등록...',
-                            style: TextStyle(
-                              color: Colors.blueAccent,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: rec.subCategory.isNotEmpty
-                          ? Colors.indigo.shade100
-                          : Colors.grey.shade200,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
+    // ★ 3) 출장비: 카테고리(날짜 같이표시) - 구분 - 상호 - 금액 + 수정/삭제
+    if (_selectedCategoryFilter == DocCategory.travel) {
+      return Scrollbar(
+        controller: _tableHorizontalScrollCtrl,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _tableHorizontalScrollCtrl,
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: 446,
+            child: Column(
+              children: [
+                Container(
+                  color: const Color(0xFFE2E8F0),
+                  child: IntrinsicHeight(
                     child: Row(
-                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          badgeText,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: rec.subCategory.isNotEmpty
-                                ? Colors.indigo
-                                : Colors.black54,
-                          ),
-                        ),
-                        const Icon(
-                          Icons.arrow_drop_down,
-                          size: 14,
-                          color: Colors.indigo,
-                        ),
+                        _buildFixedHeaderCell('카테고리(날짜)', width: 100),
+                        _buildFixedHeaderCell('구분', width: 58),
+                        _buildFixedHeaderCell('상호', width: 136),
+                        _buildFixedHeaderCell('금액', width: 84),
+                        _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
                   ),
                 ),
-              if (rec.category == DocCategory.travel) ...[
-                const SizedBox(width: 4),
-                PopupMenuButton<String>(
-                  tooltip: '출장비 구분 변경',
-                  onSelected: (newDiv) =>
-                      _changeRecordTravelDivision(rec, newDiv),
-                  itemBuilder: (_) => TravelDivision.list
-                      .map(
-                        (d) => PopupMenuItem(
-                          value: d,
-                          child: Text('[$d]로 변경'),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (ctx, idx) {
+                      final rec = items[idx];
+                      final f = rec.fields;
+                      final isSelected = _selectedRecord?.id == rec.id;
+                      final catName =
+                          rec.subCategory.isNotEmpty ? rec.subCategory : '미지정';
+                      final dateStr = DocRecord.formatDotDate(
+                          f['date'] ?? rec.createdAt.split(' ').first);
+                      final catWithDate = '$catName\n($dateStr)';
+                      final div = rec.travelDivision;
+                      final merchantStr = div == TravelDivision.car
+                          ? (f['merchantName']?.trim().isNotEmpty == true
+                              ? f['merchantName']!
+                              : '${f['distanceKm'] ?? 0}km × 2 × 300원')
+                          : (f['merchantName'] ?? '-');
+                      final amtStr =
+                          '${DocRecord._formatCurrency(f['totalAmount'])}원';
+
+                      return InkWell(
+                        onTap: () => setState(() => _selectedRecord = rec),
+                        onLongPress: () => _editLocalRecord(rec),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFDBEAFE)
+                                : Colors.white,
+                            border: const Border(
+                              bottom: BorderSide(
+                                  color: Color(0xFFCBD5E1), width: 1),
+                            ),
+                          ),
+                          child: IntrinsicHeight(
+                            child: Row(
+                              children: [
+                                _buildFixedDataCell(
+                                  catWithDate,
+                                  width: 100,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  div,
+                                  width: 58,
+                                  isSelected: isSelected,
+                                  textColor: Colors.brown.shade900,
+                                  forceBold: true,
+                                ),
+                                _buildFixedDataCell(
+                                  merchantStr,
+                                  width: 136,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  amtStr,
+                                  width: 84,
+                                  isSelected: isSelected,
+                                  textColor: const Color(0xFF1E3A8A),
+                                  forceBold: true,
+                                ),
+                                _buildRowActionButtons(rec),
+                              ],
+                            ),
+                          ),
                         ),
-                      )
-                      .toList(),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.amber.shade200,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      rec.travelDivision,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.brown.shade900,
-                      ),
-                    ),
+                      );
+                    },
                   ),
                 ),
               ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ★ 4) 병원비: 카테고리 - 날짜 - 상호 - 금액 - 사업자등록번호 + 수정/삭제
+    if (_selectedCategoryFilter == DocCategory.medical) {
+      return Scrollbar(
+        controller: _tableHorizontalScrollCtrl,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: _tableHorizontalScrollCtrl,
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: 492,
+            child: Column(
+              children: [
+                Container(
+                  color: const Color(0xFFE2E8F0),
+                  child: IntrinsicHeight(
+                    child: Row(
+                      children: [
+                        _buildFixedHeaderCell('카테고리', width: 74),
+                        _buildFixedHeaderCell('날짜', width: 68),
+                        _buildFixedHeaderCell('상호', width: 104),
+                        _buildFixedHeaderCell('금액', width: 80),
+                        _buildFixedHeaderCell('사업자등록번호', width: 98),
+                        _buildFixedHeaderCell('수정/삭제', width: 68),
+                      ],
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (ctx, idx) {
+                      final rec = items[idx];
+                      final f = rec.fields;
+                      final isSelected = _selectedRecord?.id == rec.id;
+                      final catName =
+                          rec.subCategory.isNotEmpty ? rec.subCategory : '미지정';
+                      final dateStr = DocRecord.formatDotDate(
+                          f['issueDate'] ?? rec.createdAt.split(' ').first);
+                      final amtStr =
+                          '${DocRecord._formatCurrency(f['totalPaid'])}원';
+
+                      return InkWell(
+                        onTap: () => setState(() => _selectedRecord = rec),
+                        onLongPress: () => _editLocalRecord(rec),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFDBEAFE)
+                                : Colors.white,
+                            border: const Border(
+                              bottom: BorderSide(
+                                  color: Color(0xFFCBD5E1), width: 1),
+                            ),
+                          ),
+                          child: IntrinsicHeight(
+                            child: Row(
+                              children: [
+                                _buildFixedDataCell(
+                                  catName,
+                                  width: 74,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  dateStr,
+                                  width: 68,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  f['clinicName'] ?? '-',
+                                  width: 104,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  amtStr,
+                                  width: 80,
+                                  isSelected: isSelected,
+                                  textColor: const Color(0xFF1E3A8A),
+                                  forceBold: true,
+                                ),
+                                _buildFixedDataCell(
+                                  f['bizRegNumber'] ?? '-',
+                                  width: 98,
+                                  isSelected: isSelected,
+                                ),
+                                _buildRowActionButtons(rec),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 5) [전체] 탭에서도 깔끔한 표 형식으로 표시 + 수정/삭제 지원
+    return Scrollbar(
+      controller: _tableHorizontalScrollCtrl,
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        controller: _tableHorizontalScrollCtrl,
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: 490,
+          child: Column(
+            children: [
+              Container(
+                color: const Color(0xFFE2E8F0),
+                child: IntrinsicHeight(
+                  child: Row(
+                    children: [
+                      _buildFixedHeaderCell('분류', width: 72),
+                      _buildFixedHeaderCell('날짜', width: 68),
+                      _buildFixedHeaderCell('제목 / 상호 / 품목', width: 150),
+                      _buildFixedHeaderCell('상세 / 금액 / 수량', width: 132),
+                      _buildFixedHeaderCell('수정/삭제', width: 68),
+                    ],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: items.length,
+                  itemBuilder: (ctx, idx) {
+                    final rec = items[idx];
+                    final f = rec.fields;
+                    final isSelected = _selectedRecord?.id == rec.id;
+                    String dateStr = rec.createdAt.split(' ').first;
+                    if (DocCategory.isOfficial(rec.category)) {
+                      dateStr = DocRecord.formatDotDate(f['sentDate']);
+                    } else if (rec.category == DocCategory.invoice) {
+                      dateStr = DocRecord.formatDotDate(f['arrivalDate']);
+                    } else if (rec.category == DocCategory.travel) {
+                      dateStr = DocRecord.formatDotDate(f['date']);
+                    } else if (rec.category == DocCategory.medical) {
+                      dateStr = DocRecord.formatDotDate(f['issueDate']);
+                    }
+
+                    return InkWell(
+                      onTap: () => setState(() => _selectedRecord = rec),
+                      onLongPress: () => _editLocalRecord(rec),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? const Color(0xFFDBEAFE)
+                              : Colors.white,
+                          border: const Border(
+                            bottom:
+                                BorderSide(color: Color(0xFFCBD5E1), width: 1),
+                          ),
+                        ),
+                        child: IntrinsicHeight(
+                          child: Row(
+                            children: [
+                              _buildFixedDataCell(
+                                rec.category,
+                                width: 72,
+                                isSelected: isSelected,
+                              ),
+                              _buildFixedDataCell(
+                                dateStr,
+                                width: 68,
+                                isSelected: isSelected,
+                              ),
+                              _buildFixedDataCell(
+                                rec.displayTitle,
+                                width: 150,
+                                isSelected: isSelected,
+                              ),
+                              _buildFixedDataCell(
+                                rec.displaySubtitle,
+                                width: 132,
+                                isSelected: isSelected,
+                              ),
+                              _buildRowActionButtons(rec),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ],
           ),
-          title: Text(
-            rec.displayTitle,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-          subtitle: Text(
-            rec.displaySubtitle,
-            style: const TextStyle(fontSize: 11.5),
-          ),
-          trailing: IconButton(
-            icon: const Icon(
-              Icons.delete_outline,
-              color: Colors.redAccent,
-            ),
-            onPressed: () => _deleteLocalRecord(rec),
-          ),
-          onTap: () => setState(() => _selectedRecord = rec),
-        );
-      },
+        ),
+      ),
     );
   }
 
   Widget _buildFixedHeaderCell(String label, {required double width}) {
     return Container(
       width: width,
-      padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+      padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFF94A3B8), width: 1),
@@ -4706,9 +5242,10 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Text(
         label,
         textAlign: TextAlign.center,
-        softWrap: false,
+        softWrap: true,
         style: const TextStyle(
-          fontSize: 12,
+          fontSize: 11,
+          height: 1.2,
           fontWeight: FontWeight.bold,
           color: Color(0xFF1E293B),
         ),
@@ -4725,7 +5262,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     return Container(
       width: width,
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+      padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFCBD5E1), width: 1),
@@ -4737,7 +5274,8 @@ class _HomeScreenState extends State<HomeScreen> {
         textAlign: TextAlign.center,
         softWrap: true,
         style: TextStyle(
-          fontSize: 12,
+          fontSize: 11,
+          height: 1.25,
           fontWeight:
               (isSelected || forceBold) ? FontWeight.bold : FontWeight.w500,
           color: textColor ?? const Color(0xFF0F172A),
@@ -4764,7 +5302,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v26'),
+        title: const Text('증빙서류 스냅 v27'),
         actions: [
           IconButton(
             tooltip: '원드라이브 덮어쓰기 & AI 설정',
@@ -5084,6 +5622,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
 
+                        // ★ 하단 영역: 상세정보 텍스트 칸을 없애고 오직 증빙서류 사진만 100% 전체화면으로 표시!
                         SizedBox(
                           height: detailH,
                           child: Container(
@@ -5092,159 +5631,26 @@ class _HomeScreenState extends State<HomeScreen> {
                             child: _selectedRecord == null
                                 ? const Center(
                                     child: Text(
-                                      '위 목록에서 항목을 선택하면\n좌측에 상세정보, 우측에 증빙사진이 표시됩니다.',
+                                      '위 목록에서 항목을 선택하면\n이곳에 증빙사진이 크게 표시됩니다.',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(color: Colors.white70),
                                     ),
                                   )
-                                : LayoutBuilder(
-                                    builder: (ctx, detailConstraints) {
-                                      final totalW = detailConstraints.maxWidth;
-                                      const double vertHandleWidth = 18.0;
-                                      final usableW = math.max(
-                                          100.0, totalW - vertHandleWidth);
-                                      final leftW =
-                                          (usableW * _detailHorizSplitRatio)
-                                              .clamp(70.0, usableW - 70.0);
-                                      final rightW = usableW - leftW;
-
-                                      return Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.stretch,
-                                        children: [
-                                          SizedBox(
-                                            width: leftW,
-                                            child: Container(
-                                              padding:
-                                                  const EdgeInsets.fromLTRB(
-                                                      10, 10, 8, 10),
-                                              color: const Color(0xFF1E293B),
-                                              child: SingleChildScrollView(
-                                                child: Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      '[${_selectedRecord!.category}]',
-                                                      style: const TextStyle(
-                                                        color:
-                                                            Colors.amberAccent,
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        fontSize: 12.5,
-                                                      ),
-                                                    ),
-                                                    const SizedBox(height: 8),
-                                                    ..._getCategoryFieldPairs(
-                                                      _selectedRecord!,
-                                                      cumMap,
-                                                      repliedKeys,
-                                                    ).map(
-                                                      (e) => Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .only(bottom: 6),
-                                                        child: RichText(
-                                                          text: TextSpan(
-                                                            style:
-                                                                const TextStyle(
-                                                              fontSize: 12,
-                                                              height: 1.38,
-                                                              color:
-                                                                  Colors.white,
-                                                            ),
-                                                            children: [
-                                                              TextSpan(
-                                                                text:
-                                                                    '${e.key} : ',
-                                                                style:
-                                                                    const TextStyle(
-                                                                  color: Color(
-                                                                      0xFF93C5FD),
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .bold,
-                                                                ),
-                                                              ),
-                                                              TextSpan(
-                                                                text: e.value
-                                                                        .trim()
-                                                                        .isEmpty
-                                                                    ? '-'
-                                                                    : e.value,
-                                                              ),
-                                                            ],
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-
-                                          GestureDetector(
-                                            behavior: HitTestBehavior.opaque,
-                                            onHorizontalDragUpdate: (details) {
-                            setState(() {
-                              _detailHorizSplitRatio =
-                                  (_detailHorizSplitRatio +
-                                          details.delta.dx / usableW)
-                                      .clamp(0.18, 0.82);
-                            });
-                          },
-                                            onHorizontalDragEnd: (_) async {
-                                              final prefs =
-                                                  await SharedPreferences
-                                                      .getInstance();
-                                              await prefs.setDouble(
-                                                _prefsHorizSplitRatioKey,
-                                                _detailHorizSplitRatio,
-                                              );
-                                            },
-                                            child: Container(
-                                              width: vertHandleWidth,
-                                              color: const Color(0xFF334155),
-                                              child: Center(
-                                                child: Container(
-                                                  width: 4,
-                                                  height: 38,
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.amberAccent,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            999),
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-
-                                          SizedBox(
-                                            width: rightW,
-                                            height: detailH,
-                                            child: ClipRect(
-                                              child: InteractiveViewer(
-                                                clipBehavior: Clip.none,
-                                                boundaryMargin:
-                                                    const EdgeInsets.all(400),
-                                                minScale: 0.6,
-                                                maxScale: 8.0,
-                                                child: SizedBox(
-                                                  width: rightW,
-                                                  height: detailH,
-                                                  child: _buildRecordImage(
-                                                      _selectedRecord!),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      );
-                                    },
-                                  ),
-                          ),
+                                : ClipRect(
+                                    child: InteractiveViewer(
+                                      clipBehavior: Clip.none,
+                                      boundaryMargin:
+                                          const EdgeInsets.all(400),
+                                      minScale: 0.6,
+                                      maxScale: 8.0,
+                                      child: SizedBox(
+                                        width: double.infinity,
+                                        height: detailH,
+                                        child: _buildRecordImage(
+                                            _selectedRecord!),
+                                      ),
+                                    ),
+                                  ),                          ),
                         ),
                       ],
                     );
