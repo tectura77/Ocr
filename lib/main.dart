@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v37',
+      title: '증빙서류 스냅 v38',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -463,7 +463,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v37)'),
+        title: const Text('가로/세로 정비율 스캔 (v38)'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -1131,22 +1131,6 @@ class _HomeScreenState extends State<HomeScreen> {
           );
           autoFixedExisting = true;
         }
-      } else if (r.category == DocCategory.travel) {
-        final merch = (r.fields['merchantName'] ?? '').trim();
-        final amt = (r.fields['totalAmount'] ?? '').trim();
-        if (merch.contains('GS25') && amt == '9300') {
-          final nf = Map<String, String>.from(r.fields);
-          nf['merchantName'] = '롯데리아 창동역점';
-          loaded[i] = DocRecord(
-            id: r.id,
-            category: r.category,
-            createdAt: r.createdAt,
-            imagePath: r.imagePath,
-            base64Image: r.base64Image,
-            fields: nf,
-          );
-          autoFixedExisting = true;
-        }
       }
     });
 
@@ -1195,6 +1179,22 @@ class _HomeScreenState extends State<HomeScreen> {
           changed = true;
         }
         if (changed) {
+          loaded[i] = DocRecord(
+            id: r.id,
+            category: r.category,
+            createdAt: r.createdAt,
+            imagePath: r.imagePath,
+            base64Image: r.base64Image,
+            fields: nf,
+          );
+          autoFixedExisting = true;
+        }
+      } else if (r.category == DocCategory.travel) {
+        final merch = (r.fields['merchantName'] ?? '').trim();
+        final amt = (r.fields['totalAmount'] ?? '').trim();
+        if (merch.contains('GS25') && amt == '9300') {
+          final nf = Map<String, String>.from(r.fields);
+          nf['merchantName'] = '롯데리아 창동역점';
           loaded[i] = DocRecord(
             id: r.id,
             category: r.category,
@@ -3876,7 +3876,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('증빙서류 입력 (v37)', style: TextStyle(fontSize: 18)),
+                    const Text('증빙서류 입력 (v38)', style: TextStyle(fontSize: 18)),
                     if (isAiAnalyzing)
                       const Row(
                         mainAxisSize: MainAxisSize.min,
@@ -5284,7 +5284,7 @@ function doPost(e) {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) => AlertDialog(
           title: const Text(
-            '다중 사용자 누적 공유 & AI 설정 (v37)',
+            '다중 사용자 누적 공유 & AI 설정 (v38)',
             style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
           ),
           content: SingleChildScrollView(
@@ -7079,7 +7079,7 @@ function doPost(e) {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v37'),
+        title: const Text('증빙서류 스냅 v38'),
         actions: [
           IconButton(
             tooltip: '원드라이브 덮어쓰기 & AI 설정',
