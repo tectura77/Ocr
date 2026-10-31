@@ -3538,10 +3538,10 @@ class _HomeScreenState extends State<HomeScreen> {
         'msg': 'API 키가 비어 있습니다. (비워두시면 내장 오프라인 한국어 OCR로 작동합니다)',
       };
     }
-    if (!key.startsWith('AIza') || key.length < 30) {
+    if (key.length < 16 || RegExp(r'[가-힣\s]').hasMatch(key)) {
       return {
         'ok': false,
-        'msg': '❌ 올바른 Google Gemini API 키 형식이 아닙니다. (정상 키는 "AIza..."로 시작하는 39자리 문자열입니다)',
+        'msg': '❌ 올바른 Gemini API 키 형식이 아닙니다. (Google AI Studio에서 발급받은 AQ... 또는 AIza... 키 전체를 복사해 넣어주세요)',
       };
     }
 
@@ -3679,7 +3679,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
 
-    if (!key.startsWith('AIza') || key.length < 30) {
+    if (key.length < 16 || RegExp(r'[가-힣\s]').hasMatch(key)) {
       _lastGeminiStatusMsg = '❌ 잘못된 API 키 형식 (내장 OCR 결과만 적용됨)';
       if (mounted) setState(() => _geminiKeyVerified = false);
       return null;
@@ -5660,7 +5660,7 @@ function doPost(e) {
                 TextField(
                   controller: geminiKeyCtrl,
                   decoration: const InputDecoration(
-                    labelText: 'Gemini API Key (AIza... 형식)',
+                    labelText: 'Gemini API Key (AQ... 또는 AIza... 형식)',
                     hintText: '비워두셔도 내장 한국어 OCR이 즉시 작동합니다',
                     border: OutlineInputBorder(),
                     isDense: true,
