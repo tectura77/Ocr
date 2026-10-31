@@ -1059,7 +1059,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _shareRoomMode = 'github'; // 'github'(GitHub 방식) 또는 'onedrive'(OneDrive 방식)
   String _githubRepo = ''; // 예: 아이디/저장소명
   String _githubToken = ''; // GitHub Personal Access Token (ghp_... 또는 github_pat_...)
-  String _githubFolder = '현장공유방'; // 저장소 내 공유방 폴더명
+  String _githubFolder = ''; // 저장소 내 공유방 폴더명 (디폴트 비움 -> 회색 힌트 '○○현장' 표시)
   String _oneDriveShareUrl = ''; // OneDrive 공유폴더 링크 (예: https://1drv.ms/f/...)
   String _exporterUserName = '';
   bool _useConflictFreeFileName = true;
@@ -1271,7 +1271,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _shareRoomMode = prefs.getString(_prefsShareRoomModeKey) ?? 'github';
       _githubRepo = prefs.getString(_prefsGithubRepoKey) ?? '';
       _githubToken = prefs.getString(_prefsGithubTokenKey) ?? '';
-      _githubFolder = prefs.getString(_prefsGithubFolderKey) ?? '현장공유방';
+      final loadedFolder = prefs.getString(_prefsGithubFolderKey) ?? '';
+      _githubFolder = loadedFolder == '현장공유방' ? '' : loadedFolder;
       _oneDriveShareUrl = prefs.getString(_prefsOneDriveUrlKey) ?? '';
       _exporterUserName = prefs.getString(_prefsUserNameKey) ?? '';
       _useConflictFreeFileName =
@@ -5579,7 +5580,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return true; // 원드라이브 방식은 링크 자동연동 또는 원드라이브 앱 파일선택기 둘 다 즉시 사용 가능
     }
     return _normalizeGithubRepo(_githubRepo).isNotEmpty &&
-        _githubToken.trim().isNotEmpty;
+        _githubToken.trim().isNotEmpty &&
+        _githubFolder.trim().isNotEmpty;
   }
 
   String _normalizeGithubRepo(String raw) {
@@ -6795,30 +6797,15 @@ class _HomeScreenState extends State<HomeScreen> {
         _records.where((r) => DocCategory.isOfficial(r.category)).length;
     final invoiceCount =
         _records.where((r) => r.category == DocCategory.invoice).length;
-    final siteFolderCtrl = TextEditingController(text: _githubFolder.trim());
 
     await showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setHubState) {
           final isGithub = _shareRoomMode == 'github';
-          final currentSiteName = siteFolderCtrl.text.trim().isEmpty
-              ? '현장명미지정'
-              : siteFolderCtrl.text.trim();
-          final hasGithubConfig =
-              _normalizeGithubRepo(_githubRepo).isNotEmpty &&
-                  _githubToken.trim().isNotEmpty &&
-                  siteFolderCtrl.text.trim().isNotEmpty;
-          final hasOneDriveLink = _oneDriveShareUrl.trim().isNotEmpty;
-          final isReady = isGithub ? hasGithubConfig : true;
-
-          Future<void> saveQuickSiteFolder(String val) async {
-            final clean = val.trim().replaceAll(RegExp(r'^/+|/+\$'), '');
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString(_prefsGithubFolderKey, clean);
-            setState(() => _githubFolder = clean);
-            setHubState(() {});
-          }
+          final currentSiteName = _githubFolder.trim().isEmpty
+              ? '○○현장'
+              : _githubFolder.trim();
 
           return AlertDialog(
             title: Row(
@@ -6828,7 +6815,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Expanded(
                   child: Text(
                     '☁️ 현장 공유방 (현장별 공문 · 자재송장)',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
                   ),
                 ),
               ],
@@ -6909,90 +6896,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 10),
-
-                  // ★ 현장명 (공유방 폴더 이름) 바로 입력/변경 칸
-                  if (isGithub) ...[
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFFBEB),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.amber.shade600, width: 1.2),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            '🏗️ 현장명 (공유방 폴더 이름)',
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF92400E),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            '동일한 GitHub 저장소·토큰 안에서 입력한 [현장명]으로 폴더가 자동 생성되며, 해당 현장 폴더 안에 공문·자재송장 HTML이 따로 합쳐집니다.',
-                            style: TextStyle(fontSize: 11, height: 1.35, color: Colors.black87),
-                          ),
-                          const SizedBox(height: 6),
-                          TextField(
-                            controller: siteFolderCtrl,
-                            onChanged: (v) => saveQuickSiteFolder(v),
-                            decoration: const InputDecoration(
-                              labelText: '현장명 (공유방 폴더 이름)',
-                              hintText: '예: 김해현장, 여의도현장, 부산에코델타 등',
-                              filled: true,
-                              fillColor: Colors.white,
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                  ],
-
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: isReady ? const Color(0xFFDCFCE7) : const Color(0xFFFEF3C7),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: isReady ? Colors.green : Colors.amber.shade700,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          isGithub
-                              ? (hasGithubConfig
-                                  ? '✅ 연결됨: ${_normalizeGithubRepo(_githubRepo)} / [$currentSiteName]'
-                                  : '⚠️ 설정에서 [GitHub 저장소 · 토큰 · 현장명]을 확인해 주세요.')
-                              : (hasOneDriveLink
-                                  ? '✅ [OneDrive 방식] 공유폴더 링크 연동됨'
-                                  : '✅ [OneDrive 방식] 원드라이브 앱/폴더에서 바로 불러와 합치고 저장합니다.'),
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                            color: isReady
-                                ? const Color(0xFF166534)
-                                : Colors.brown.shade900,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '• 내 이름(올린사람): ${_exporterUserName.trim().isEmpty ? "미입력 (설정에서 입력)" : _exporterUserName.trim()}\n'
-                          '• GitHub Actions 자동빌드 방지([skip ci]) 적용 완료 (올릴 때 앱 빌드 안 돎)',
-                          style: const TextStyle(fontSize: 11.2, height: 1.35),
-                        ),
-                      ],
-                    ),
-                  ),
                   const SizedBox(height: 12),
 
                   // 1) 공문 통합 HTML 카드 (수신 + 발신)
@@ -7009,12 +6912,14 @@ class _HomeScreenState extends State<HomeScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text(
-                              '📄 1. 공문 HTML (수신·발신 통합)',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13.5,
-                                color: Color(0xFF1E3A8A),
+                            const Expanded(
+                              child: Text(
+                                '📄 1. 공문 HTML (수신·발신 통합)',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: Color(0xFF1E3A8A),
+                                ),
                               ),
                             ),
                             Text(
@@ -7030,7 +6935,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(height: 4),
                         Text(
                           '저장 경로: [$currentSiteName/$_shareOfficialFileName]',
-                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.black87),
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                          ),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -7041,9 +6950,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                   backgroundColor: const Color(0xFF1E3A8A),
                                   padding: const EdgeInsets.symmetric(vertical: 8),
                                 ),
-                                onPressed: () async {
-                                  await saveQuickSiteFolder(siteFolderCtrl.text);
-                                  if (ctx.mounted) Navigator.pop(ctx);
+                                onPressed: () {
+                                  Navigator.pop(ctx);
                                   _syncCategoryHtmlWithShareRoom(
                                     isOfficialRoom: true,
                                     openViewerAfterSync: true,
@@ -7063,9 +6971,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                   padding: const EdgeInsets.symmetric(vertical: 8),
                                   side: const BorderSide(color: Color(0xFF1E3A8A)),
                                 ),
-                                onPressed: () async {
-                                  await saveQuickSiteFolder(siteFolderCtrl.text);
-                                  if (ctx.mounted) Navigator.pop(ctx);
+                                onPressed: () {
+                                  Navigator.pop(ctx);
                                   _viewCategoryHtmlInShareRoom(isOfficialRoom: true);
                                 },
                                 icon: const Icon(Icons.visibility, size: 16),
@@ -7096,12 +7003,14 @@ class _HomeScreenState extends State<HomeScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              '📦 2. 자재송장 HTML (현장 입고 누적)',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13.5,
-                                color: Colors.brown.shade900,
+                            Expanded(
+                              child: Text(
+                                '📦 2. 자재송장 HTML (현장 입고 누적)',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: Colors.brown.shade900,
+                                ),
                               ),
                             ),
                             Text(
@@ -7117,7 +7026,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(height: 4),
                         Text(
                           '저장 경로: [$currentSiteName/$_shareInvoiceFileName]',
-                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.black87),
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                          ),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -7128,9 +7041,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                   backgroundColor: Colors.brown.shade800,
                                   padding: const EdgeInsets.symmetric(vertical: 8),
                                 ),
-                                onPressed: () async {
-                                  await saveQuickSiteFolder(siteFolderCtrl.text);
-                                  if (ctx.mounted) Navigator.pop(ctx);
+                                onPressed: () {
+                                  Navigator.pop(ctx);
                                   _syncCategoryHtmlWithShareRoom(
                                     isOfficialRoom: false,
                                     openViewerAfterSync: true,
@@ -7151,9 +7063,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                   side: BorderSide(color: Colors.brown.shade800),
                                   foregroundColor: Colors.brown.shade900,
                                 ),
-                                onPressed: () async {
-                                  await saveQuickSiteFolder(siteFolderCtrl.text);
-                                  if (ctx.mounted) Navigator.pop(ctx);
+                                onPressed: () {
+                                  Navigator.pop(ctx);
                                   _viewCategoryHtmlInShareRoom(isOfficialRoom: false);
                                 },
                                 icon: const Icon(Icons.visibility, size: 16),
@@ -7173,19 +7084,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             actions: [
               TextButton.icon(
-                onPressed: () async {
-                  await saveQuickSiteFolder(siteFolderCtrl.text);
-                  if (ctx.mounted) Navigator.pop(ctx);
+                onPressed: () {
+                  Navigator.pop(ctx);
                   _openSettingsDialog();
                 },
                 icon: const Icon(Icons.settings, size: 16),
                 label: const Text('상세 설정'),
               ),
               TextButton(
-                onPressed: () async {
-                  await saveQuickSiteFolder(siteFolderCtrl.text);
-                  if (ctx.mounted) Navigator.pop(ctx);
-                },
+                onPressed: () => Navigator.pop(ctx),
                 child: const Text('닫기'),
               ),
             ],
@@ -7201,7 +7108,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final githubRepoCtrl = TextEditingController(text: _githubRepo);
     final githubTokenCtrl = TextEditingController(text: _githubToken);
     final githubFolderCtrl = TextEditingController(
-      text: _githubFolder.trim().isEmpty ? '현장공유방' : _githubFolder,
+      text: _githubFolder.trim(),
     );
     final oneDriveUrlCtrl = TextEditingController(text: _oneDriveShareUrl);
     String tempMode = _shareRoomMode;
@@ -7316,18 +7223,12 @@ class _HomeScreenState extends State<HomeScreen> {
                           const SizedBox(height: 8),
                           TextField(
                             controller: githubFolderCtrl,
-                            decoration: InputDecoration(
-                              labelText: '현장명 (공유방 폴더 이름)',
-                              hintText: '예: 김해현장, 여의도현장 등 (현장별 폴더 자동 생성)',
+                            decoration: const InputDecoration(
+                              hintText: '○○현장',
+                              hintStyle: TextStyle(color: Colors.black54),
                               filled: true,
                               fillColor: Colors.white,
-                              border: const OutlineInputBorder(),
-                              enabledBorder: OutlineInputBorder(
-                                borderSide: BorderSide(color: Colors.amber.shade700, width: 1.5),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderSide: BorderSide(color: Colors.amber.shade900, width: 2.0),
-                              ),
+                              border: OutlineInputBorder(),
                               isDense: true,
                             ),
                           ),
@@ -7458,9 +7359,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   final enteredName = userNameCtrl.text.trim();
                   final enteredRepo = _normalizeGithubRepo(githubRepoCtrl.text);
                   final enteredToken = githubTokenCtrl.text.trim();
-                  final enteredFolder = githubFolderCtrl.text.trim().isEmpty
-                      ? '현장공유방'
-                      : githubFolderCtrl.text.trim();
+                  final enteredFolder = githubFolderCtrl.text.trim();
                   final enteredOneDriveUrl = oneDriveUrlCtrl.text.trim();
 
                   bool verified = false;
@@ -10667,9 +10566,18 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅'),
+        titleSpacing: 12,
+        title: const Text(
+          '증빙서류',
+          style: TextStyle(
+            fontSize: 15.5,
+            fontWeight: FontWeight.bold,
+            letterSpacing: -0.3,
+          ),
+        ),
         actions: [
           IconButton(
+            visualDensity: VisualDensity.compact,
             tooltip: _geminiApiKey.trim().isEmpty
                 ? '현장 공유방 & AI 설정 (현재: 내장 OCR 모드)'
                 : (_geminiKeyVerified
@@ -10686,17 +10594,23 @@ class _HomeScreenState extends State<HomeScreen> {
                   : (_geminiKeyVerified
                       ? Colors.amberAccent
                       : Colors.redAccent),
+              size: 20,
             ),
             onPressed: _openSettingsDialog,
           ),
           TextButton.icon(
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
             onPressed: _isBusy ? null : _openFieldShareRoomDialog,
             icon: Icon(
               Icons.cloud_done_outlined,
               color: _isShareRoomConfigured
                   ? Colors.greenAccent
                   : Colors.lightBlueAccent,
-              size: 18,
+              size: 17,
             ),
             label: const Text(
               '현장 공유방',
@@ -10707,30 +10621,39 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
-          TextButton.icon(
+          TextButton(
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
             onPressed: _isBusy ? null : _openHtmlActionMenuDialog,
-            icon: const Icon(Icons.html, color: Colors.white, size: 18),
-            label: const Text(
+            child: const Text(
               'HTML',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 12,
+                fontSize: 12.5,
                 fontWeight: FontWeight.bold,
               ),
             ),
           ),
           TextButton.icon(
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.only(left: 6, right: 10),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
             onPressed: _isBusy ? null : _exportIndividualPdfs,
             icon: const Icon(
               Icons.picture_as_pdf,
               color: Colors.amberAccent,
-              size: 17,
+              size: 16,
             ),
             label: const Text(
               'PDF',
               style: TextStyle(
                 color: Colors.amberAccent,
-                fontSize: 11.5,
+                fontSize: 12,
                 fontWeight: FontWeight.bold,
               ),
             ),
