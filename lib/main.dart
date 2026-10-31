@@ -6144,8 +6144,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '• 올린사람 표시 이름: ${_exporterUserName.trim().isEmpty ? "미입력 (설정에서 이름을 입력해 주세요)" : _exporterUserName.trim()}
-'
+                      '• 올린사람 표시 이름: ${_exporterUserName.trim().isEmpty ? "미입력 (설정에서 이름을 입력해 주세요)" : _exporterUserName.trim()}\n'
                       '• 작성자별 개별 파일 없이 오직 [공문_통합.html]과 [자재송장_통합.html] 딱 2개 파일로만 자동 병합됩니다.',
                       style: const TextStyle(fontSize: 11.5, height: 1.35),
                     ),
@@ -6386,8 +6385,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 6),
                       const Text(
-                        '• 아래 [내 이름]을 입력해 두면 공문·자재송장 표 리스트의 [올린사람] 칸에 내 이름이 자동으로 들어갑니다.
-'
+                        '• 아래 [내 이름]을 입력해 두면 공문·자재송장 표 리스트의 [올린사람] 칸에 내 이름이 자동으로 들어갑니다.\n'
                         '• 현장 공유방에는 작성자별 개별 파일 없이 오직 [공문_통합.html]과 [자재송장_통합.html] 딱 2개 파일만 유지되며 계속 합쳐집니다.',
                         style: TextStyle(fontSize: 11.5, height: 1.4),
                       ),
@@ -8029,7 +8027,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const isReplied = Boolean(myKey && repliedKeys.has(myKey));
           const cls = item.id === selectedId ? 'active' : '';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\'' + sid + '\')">' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
             '<td style="width:64px;">' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
             '<td style="width:76px;">' + escapeHtml(f.docNumber || '-') + '</td>' +
             '<td style="width:68px;">' + escapeHtml(partyVal) + '</td>' +
@@ -8039,7 +8037,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td style="width:64px;">' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
             (!isOutTab ? '<td style="width:56px; color:#16a34a; font-weight:700; font-size:14px;">' + (isReplied ? '○' : '') + '</td>' : '') +
             '<td style="width:64px; color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
+            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
@@ -8062,7 +8060,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const cumVal = cumMap[item.id] || f.quantity || '-';
           const uploaderVal = f.uploaderName || '-';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\'' + sid + '\')">' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
             '<td style="width:64px;">' + escapeHtml(dotDate(f.arrivalDate)) + '</td>' +
             '<td style="width:72px;">' + escapeHtml(f.productName || '-') + '</td>' +
             '<td style="width:62px;">' + escapeHtml(f.specName || '-') + '</td>' +
@@ -8072,7 +8070,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td style="width:78px;">' + escapeHtml(f.supplierName || '-') + '</td>' +
             '<td style="width:122px;">' + escapeHtml(f.orderNumber || '-') + '</td>' +
             '<td style="width:64px; color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
+            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
