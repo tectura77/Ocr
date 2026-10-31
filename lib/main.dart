@@ -53,7 +53,6 @@ class DocCategory {
   static const String medical = '병원비';
 
   static const List<String> filterList = [
-    all,
     officialIn,
     officialOut,
     invoice,
@@ -6127,6 +6126,51 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// ★ 현장 공유방 열람창 안에서 항목을 수정(✏️)하거나 삭제(🗑️)했을 때
+  /// 공유방의 통합 HTML 파일(`공문_통합.html` / `자재송장_통합.html`)과 내 앱 데이터를 동시에 즉시 반영!
+  Future<void> _pushUpdatedShareRoomList({
+    required bool isOfficialRoom,
+    required List<DocRecord> updatedRoomRecords,
+  }) async {
+    final String targetFileName =
+        isOfficialRoom ? _shareOfficialFileName : _shareInvoiceFileName;
+    final String scopeTitle = isOfficialRoom ? '공문(수신·발신)' : '자재송장';
+    final repliedKeys = _computeRepliedDocNumKeys(_records);
+    final String initialTab =
+        isOfficialRoom ? DocCategory.officialIn : DocCategory.invoice;
+
+    final htmlContent = _buildLeftListRightPhotoHtmlDocument(
+      records: updatedRoomRecords,
+      scopeTitle: scopeTitle,
+      repliedKeys: repliedKeys,
+      forcedInitialTab: initialTab,
+    );
+
+    if (_shareRoomMode == 'github') {
+      final repo = _normalizeGithubRepo(_githubRepo);
+      final token = _githubToken.trim();
+      if (repo.isNotEmpty && token.isNotEmpty) {
+        final remoteData = await _fetchGithubFileContentAndSha(targetFileName);
+        final existingSha = remoteData?['sha'];
+        final uploader = _exporterUserName.trim().isEmpty
+            ? '담당자'
+            : _exporterUserName.trim();
+        await _putGithubFileContent(
+          fileName: targetFileName,
+          htmlContent: htmlContent,
+          commitMessage:
+              '[$uploader] $targetFileName 수정/삭제 반영 (총 ${updatedRoomRecords.length}건)',
+          existingSha: existingSha,
+        );
+      }
+    } else if (_oneDriveShareUrl.trim().isNotEmpty) {
+      await _putOneDriveFileViaLink(
+        fileName: targetFileName,
+        htmlContent: htmlContent,
+      );
+    }
+  }
+
   /// ★ 현장 공유방에 들어와서 `공문_통합.html`(수신/발신) 또는 `자재송장_통합.html`을
   /// 리스트(올린사람 포함) + 원본 사진 확대 뷰어로 바로 확인하는 전용 열람창!
   Future<void> _openShareRoomViewerDialog({
@@ -6135,9 +6179,13 @@ class _HomeScreenState extends State<HomeScreen> {
     required Set<String> repliedKeys,
     required bool isOfficialRoom,
   }) async {
-    String subTab = isOfficialRoom ? '전체' : '자재송장';
+    String subTab = isOfficialRoom
+        ? (records.any((r) => r.category == DocCategory.officialIn) ||
+                !records.any((r) => r.category == DocCategory.officialOut)
+            ? '공문(수신)'
+            : '공문(발신)')
+        : '자재송장';
     DocRecord? currentSel = records.isNotEmpty ? records.first : null;
-    final cumMap = _computeInvoiceCumulativeMap(records);
     double horizRatio = _detailHorizSplitRatio;
     double vertRatio = _listSplitRatio;
     String modalSortCol = 'date';
@@ -6147,6 +6195,9 @@ class _HomeScreenState extends State<HomeScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
+          final cumMap = _computeInvoiceCumulativeMap(records);
+          final currentRepliedKeys = _computeRepliedDocNumKeys(_records);
+
           void toggleModalSort(String colKey) {
             setModalState(() {
               if (modalSortCol == colKey) {
@@ -6156,6 +6207,109 @@ class _HomeScreenState extends State<HomeScreen> {
                 modalSortAsc = colKey != 'date';
               }
             });
+          }
+
+          Future<void> editShareRoomItem(DocRecord rec) async {
+            await _editLocalRecord(rec);
+            // _editLocalRecord가 _records 내 항목을 업데이트했으므로 공유방 리스트에도 동일하게 반영
+            final updatedIdx = _records.indexWhere((r) => r.id == rec.id);
+            if (updatedIdx != -1) {
+              final updatedRec = _records[updatedIdx];
+              final roomIdx = records.indexWhere((r) => r.id == rec.id);
+              if (roomIdx != -1) {
+                setModalState(() {
+                  records[roomIdx] = updatedRec;
+                  if (currentSel?.id == rec.id) currentSel = updatedRec;
+                });
+                await _pushUpdatedShareRoomList(
+                  isOfficialRoom: isOfficialRoom,
+                  updatedRoomRecords: records,
+                );
+              }
+            }
+          }
+
+          Future<void> deleteShareRoomItem(DocRecord rec) async {
+            final confirm = await showDialog<bool>(
+              context: ctx,
+              builder: (dCtx) => AlertDialog(
+                title: const Text('공유방 및 앱에서 항목 삭제'),
+                content: Text(
+                  '[${rec.displayTitle}] 항목을 삭제하시겠습니까?\n확인 시 내 앱과 현장 공유방 통합 파일에서 함께 삭제됩니다.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dCtx, false),
+                    child: const Text('취소'),
+                  ),
+                  FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                    onPressed: () => Navigator.pop(dCtx, true),
+                    child: const Text('삭제'),
+                  ),
+                ],
+              ),
+            );
+            if (confirm != true) return;
+
+            setState(() {
+              _records.removeWhere(
+                (r) => r.id == rec.id || r.contentSignature == rec.contentSignature,
+              );
+            });
+            await _saveLocalRecords();
+
+            setModalState(() {
+              records.removeWhere((r) => r.id == rec.id);
+              if (currentSel?.id == rec.id) {
+                currentSel = records.isNotEmpty ? records.first : null;
+              }
+            });
+
+            await _pushUpdatedShareRoomList(
+              isOfficialRoom: isOfficialRoom,
+              updatedRoomRecords: records,
+            );
+            _showSnack('항목이 삭제되어 공유방에 반영되었습니다.');
+          }
+
+          Widget buildModalRowActionButtons(DocRecord rec) {
+            return Container(
+              width: 68,
+              decoration: const BoxDecoration(
+                border: Border(
+                  right: BorderSide(color: Color(0xFFCBD5E1), width: 1),
+                ),
+              ),
+              alignment: Alignment.center,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  InkWell(
+                    onTap: () => editShareRoomItem(rec),
+                    child: const Padding(
+                      padding: EdgeInsets.all(5),
+                      child: Icon(
+                        Icons.edit_outlined,
+                        size: 17,
+                        color: Color(0xFF1E3A8A),
+                      ),
+                    ),
+                  ),
+                  InkWell(
+                    onTap: () => deleteShareRoomItem(rec),
+                    child: const Padding(
+                      padding: EdgeInsets.all(5),
+                      child: Icon(
+                        Icons.delete_outline,
+                        size: 17,
+                        color: Colors.redAccent,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
           }
 
           final baseFiltered = records.where((r) {
@@ -6169,7 +6323,7 @@ class _HomeScreenState extends State<HomeScreen> {
             baseFiltered,
             sortCol: modalSortCol,
             sortAsc: modalSortAsc,
-            repliedKeys: repliedKeys,
+            repliedKeys: currentRepliedKeys,
           );
 
           if (currentSel == null || !filtered.any((r) => r.id == currentSel!.id)) {
@@ -6215,7 +6369,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   if (!isOutTab)
                                     _buildFixedHeaderCell('회신완료', width: 56, sortKey: 'replied', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('replied')),
                                   _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('uploader')),
-                                  _buildFixedHeaderCell('구분', width: 68),
+                                  _buildFixedHeaderCell('수정/삭제', width: 68),
                                 ]
                               : [
                                   _buildFixedHeaderCell('날짜', width: 64, sortKey: 'date', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('date')),
@@ -6227,7 +6381,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   _buildFixedHeaderCell('공급자', width: 78),
                                   _buildFixedHeaderCell('주문송장번호', width: 122),
                                   _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('uploader')),
-                                  _buildFixedHeaderCell('선택', width: 68),
+                                  _buildFixedHeaderCell('수정/삭제', width: 68),
                                 ],
                         ),
                       ),
@@ -6242,13 +6396,15 @@ class _HomeScreenState extends State<HomeScreen> {
                           final uploader = _resolveUploaderName(rec);
                           if (isOfficialRoom) {
                             final isOut = rec.category == DocCategory.officialOut;
-                            final isReplied = _isIncomingDocReplied(rec, repliedKeys);
+                            final isReplied =
+                                _isIncomingDocReplied(rec, currentRepliedKeys);
                             final replyNumStr =
                                 f['replyDocNumber']?.trim().isNotEmpty == true
                                     ? f['replyDocNumber']!
                                     : '-';
                             return InkWell(
                               onTap: () => setModalState(() => currentSel = rec),
+                              onLongPress: () => editShareRoomItem(rec),
                               child: Container(
                                 decoration: BoxDecoration(
                                   color: isSel ? const Color(0xFFDBEAFE) : Colors.white,
@@ -6287,13 +6443,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                         textColor: const Color(0xFF1E3A8A),
                                         forceBold: true,
                                       ),
-                                      _buildFixedDataCell(
-                                        isOut ? '발신' : '수신',
-                                        width: 68,
-                                        isSelected: isSel,
-                                        textColor: isOut ? const Color(0xFF1E3A8A) : const Color(0xFF166534),
-                                        forceBold: true,
-                                      ),
+                                      buildModalRowActionButtons(rec),
                                     ],
                                   ),
                                 ),
@@ -6303,6 +6453,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             final cumStr = cumMap[rec.id] ?? f['quantity'] ?? '-';
                             return InkWell(
                               onTap: () => setModalState(() => currentSel = rec),
+                              onLongPress: () => editShareRoomItem(rec),
                               child: Container(
                                 decoration: BoxDecoration(
                                   color: isSel ? const Color(0xFFDBEAFE) : Colors.white,
@@ -6322,7 +6473,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       _buildFixedDataCell(f['supplierName'] ?? '-', width: 78, isSelected: isSel),
                                       _buildFixedDataCell(f['orderNumber'] ?? '-', width: 122, isSelected: isSel),
                                       _buildFixedDataCell(uploader, width: 64, isSelected: isSel, textColor: const Color(0xFF1E3A8A), forceBold: true),
-                                      _buildFixedDataCell(isSel ? '선택됨' : '보기', width: 68, isSelected: isSel),
+                                      buildModalRowActionButtons(rec),
                                     ],
                                   ),
                                 ),
@@ -6377,7 +6528,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       final htmlStr = _buildLeftListRightPhotoHtmlDocument(
                         records: records,
                         scopeTitle: scopeTitle,
-                        repliedKeys: repliedKeys,
+                        repliedKeys: currentRepliedKeys,
                         forcedInitialTab: isOfficialRoom
                             ? DocCategory.officialIn
                             : DocCategory.invoice,
@@ -6405,7 +6556,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       color: const Color(0xFFEFF6FF),
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       child: Row(
-                        children: ['전체', '공문(수신)', '공문(발신)'].map((t) {
+                        children: ['공문(수신)', '공문(발신)'].map((t) {
                           final sel = subTab == t;
                           final cnt = records.where((r) {
                             if (t == '공문(수신)') return r.category == DocCategory.officialIn;
@@ -6424,7 +6575,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         }).toList(),
                       ),
                     ),
-                  // ★ 가로로 눕혔을 때는 [좌측 리스트 + 우측 사진], 세로일 때는 [위쪽 리스트 + 아래쪽 사진]
                   Expanded(
                     child: LayoutBuilder(
                       builder: (lCtx, constraints) {
@@ -7606,19 +7756,26 @@ class _HomeScreenState extends State<HomeScreen> {
         records.every((r) => r.category == DocCategory.medical);
 
     final List<String> allowedTabs = isAllOfficial
-        ? ['전체', DocCategory.officialIn, DocCategory.officialOut]
+        ? [DocCategory.officialIn, DocCategory.officialOut]
         : isAllInvoice
             ? [DocCategory.invoice]
             : isAllTravel
                 ? [DocCategory.travel]
                 : isAllMedical
                     ? [DocCategory.medical]
-                    : ['전체', DocCategory.officialIn, DocCategory.officialOut, DocCategory.invoice, DocCategory.travel, DocCategory.medical];
+                    : [DocCategory.officialIn, DocCategory.officialOut, DocCategory.invoice, DocCategory.travel, DocCategory.medical];
     final String allowedTabsJson = jsonEncode(allowedTabs);
 
     String majorCat = forcedInitialTab ?? _selectedCategoryFilter;
     if (!allowedTabs.contains(majorCat)) {
       majorCat = allowedTabs.first;
+    }
+    if (records.isNotEmpty && !records.any((r) => r.category == majorCat)) {
+      final firstWithRec = allowedTabs.firstWhere(
+        (t) => records.any((r) => r.category == t),
+        orElse: () => allowedTabs.first,
+      );
+      majorCat = firstWithRec;
     }
 
     final firstRecord = records.isNotEmpty ? records.first : null;
@@ -7936,6 +8093,7 @@ class _HomeScreenState extends State<HomeScreen> {
       text-align: center;
     }
     table.app-fixed-table thead th {
+      position: relative;
       background: #e2e8f0;
       color: #1e293b;
       font-size: 11px;
@@ -8118,6 +8276,9 @@ class _HomeScreenState extends State<HomeScreen> {
     <div class="title-wrap">
       <span>증빙서류 스냅 - $scopeTitle</span>
       <span style="font-size:12px; font-weight:500; color:#fde047;">(<span id="count-label">${records.length}</span>건)</span>
+    </div>
+    <div class="bar-actions">
+      <button class="app-btn save" onclick="downloadMergedHtml()" title="수정한 내용이나 삭제한 내역이 반영된 HTML 파일 저장">💾 수정본 HTML 저장</button>
     </div>
   </header>
 
@@ -8496,7 +8657,7 @@ class _HomeScreenState extends State<HomeScreen> {
       else if (item.category === '출장비') raw = f.date || '';
       else if (item.category === '병원비') raw = f.issueDate || '';
       const d = dotDate(raw);
-      if (/^\d{4}\.\d{2}\.\d{2}\$/.test(d)) return d;
+      if (/^\\d{4}\\.\\d{2}\\.\\d{2}\$/.test(d)) return d;
       return dotDate((item.createdAt || '').split(' ')[0]);
     }
 
@@ -8773,7 +8934,7 @@ class _HomeScreenState extends State<HomeScreen> {
       const isActive = isSortable && (sortColumn === sortKey);
       const arrow = isActive ? (sortAscending ? ' ▲' : ' ▼') : (isSortable ? ' ↕' : '');
       const cls = (isSortable ? 'sortable-th' : '') + (isActive ? ' sorted-active' : '');
-      const clickAttr = isSortable ? (' onclick="toggleSort(\'' + sortKey + '\')"') : '';
+      const clickAttr = isSortable ? (' onclick="toggleSort(\\'' + sortKey + '\\')"') : '';
       return '<th class="' + cls + '" data-col-idx="' + colIdx + '" style="width:' + w + 'px;"' + clickAttr + '>' +
         escapeHtml(label) + arrow +
         '<div class="col-resizer" onmousedown="startColResize(event, ' + colIdx + ')" onclick="event.stopPropagation()"></div>' +
@@ -8903,7 +9064,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const isReplied = Boolean(myKey && repliedKeys.has(myKey));
           const cls = item.id === selectedId ? 'active' : '';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
             '<td>' + escapeHtml(f.docNumber || '-') + '</td>' +
             '<td>' + escapeHtml(partyVal) + '</td>' +
@@ -8913,7 +9074,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
             (!isOutTab ? '<td style="color:#16a34a; font-weight:700; font-size:14px;">' + (isReplied ? '○' : '') + '</td>' : '') +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
@@ -8938,7 +9099,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const cumVal = cumMap[item.id] || f.quantity || '-';
           const uploaderVal = f.uploaderName || '-';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(dotDate(f.arrivalDate)) + '</td>' +
             '<td>' + escapeHtml(f.productName || '-') + '</td>' +
             '<td>' + escapeHtml(f.specName || '-') + '</td>' +
@@ -8948,7 +9109,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(f.supplierName || '-') + '</td>' +
             '<td>' + escapeHtml(f.orderNumber || '-') + '</td>' +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
@@ -8975,12 +9136,12 @@ class _HomeScreenState extends State<HomeScreen> {
             : (f.merchantName || '-');
           const amt = formatNumber(getNumericAmount(item)) + '원';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(sub) + '<br/>(' + escapeHtml(dateStr) + ')</td>' +
             '<td style="color:#451a03; font-weight:700;">' + escapeHtml(div) + '</td>' +
             '<td>' + escapeHtml(desc) + '</td>' +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
@@ -9002,13 +9163,13 @@ class _HomeScreenState extends State<HomeScreen> {
           const dateStr = dotDate(f.issueDate || (item.createdAt || '').split(' ')[0]);
           const amt = formatNumber(getNumericAmount(item)) + '원';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(sub) + '</td>' +
             '<td>' + escapeHtml(dateStr) + '</td>' +
             '<td>' + escapeHtml(f.clinicName || '-') + '</td>' +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
             '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
@@ -9031,12 +9192,12 @@ class _HomeScreenState extends State<HomeScreen> {
           else if (item.category === '출장비') dateStr = dotDate(f.date);
           else if (item.category === '병원비') dateStr = dotDate(f.issueDate);
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(item.category) + '</td>' +
             '<td>' + escapeHtml(dateStr) + '</td>' +
             '<td>' + escapeHtml(getDisplayTitle(item)) + '</td>' +
             '<td>' + escapeHtml(getDisplaySubtitle(item)) + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
