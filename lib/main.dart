@@ -32,7 +32,7 @@ class DocSnapArchiveApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '증빙서류 스냅 v39',
+      title: '증빙서류 스냅',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E3A8A)),
@@ -463,7 +463,7 @@ class _PerspectiveCropDialogState extends State<PerspectiveCropDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
-        title: const Text('가로/세로 정비율 스캔 (v39)'),
+        title: const Text('가로/세로 정비율 스캔'),
         actions: [
           IconButton(
             tooltip: '90도 회전 (가로 문서 방향 맞추기)',
@@ -1004,9 +1004,11 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _prefsSplitRatioKey = 'list_photo_split_ratio_v1';
   static const String _prefsHorizSplitRatioKey =
       'detail_left_right_split_ratio_v1';
+  static const String _prefsShareRoomModeKey = 'share_room_mode_v41'; // 'github' | 'onedrive'
   static const String _prefsGithubRepoKey = 'github_share_repo_v40';
   static const String _prefsGithubTokenKey = 'github_share_token_v40';
   static const String _prefsGithubFolderKey = 'github_share_folder_v40';
+  static const String _prefsOneDriveUrlKey = 'onedrive_share_folder_url_v41';
   static const String _prefsPeriodAnchorDayKey = 'period_anchor_day_v30';
   static const String _prefsUserNameKey = 'exporter_user_name_v35';
   static const String _prefsUniqueFileNameModeKey = 'unique_filename_mode_v35';
@@ -1036,6 +1038,10 @@ class _HomeScreenState extends State<HomeScreen> {
   DocRecord? _selectedRecord;
   bool _isBusy = false;
 
+  // ★ 표 헤더 클릭 정렬 상태 (기본값: 날짜 최신순 = 'date', ascending: false)
+  String _sortColumn = 'date';
+  bool _sortAscending = false;
+
   double _listSplitRatio = 0.44;
   double _detailHorizSplitRatio = 0.42;
 
@@ -1050,9 +1056,11 @@ class _HomeScreenState extends State<HomeScreen> {
   String _geminiApiKey = '';
   bool _geminiKeyVerified = false;
   String _lastGeminiStatusMsg = '';
+  String _shareRoomMode = 'github'; // 'github'(GitHub 방식) 또는 'onedrive'(OneDrive 방식)
   String _githubRepo = ''; // 예: 아이디/저장소명
   String _githubToken = ''; // GitHub Personal Access Token (ghp_... 또는 github_pat_...)
   String _githubFolder = '현장공유방'; // 저장소 내 공유방 폴더명
+  String _oneDriveShareUrl = ''; // OneDrive 공유폴더 링크 (예: https://1drv.ms/f/...)
   String _exporterUserName = '';
   bool _useConflictFreeFileName = true;
 
@@ -1260,9 +1268,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _geminiKeyVerified = prefs.getBool('gemini_key_verified_v39') ?? false;
       _periodAnchorStartDay =
           (prefs.getInt(_prefsPeriodAnchorDayKey) ?? 1).clamp(1, 28);
+      _shareRoomMode = prefs.getString(_prefsShareRoomModeKey) ?? 'github';
       _githubRepo = prefs.getString(_prefsGithubRepoKey) ?? '';
       _githubToken = prefs.getString(_prefsGithubTokenKey) ?? '';
       _githubFolder = prefs.getString(_prefsGithubFolderKey) ?? '현장공유방';
+      _oneDriveShareUrl = prefs.getString(_prefsOneDriveUrlKey) ?? '';
       _exporterUserName = prefs.getString(_prefsUserNameKey) ?? '';
       _useConflictFreeFileName =
           prefs.getBool(_prefsUniqueFileNameModeKey) ?? true;
@@ -1942,23 +1952,95 @@ class _HomeScreenState extends State<HomeScreen> {
         .toList();
   }
 
+  String _extractSortableDateKey(DocRecord r) {
+    final f = r.fields;
+    String raw = '';
+    if (DocCategory.isOfficial(r.category)) {
+      raw = f['sentDate'] ?? '';
+    } else if (r.category == DocCategory.invoice) {
+      raw = f['arrivalDate'] ?? '';
+    } else if (r.category == DocCategory.travel) {
+      raw = f['date'] ?? '';
+    } else if (r.category == DocCategory.medical) {
+      raw = f['issueDate'] ?? '';
+    }
+    final formatted = DocRecord.formatDotDate(raw);
+    if (RegExp(r'^\d{4}\.\d{2}\.\d{2}\$').hasMatch(formatted)) {
+      return formatted;
+    }
+    return DocRecord.formatDotDate(r.createdAt.split(' ').first);
+  }
+
+  void _toggleSortColumn(String colKey) {
+    setState(() {
+      if (_sortColumn == colKey) {
+        _sortAscending = !_sortAscending;
+      } else {
+        _sortColumn = colKey;
+        // 날짜는 처음 클릭 시 최신순(내림차순), 공문번호·올린사람·회신완료는 오름차순(또는 완료 우선)으로 시작
+        _sortAscending = colKey != 'date';
+      }
+    });
+  }
+
+  List<DocRecord> _sortRecordsList(
+    List<DocRecord> source, {
+    required String sortCol,
+    required bool sortAsc,
+    required Set<String> repliedKeys,
+  }) {
+    final list = List<DocRecord>.from(source);
+    list.sort((a, b) {
+      int cmp = 0;
+      if (sortCol == 'docNumber') {
+        final da = (a.fields['docNumber'] ?? '').trim();
+        final db = (b.fields['docNumber'] ?? '').trim();
+        cmp = da.compareTo(db);
+      } else if (sortCol == 'replied') {
+        final ra = _isIncomingDocReplied(a, repliedKeys) ? 0 : 1;
+        final rb = _isIncomingDocReplied(b, repliedKeys) ? 0 : 1;
+        cmp = ra.compareTo(rb);
+      } else if (sortCol == 'uploader') {
+        final ua = _resolveUploaderName(a);
+        final ub = _resolveUploaderName(b);
+        cmp = ua.compareTo(ub);
+      } else {
+        // 'date'
+        final ka = _extractSortableDateKey(a);
+        final kb = _extractSortableDateKey(b);
+        cmp = ka.compareTo(kb);
+      }
+      if (cmp == 0) {
+        cmp = a.createdAt.compareTo(b.createdAt);
+      }
+      return sortAsc ? cmp : -cmp;
+    });
+    return list;
+  }
+
   List<DocRecord> get _filteredRecords {
     final subFiltered = _subCategoryFilteredRecords;
+    List<DocRecord> base = subFiltered;
     if (_selectedCategoryFilter == DocCategory.travel &&
         _selectedTravelDivisionFilter != '전체') {
-      return subFiltered
+      base = subFiltered
           .where((r) => r.travelDivision == _selectedTravelDivisionFilter)
           .toList();
-    }
-    if (_selectedCategoryFilter == DocCategory.invoice &&
+    } else if (_selectedCategoryFilter == DocCategory.invoice &&
         _selectedInvoiceProductFilter != '전체') {
-      return subFiltered
+      base = subFiltered
           .where((r) =>
               (r.fields['productName'] ?? '').trim() ==
               _selectedInvoiceProductFilter)
           .toList();
     }
-    return subFiltered;
+    final repliedKeys = _computeRepliedDocNumKeys(_records);
+    return _sortRecordsList(
+      base,
+      sortCol: _sortColumn,
+      sortAsc: _sortAscending,
+      repliedKeys: repliedKeys,
+    );
   }
 
   Map<String, String> _computeInvoiceCumulativeMap(List<DocRecord> records) {
@@ -4163,7 +4245,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('증빙서류 입력 (v39)', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                        const Text('증빙서류 입력', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
                         if (isAiAnalyzing)
                           const Row(
                             mainAxisSize: MainAxisSize.min,
@@ -5492,13 +5574,21 @@ class _HomeScreenState extends State<HomeScreen> {
   static const String _shareOfficialFileName = '공문_통합.html';
   static const String _shareInvoiceFileName = '자재송장_통합.html';
 
+  bool get _isShareRoomConfigured {
+    if (_shareRoomMode == 'onedrive') {
+      return true; // 원드라이브 방식은 링크 자동연동 또는 원드라이브 앱 파일선택기 둘 다 즉시 사용 가능
+    }
+    return _normalizeGithubRepo(_githubRepo).isNotEmpty &&
+        _githubToken.trim().isNotEmpty;
+  }
+
   String _normalizeGithubRepo(String raw) {
     String clean = raw.trim();
     clean = clean.replaceFirst(RegExp(r'^https?://github\.com/'), '');
     if (clean.endsWith('.git')) {
       clean = clean.substring(0, clean.length - 4);
     }
-    clean = clean.replaceAll(RegExp(r'^/+|/+$'), '');
+    clean = clean.replaceAll(RegExp(r'^/+|/+\$'), '');
     return clean;
   }
 
@@ -5524,6 +5614,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // 방식 A: GitHub 저장소 API 연동 (현장 주력 방식)
+  // ---------------------------------------------------------------------------
   Future<Map<String, String>?> _fetchGithubFileContentAndSha(
     String fileName,
   ) async {
@@ -5531,7 +5624,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final token = _githubToken.trim();
     if (repo.isEmpty || token.isEmpty) return null;
 
-    final folder = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+$'), '');
+    final folder = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+\$'), '');
     final relPath = folder.isEmpty ? fileName : '$folder/$fileName';
     final encodedPath = relPath.split('/').map(Uri.encodeComponent).join('/');
     final uri = Uri.parse(
@@ -5570,7 +5663,6 @@ class _HomeScreenState extends State<HomeScreen> {
           return {'sha': sha, 'html': utf8.decode(dlResp.bodyBytes)};
         }
       }
-      // 1MB 이상 대용량 HTML은 Git Blobs API로 원문 조회
       if (sha.isNotEmpty) {
         final blobUri = Uri.parse(
           'https://api.github.com/repos/$repo/git/blobs/$sha',
@@ -5606,7 +5698,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final token = _githubToken.trim();
     if (repo.isEmpty || token.isEmpty) return false;
 
-    final folder = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+$'), '');
+    final folder = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+\$'), '');
     final relPath = folder.isEmpty ? fileName : '$folder/$fileName';
     final encodedPath = relPath.split('/').map(Uri.encodeComponent).join('/');
     final uri = Uri.parse(
@@ -5635,23 +5727,146 @@ class _HomeScreenState extends State<HomeScreen> {
     return resp.statusCode == 200 || resp.statusCode == 201;
   }
 
+  // ---------------------------------------------------------------------------
+  // 방식 B: OneDrive 공유방 연동 (일반 사용자 / 플레이스토어 배포용 쉬운 방식)
+  // - 1) 원드라이브 공유폴더 링크(1drv.ms 등)가 등록되어 있으면 OneDrive API로 즉시 읽기/덮어쓰기 시도
+  // - 2) 링크가 없거나 스마트폰 원드라이브 앱을 직접 쓰는 경우, 파일 선택기 & 공유창으로 원드라이브 앱과 직결!
+  // ---------------------------------------------------------------------------
+  String _encodeOneDriveSharingToken(String rawUrl) {
+    final b64 = base64UrlEncode(utf8.encode(rawUrl.trim())).replaceAll('=', '');
+    return 'u!$b64';
+  }
+
+  Future<String?> _fetchOneDriveFileViaLink(String fileName) async {
+    final shareUrl = _oneDriveShareUrl.trim();
+    if (shareUrl.isEmpty) return null;
+    try {
+      final token = _encodeOneDriveSharingToken(shareUrl);
+      final encodedName = Uri.encodeComponent(fileName);
+      final uri = Uri.parse(
+        'https://api.onedrive.com/v1.0/shares/$token/root:/$encodedName:/content',
+      );
+      final resp = await http.get(uri).timeout(const Duration(seconds: 20));
+      if (resp.statusCode == 200) {
+        return utf8.decode(resp.bodyBytes);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<bool> _putOneDriveFileViaLink({
+    required String fileName,
+    required String htmlContent,
+  }) async {
+    final shareUrl = _oneDriveShareUrl.trim();
+    if (shareUrl.isEmpty) return false;
+    try {
+      final token = _encodeOneDriveSharingToken(shareUrl);
+      final encodedName = Uri.encodeComponent(fileName);
+      final uri = Uri.parse(
+        'https://api.onedrive.com/v1.0/shares/$token/root:/$encodedName:/content',
+      );
+      final resp = await http.put(
+        uri,
+        headers: {'Content-Type': 'text/html; charset=utf-8'},
+        body: utf8.encode(htmlContent),
+      ).timeout(const Duration(seconds: 30));
+      return resp.statusCode == 200 || resp.statusCode == 201;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String?> _pickHtmlFromOneDriveOrDevice({
+    required String targetFileName,
+    required bool isForMerge,
+  }) async {
+    if (!mounted) return null;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.cloud_queue, color: Color(0xFF0078D4)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                isForMerge
+                    ? 'OneDrive에서 [$targetFileName] 불러오기'
+                    : 'OneDrive에서 [$targetFileName] 열기',
+                style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          isForMerge
+              ? '1. [OneDrive에서 파일 선택]을 눌러 원드라이브 공유폴더의 기존 [$targetFileName]을 선택하면 내 앱 데이터와 자동으로 합쳐집니다.\n\n'
+                '2. 만약 공유방에 처음 올리는 것이라면 [기존 파일 없이 새로 생성]을 눌러 주세요!'
+              : '파일 선택 창이 열리면 좌측 메뉴(☰)에서 [OneDrive] 폴더의 [$targetFileName] 파일을 선택해 주세요.',
+          style: const TextStyle(fontSize: 13, height: 1.45),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('취소'),
+          ),
+          if (isForMerge)
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('기존 파일 없이 새로 생성'),
+            ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF0078D4),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.folder_open, size: 16),
+            label: const Text('OneDrive에서 파일 선택'),
+          ),
+        ],
+      ),
+    );
+
+    if (proceed == null) return '__CANCELLED__';
+    if (proceed == false) return '';
+
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['html', 'htm'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return '__CANCELLED__';
+    final pf = result.files.first;
+    if (pf.bytes != null) {
+      return utf8.decode(pf.bytes!, allowMalformed: true);
+    }
+    if (pf.path != null) {
+      return await File(pf.path!).readAsString();
+    }
+    return '__CANCELLED__';
+  }
+
   /// ★ 현장 공유방의 특정 파일(`공문_통합.html` 또는 `자재송장_통합.html`)에
-  /// 내 앱의 해당 카테고리 데이터를 올려서 자동 병합하고, 동시에 내 앱에도 상대방이 올린 신규 건을 받아옵니다!
+  /// 선택된 방식(GitHub 방식 또는 OneDrive 방식)으로 내 데이터를 올려 합치고, 상대방 신규 건도 내 앱에 받아옵니다!
   Future<void> _syncCategoryHtmlWithShareRoom({
     required bool isOfficialRoom,
     bool openViewerAfterSync = false,
   }) async {
-    final repo = _normalizeGithubRepo(_githubRepo);
-    final token = _githubToken.trim();
-    if (repo.isEmpty || token.isEmpty) {
-      _showSnack('먼저 설정(⚙️)에서 [현장 공유방 GitHub 저장소 & 토큰]을 등록해 주세요.');
-      await _openSettingsDialog();
-      return;
-    }
     if (_exporterUserName.trim().isEmpty) {
       _showSnack('누가 올렸는지 표시될 수 있도록 설정(⚙️)에서 [내 이름 / 담당자명]을 먼저 입력해 주세요!');
       await _openSettingsDialog();
       if (_exporterUserName.trim().isEmpty) return;
+    }
+
+    if (_shareRoomMode == 'github') {
+      final repo = _normalizeGithubRepo(_githubRepo);
+      final token = _githubToken.trim();
+      if (repo.isEmpty || token.isEmpty) {
+        _showSnack('먼저 설정(⚙️)에서 [GitHub 저장소 & 토큰]을 등록하거나 [OneDrive 방식]으로 전환해 주세요.');
+        await _openSettingsDialog();
+        return;
+      }
     }
 
     final String targetFileName =
@@ -5660,12 +5875,33 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() => _isBusy = true);
     try {
-      // 1) 서버에 이미 올라와 있는 기존 통합 HTML 가져오기
-      final remoteData = await _fetchGithubFileContentAndSha(targetFileName);
-      final String? existingSha = remoteData?['sha'];
-      final List<DocRecord> remoteRecords = remoteData != null
-          ? _parseRecordsFromHtml(remoteData['html'] ?? '')
-          : <DocRecord>[];
+      String? existingSha;
+      List<DocRecord> remoteRecords = <DocRecord>[];
+
+      // 1) 기존 통합 HTML 가져오기 (GitHub 방식 vs OneDrive 방식)
+      if (_shareRoomMode == 'github') {
+        final remoteData = await _fetchGithubFileContentAndSha(targetFileName);
+        existingSha = remoteData?['sha'];
+        if (remoteData != null) {
+          remoteRecords = _parseRecordsFromHtml(remoteData['html'] ?? '');
+        }
+      } else {
+        // OneDrive 방식: 먼저 공유폴더 링크가 있으면 자동 조회 시도, 안 되면 OneDrive 파일 선택기 안내
+        String? odHtml = await _fetchOneDriveFileViaLink(targetFileName);
+        if (odHtml == null) {
+          setState(() => _isBusy = false);
+          final picked = await _pickHtmlFromOneDriveOrDevice(
+            targetFileName: targetFileName,
+            isForMerge: true,
+          );
+          if (picked == '__CANCELLED__' || picked == null) return;
+          setState(() => _isBusy = true);
+          odHtml = picked;
+        }
+        if (odHtml.isNotEmpty) {
+          remoteRecords = _parseRecordsFromHtml(odHtml);
+        }
+      }
 
       // 2) 내 로컬 기록 중 해당 카테고리(공문 수신+발신 또는 자재송장) 추출 + 올린사람 이름 보장
       final List<DocRecord> myTargetRecords = _records
@@ -5675,7 +5911,7 @@ class _HomeScreenState extends State<HomeScreen> {
           .map(_ensureUploaderField)
           .toList();
 
-      // 3) 서버 기록 + 내 기록 중복 없이 병합
+      // 3) 공유방 기록 + 내 기록 중복 없이 병합
       final Map<String, DocRecord> mergedBySig = {};
       for (final r in remoteRecords) {
         if (isOfficialRoom
@@ -5710,15 +5946,15 @@ class _HomeScreenState extends State<HomeScreen> {
           allAppMap[r.contentSignature] = r;
           downloadedNewCount++;
         } else {
-          // 기존 항목에 올린사람이 비어있으면 보완
-          allAppMap[r.contentSignature] = _ensureUploaderField(allAppMap[r.contentSignature]!);
+          allAppMap[r.contentSignature] =
+              _ensureUploaderField(allAppMap[r.contentSignature]!);
         }
       }
 
       final updatedAllRecords = allAppMap.values.toList()
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-      // 5) 최신 통합 HTML 생성 후 현장 공유방(GitHub)에 업로드
+      // 5) 최신 통합 HTML 생성
       final repliedKeys = _computeRepliedDocNumKeys(updatedAllRecords);
       final String initialTab = isOfficialRoom
           ? DocCategory.officialIn
@@ -5729,14 +5965,6 @@ class _HomeScreenState extends State<HomeScreen> {
         scopeTitle: scopeTitle,
         repliedKeys: repliedKeys,
         forcedInitialTab: initialTab,
-      );
-
-      final uploader = _exporterUserName.trim();
-      final ok = await _putGithubFileContent(
-        fileName: targetFileName,
-        htmlContent: htmlContent,
-        commitMessage: '[$uploader] $targetFileName 업데이트 (총 ${mergedRoomList.length}건)',
-        existingSha: existingSha,
       );
 
       setState(() {
@@ -5752,20 +5980,61 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       await _saveLocalRecords();
 
-      if (ok) {
-        _showSnack(
-          '✅ [$targetFileName] 공유방 합치기 완료! (올림 +$uploadedNewCount건 / 받음 +$downloadedNewCount건 · 총 ${mergedRoomList.length}건)',
+      // 6) 선택된 방식(GitHub vs OneDrive)으로 업로드/저장 마무리
+      if (_shareRoomMode == 'github') {
+        final uploader = _exporterUserName.trim();
+        final ok = await _putGithubFileContent(
+          fileName: targetFileName,
+          htmlContent: htmlContent,
+          commitMessage:
+              '[$uploader] $targetFileName 업데이트 (총 ${mergedRoomList.length}건)',
+          existingSha: existingSha,
         );
+        if (ok) {
+          _showSnack(
+            '✅ [$targetFileName] GitHub 공유방 합치기 완료! (올림 +$uploadedNewCount건 / 받음 +$downloadedNewCount건 · 총 ${mergedRoomList.length}건)',
+          );
+          if (openViewerAfterSync && mounted) {
+            await _openShareRoomViewerDialog(
+              title: '☁️ 현장 공유방 - $targetFileName (${mergedRoomList.length}건)',
+              records: mergedRoomList,
+              repliedKeys: repliedKeys,
+              isOfficialRoom: isOfficialRoom,
+            );
+          }
+        } else {
+          _showSnack('⚠️ GitHub 업로드 실패: 저장소 이름(아이디/저장소명)과 토큰 권한(repo)을 확인해 주세요.');
+        }
+      } else {
+        // OneDrive 방식: 공유링크 자동 업로드 시도 -> 실패 또는 미설정 시 OneDrive 앱 공유시트 호출
+        final autoUploaded = await _putOneDriveFileViaLink(
+          fileName: targetFileName,
+          htmlContent: htmlContent,
+        );
+        if (!autoUploaded) {
+          final tempDir = await getTemporaryDirectory();
+          final outFile = File(p.join(tempDir.path, targetFileName));
+          await outFile.writeAsBytes(utf8.encode(htmlContent), flush: true);
+          await Share.shareXFiles(
+            [XFile(outFile.path, mimeType: 'text/html')],
+            subject: targetFileName,
+          );
+          _showSnack(
+            '✅ [$targetFileName] 병합 완료! (총 ${mergedRoomList.length}건) 공유창에서 [OneDrive]를 눌러 저장해 주세요.',
+          );
+        } else {
+          _showSnack(
+            '✅ [$targetFileName] OneDrive 공유방 자동 합치기 완료! (올림 +$uploadedNewCount건 / 받음 +$downloadedNewCount건 · 총 ${mergedRoomList.length}건)',
+          );
+        }
         if (openViewerAfterSync && mounted) {
           await _openShareRoomViewerDialog(
-            title: '☁️ 현장 공유방 열람 - $targetFileName',
+            title: '☁️ OneDrive 공유방 - $targetFileName (${mergedRoomList.length}건)',
             records: mergedRoomList,
             repliedKeys: repliedKeys,
             isOfficialRoom: isOfficialRoom,
           );
         }
-      } else {
-        _showSnack('⚠️ 현장 공유방 업로드 실패: 저장소 이름(아이디/저장소명)과 토큰 권한(repo)을 확인해 주세요.');
       }
     } catch (e) {
       _showSnack('현장 공유방 연동 중 오류: $e');
@@ -5778,12 +6047,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _viewCategoryHtmlInShareRoom({
     required bool isOfficialRoom,
   }) async {
-    final repo = _normalizeGithubRepo(_githubRepo);
-    final token = _githubToken.trim();
-    if (repo.isEmpty || token.isEmpty) {
-      _showSnack('먼저 설정(⚙️)에서 [현장 공유방 GitHub 저장소 & 토큰]을 등록해 주세요.');
-      await _openSettingsDialog();
-      return;
+    if (_shareRoomMode == 'github') {
+      final repo = _normalizeGithubRepo(_githubRepo);
+      final token = _githubToken.trim();
+      if (repo.isEmpty || token.isEmpty) {
+        _showSnack('먼저 설정(⚙️)에서 [GitHub 저장소 & 토큰]을 등록하거나 [OneDrive 방식]으로 전환해 주세요.');
+        await _openSettingsDialog();
+        return;
+      }
     }
 
     final String targetFileName =
@@ -5791,13 +6062,31 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() => _isBusy = true);
     try {
-      final remoteData = await _fetchGithubFileContentAndSha(targetFileName);
-      if (remoteData == null || (remoteData['html'] ?? '').isEmpty) {
-        _showSnack('아직 공유방에 [$targetFileName] 파일이 없습니다. 먼저 [올려서 합치기]를 눌러 생성해 주세요!');
-        return;
+      String? rawHtml;
+      if (_shareRoomMode == 'github') {
+        final remoteData = await _fetchGithubFileContentAndSha(targetFileName);
+        rawHtml = remoteData?['html'];
+        if (rawHtml == null || rawHtml.isEmpty) {
+          _showSnack('아직 GitHub 공유방에 [$targetFileName] 파일이 없습니다. 먼저 [올려서 합치기]를 눌러 생성해 주세요!');
+          return;
+        }
+      } else {
+        rawHtml = await _fetchOneDriveFileViaLink(targetFileName);
+        if (rawHtml == null || rawHtml.isEmpty) {
+          setState(() => _isBusy = false);
+          final picked = await _pickHtmlFromOneDriveOrDevice(
+            targetFileName: targetFileName,
+            isForMerge: false,
+          );
+          if (picked == '__CANCELLED__' || picked == null || picked.isEmpty) {
+            return;
+          }
+          setState(() => _isBusy = true);
+          rawHtml = picked;
+        }
       }
 
-      final remoteRecords = _parseRecordsFromHtml(remoteData['html']!);
+      final remoteRecords = _parseRecordsFromHtml(rawHtml);
       if (remoteRecords.isEmpty) {
         _showSnack('[$targetFileName] 안에 표시할 서류 데이터가 없습니다.');
         return;
@@ -5846,23 +6135,230 @@ class _HomeScreenState extends State<HomeScreen> {
     required Set<String> repliedKeys,
     required bool isOfficialRoom,
   }) async {
-    String subTab = isOfficialRoom ? '전체공문' : '자재송장';
+    String subTab = isOfficialRoom ? '전체' : '자재송장';
     DocRecord? currentSel = records.isNotEmpty ? records.first : null;
     final cumMap = _computeInvoiceCumulativeMap(records);
+    double horizRatio = _detailHorizSplitRatio;
+    double vertRatio = _listSplitRatio;
+    String modalSortCol = 'date';
+    bool modalSortAsc = false;
 
     await showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
-          final filtered = records.where((r) {
+          void toggleModalSort(String colKey) {
+            setModalState(() {
+              if (modalSortCol == colKey) {
+                modalSortAsc = !modalSortAsc;
+              } else {
+                modalSortCol = colKey;
+                modalSortAsc = colKey != 'date';
+              }
+            });
+          }
+
+          final baseFiltered = records.where((r) {
             if (!isOfficialRoom) return r.category == DocCategory.invoice;
             if (subTab == '공문(수신)') return r.category == DocCategory.officialIn;
             if (subTab == '공문(발신)') return r.category == DocCategory.officialOut;
             return DocCategory.isOfficial(r.category);
           }).toList();
 
+          final filtered = _sortRecordsList(
+            baseFiltered,
+            sortCol: modalSortCol,
+            sortAsc: modalSortAsc,
+            repliedKeys: repliedKeys,
+          );
+
           if (currentSel == null || !filtered.any((r) => r.id == currentSel!.id)) {
             currentSel = filtered.isNotEmpty ? filtered.first : null;
+          }
+
+          Widget buildShareRoomTable() {
+            if (filtered.isEmpty) {
+              return const Center(
+                child: Text(
+                  '표시할 서류가 없습니다.',
+                  style: TextStyle(color: Colors.grey),
+                ),
+              );
+            }
+            final bool isOutTab = isOfficialRoom && subTab == '공문(발신)';
+            final String partyHeader = isOfficialRoom
+                ? (subTab == '전체'
+                    ? '보낸/받는사람'
+                    : (isOutTab ? '받는사람' : '보낸사람'))
+                : '';
+
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: isOfficialRoom ? (isOutTab ? 750 : 730) : 706,
+                child: Column(
+                  children: [
+                    Container(
+                      color: const Color(0xFFE2E8F0),
+                      child: IntrinsicHeight(
+                        child: Row(
+                          children: isOfficialRoom
+                              ? [
+                                  _buildFixedHeaderCell('날짜', width: 64, sortKey: 'date', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('date')),
+                                  _buildFixedHeaderCell('공문번호', width: 76, sortKey: 'docNumber', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('docNumber')),
+                                  _buildFixedHeaderCell(partyHeader, width: 68),
+                                  if (isOutTab)
+                                    _buildFixedHeaderCell('회신번호', width: 76),
+                                  _buildFixedHeaderCell('제목', width: 118),
+                                  _buildFixedHeaderCell('내용', width: 152),
+                                  _buildFixedHeaderCell('회신요청일', width: 64),
+                                  if (!isOutTab)
+                                    _buildFixedHeaderCell('회신완료', width: 56, sortKey: 'replied', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('replied')),
+                                  _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('uploader')),
+                                  _buildFixedHeaderCell('구분', width: 68),
+                                ]
+                              : [
+                                  _buildFixedHeaderCell('날짜', width: 64, sortKey: 'date', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('date')),
+                                  _buildFixedHeaderCell('제품명', width: 72),
+                                  _buildFixedHeaderCell('규격명', width: 62),
+                                  _buildFixedHeaderCell('단위', width: 44),
+                                  _buildFixedHeaderCell('수량', width: 64),
+                                  _buildFixedHeaderCell('누적수량', width: 68),
+                                  _buildFixedHeaderCell('공급자', width: 78),
+                                  _buildFixedHeaderCell('주문송장번호', width: 122),
+                                  _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('uploader')),
+                                  _buildFixedHeaderCell('선택', width: 68),
+                                ],
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: filtered.length,
+                        itemBuilder: (c, idx) {
+                          final rec = filtered[idx];
+                          final f = rec.fields;
+                          final isSel = currentSel?.id == rec.id;
+                          final uploader = _resolveUploaderName(rec);
+                          if (isOfficialRoom) {
+                            final isOut = rec.category == DocCategory.officialOut;
+                            final isReplied = _isIncomingDocReplied(rec, repliedKeys);
+                            final replyNumStr =
+                                f['replyDocNumber']?.trim().isNotEmpty == true
+                                    ? f['replyDocNumber']!
+                                    : '-';
+                            return InkWell(
+                              onTap: () => setModalState(() => currentSel = rec),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: isSel ? const Color(0xFFDBEAFE) : Colors.white,
+                                  border: const Border(
+                                    bottom: BorderSide(color: Color(0xFFCBD5E1), width: 1),
+                                  ),
+                                ),
+                                child: IntrinsicHeight(
+                                  child: Row(
+                                    children: [
+                                      _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), width: 64, isSelected: isSel),
+                                      _buildFixedDataCell(f['docNumber'] ?? '-', width: 76, isSelected: isSel),
+                                      _buildFixedDataCell(rec.officialCounterpartyValue, width: 68, isSelected: isSel),
+                                      if (isOutTab)
+                                        _buildFixedDataCell(
+                                          replyNumStr,
+                                          width: 76,
+                                          isSelected: isSel,
+                                          textColor: const Color(0xFF1E3A8A),
+                                        ),
+                                      _buildFixedDataCell(f['title'] ?? '-', width: 118, isSelected: isSel),
+                                      _buildFixedDataCell(f['aiSummary'] ?? '-', width: 152, isSelected: isSel),
+                                      _buildFixedDataCell(DocRecord.formatDotDate(f['replyDeadline']), width: 64, isSelected: isSel),
+                                      if (!isOutTab)
+                                        _buildFixedDataCell(
+                                          isOut ? '-' : (isReplied ? '○' : ''),
+                                          width: 56,
+                                          isSelected: isSel,
+                                          textColor: const Color(0xFF16A34A),
+                                          forceBold: true,
+                                        ),
+                                      _buildFixedDataCell(
+                                        uploader,
+                                        width: 64,
+                                        isSelected: isSel,
+                                        textColor: const Color(0xFF1E3A8A),
+                                        forceBold: true,
+                                      ),
+                                      _buildFixedDataCell(
+                                        isOut ? '발신' : '수신',
+                                        width: 68,
+                                        isSelected: isSel,
+                                        textColor: isOut ? const Color(0xFF1E3A8A) : const Color(0xFF166534),
+                                        forceBold: true,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          } else {
+                            final cumStr = cumMap[rec.id] ?? f['quantity'] ?? '-';
+                            return InkWell(
+                              onTap: () => setModalState(() => currentSel = rec),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: isSel ? const Color(0xFFDBEAFE) : Colors.white,
+                                  border: const Border(
+                                    bottom: BorderSide(color: Color(0xFFCBD5E1), width: 1),
+                                  ),
+                                ),
+                                child: IntrinsicHeight(
+                                  child: Row(
+                                    children: [
+                                      _buildFixedDataCell(DocRecord.formatDotDate(f['arrivalDate']), width: 64, isSelected: isSel),
+                                      _buildFixedDataCell(f['productName'] ?? '-', width: 72, isSelected: isSel),
+                                      _buildFixedDataCell(f['specName'] ?? '-', width: 62, isSelected: isSel),
+                                      _buildFixedDataCell(f['unit'] ?? 'ton', width: 44, isSelected: isSel),
+                                      _buildFixedDataCell(f['quantity'] ?? '-', width: 64, isSelected: isSel),
+                                      _buildFixedDataCell(cumStr, width: 68, isSelected: isSel, textColor: const Color(0xFF1E3A8A), forceBold: true),
+                                      _buildFixedDataCell(f['supplierName'] ?? '-', width: 78, isSelected: isSel),
+                                      _buildFixedDataCell(f['orderNumber'] ?? '-', width: 122, isSelected: isSel),
+                                      _buildFixedDataCell(uploader, width: 64, isSelected: isSel, textColor: const Color(0xFF1E3A8A), forceBold: true),
+                                      _buildFixedDataCell(isSel ? '선택됨' : '보기', width: 68, isSelected: isSel),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          Widget buildShareRoomPhoto() {
+            return Container(
+              width: double.infinity,
+              height: double.infinity,
+              color: const Color(0xFF0F172A),
+              child: currentSel != null && currentSel!.base64Image.isNotEmpty
+                  ? InteractiveViewer(
+                      minScale: 0.6,
+                      maxScale: 6.0,
+                      child: Image.memory(
+                        base64Decode(currentSel!.base64Image),
+                        fit: BoxFit.contain,
+                      ),
+                    )
+                  : const Center(
+                      child: Text(
+                        '목록에서 항목을 터치하면 원본 사진이 표시됩니다.',
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                    ),
+            );
           }
 
           return Dialog.fullscreen(
@@ -5909,7 +6405,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       color: const Color(0xFFEFF6FF),
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       child: Row(
-                        children: ['전체공문', '공문(수신)', '공문(발신)'].map((t) {
+                        children: ['전체', '공문(수신)', '공문(발신)'].map((t) {
                           final sel = subTab == t;
                           final cnt = records.where((r) {
                             if (t == '공문(수신)') return r.category == DocCategory.officialIn;
@@ -5928,156 +6424,124 @@ class _HomeScreenState extends State<HomeScreen> {
                         }).toList(),
                       ),
                     ),
+                  // ★ 가로로 눕혔을 때는 [좌측 리스트 + 우측 사진], 세로일 때는 [위쪽 리스트 + 아래쪽 사진]
                   Expanded(
-                    flex: 5,
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: SizedBox(
-                        width: isOfficialRoom ? 750 : 706,
-                        child: Column(
-                          children: [
-                            Container(
-                              color: const Color(0xFFE2E8F0),
-                              child: IntrinsicHeight(
-                                child: Row(
-                                  children: isOfficialRoom
-                                      ? [
-                                          _buildFixedHeaderCell('구분', width: 58),
-                                          _buildFixedHeaderCell('날짜', width: 64),
-                                          _buildFixedHeaderCell('공문번호', width: 76),
-                                          _buildFixedHeaderCell('보낸/받는사람', width: 76),
-                                          _buildFixedHeaderCell('제목', width: 126),
-                                          _buildFixedHeaderCell('내용', width: 158),
-                                          _buildFixedHeaderCell('회신요청/번호', width: 72),
-                                          _buildFixedHeaderCell('회신완료', width: 56),
-                                          _buildFixedHeaderCell('올린사람', width: 64),
-                                        ]
-                                      : [
-                                          _buildFixedHeaderCell('날짜', width: 64),
-                                          _buildFixedHeaderCell('제품명', width: 72),
-                                          _buildFixedHeaderCell('규격명', width: 62),
-                                          _buildFixedHeaderCell('단위', width: 44),
-                                          _buildFixedHeaderCell('수량', width: 64),
-                                          _buildFixedHeaderCell('누적수량', width: 68),
-                                          _buildFixedHeaderCell('공급자', width: 78),
-                                          _buildFixedHeaderCell('주문송장번호', width: 122),
-                                          _buildFixedHeaderCell('올린사람', width: 64),
-                                          _buildFixedHeaderCell('선택', width: 68),
-                                        ],
+                    child: LayoutBuilder(
+                      builder: (lCtx, constraints) {
+                        final totalW = constraints.maxWidth;
+                        final totalH = constraints.maxHeight;
+                        final isLandscape =
+                            MediaQuery.of(lCtx).orientation == Orientation.landscape ||
+                                totalW > totalH;
+
+                        if (isLandscape) {
+                          const double dividerW = 22.0;
+                          final double usableW = math.max(120.0, totalW - dividerW);
+                          final double listW =
+                              (usableW * horizRatio).clamp(120.0, usableW - 120.0);
+                          final double photoW = usableW - listW;
+
+                          return Row(
+                            children: [
+                              SizedBox(
+                                width: listW,
+                                height: totalH,
+                                child: buildShareRoomTable(),
+                              ),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onHorizontalDragUpdate: (details) {
+                                  setModalState(() {
+                                    horizRatio = (horizRatio + details.delta.dx / usableW)
+                                        .clamp(0.20, 0.82);
+                                  });
+                                },
+                                child: Container(
+                                  width: dividerW,
+                                  height: double.infinity,
+                                  decoration: BoxDecoration(
+                                    color: Colors.blueGrey.shade100,
+                                    border: Border.symmetric(
+                                      vertical: BorderSide(
+                                        color: Colors.blueGrey.shade300,
+                                        width: 1,
+                                      ),
+                                    ),
+                                  ),
+                                  child: Center(
+                                    child: Container(
+                                      width: 4,
+                                      height: 44,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF1E3A8A),
+                                        borderRadius: BorderRadius.circular(2),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                            Expanded(
-                              child: ListView.builder(
-                                itemCount: filtered.length,
-                                itemBuilder: (c, idx) {
-                                  final rec = filtered[idx];
-                                  final f = rec.fields;
-                                  final isSel = currentSel?.id == rec.id;
-                                  final uploader = _resolveUploaderName(rec);
-                                  if (isOfficialRoom) {
-                                    final isOut = rec.category == DocCategory.officialOut;
-                                    final isReplied = _isIncomingDocReplied(rec, repliedKeys);
-                                    return InkWell(
-                                      onTap: () => setModalState(() => currentSel = rec),
-                                      child: Container(
-                                        color: isSel ? const Color(0xFFDBEAFE) : Colors.white,
-                                        child: IntrinsicHeight(
-                                          child: Row(
-                                            children: [
-                                              _buildFixedDataCell(
-                                                isOut ? '발신' : '수신',
-                                                width: 58,
-                                                isSelected: isSel,
-                                                textColor: isOut ? const Color(0xFF1E3A8A) : const Color(0xFF166534),
-                                                forceBold: true,
-                                              ),
-                                              _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), width: 64, isSelected: isSel),
-                                              _buildFixedDataCell(f['docNumber'] ?? '-', width: 76, isSelected: isSel),
-                                              _buildFixedDataCell(rec.officialCounterpartyValue, width: 76, isSelected: isSel),
-                                              _buildFixedDataCell(f['title'] ?? '-', width: 126, isSelected: isSel),
-                                              _buildFixedDataCell(f['aiSummary'] ?? '-', width: 158, isSelected: isSel),
-                                              _buildFixedDataCell(
-                                                isOut ? (f['replyDocNumber'] ?? '-') : DocRecord.formatDotDate(f['replyDeadline']),
-                                                width: 72,
-                                                isSelected: isSel,
-                                              ),
-                                              _buildFixedDataCell(
-                                                isOut ? '-' : (isReplied ? '○' : ''),
-                                                width: 56,
-                                                isSelected: isSel,
-                                                textColor: const Color(0xFF16A34A),
-                                                forceBold: true,
-                                              ),
-                                              _buildFixedDataCell(
-                                                uploader,
-                                                width: 64,
-                                                isSelected: isSel,
-                                                textColor: const Color(0xFF1E3A8A),
-                                                forceBold: true,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  } else {
-                                    final cumStr = cumMap[rec.id] ?? f['quantity'] ?? '-';
-                                    return InkWell(
-                                      onTap: () => setModalState(() => currentSel = rec),
-                                      child: Container(
-                                        color: isSel ? const Color(0xFFDBEAFE) : Colors.white,
-                                        child: IntrinsicHeight(
-                                          child: Row(
-                                            children: [
-                                              _buildFixedDataCell(DocRecord.formatDotDate(f['arrivalDate']), width: 64, isSelected: isSel),
-                                              _buildFixedDataCell(f['productName'] ?? '-', width: 72, isSelected: isSel),
-                                              _buildFixedDataCell(f['specName'] ?? '-', width: 62, isSelected: isSel),
-                                              _buildFixedDataCell(f['unit'] ?? 'ton', width: 44, isSelected: isSel),
-                                              _buildFixedDataCell(f['quantity'] ?? '-', width: 64, isSelected: isSel),
-                                              _buildFixedDataCell(cumStr, width: 68, isSelected: isSel, textColor: const Color(0xFF1E3A8A), forceBold: true),
-                                              _buildFixedDataCell(f['supplierName'] ?? '-', width: 78, isSelected: isSel),
-                                              _buildFixedDataCell(f['orderNumber'] ?? '-', width: 122, isSelected: isSel),
-                                              _buildFixedDataCell(uploader, width: 64, isSelected: isSel, textColor: const Color(0xFF1E3A8A), forceBold: true),
-                                              _buildFixedDataCell(isSel ? '선택됨' : '보기', width: 68, isSelected: isSel),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  }
+                              SizedBox(
+                                width: photoW,
+                                height: totalH,
+                                child: buildShareRoomPhoto(),
+                              ),
+                            ],
+                          );
+                        } else {
+                          const double dividerH = 24.0;
+                          final double usableH = math.max(120.0, totalH - dividerH);
+                          final double listH =
+                              (usableH * vertRatio).clamp(100.0, usableH - 100.0);
+                          final double photoH = usableH - listH;
+
+                          return Column(
+                            children: [
+                              SizedBox(
+                                width: totalW,
+                                height: listH,
+                                child: buildShareRoomTable(),
+                              ),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onVerticalDragUpdate: (details) {
+                                  setModalState(() {
+                                    vertRatio = (vertRatio + details.delta.dy / usableH)
+                                        .clamp(0.18, 0.82);
+                                  });
                                 },
+                                child: Container(
+                                  width: double.infinity,
+                                  height: dividerH,
+                                  decoration: BoxDecoration(
+                                    color: Colors.blueGrey.shade100,
+                                    border: Border.symmetric(
+                                      horizontal: BorderSide(
+                                        color: Colors.blueGrey.shade300,
+                                        width: 1,
+                                      ),
+                                    ),
+                                  ),
+                                  child: const Center(
+                                    child: Text(
+                                      '☰ 위아래로 끌어서 화면 크기 조절 (표는 좌우로 드래그 가능)',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF263238),
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  Container(
-                    height: 4,
-                    color: Colors.blueGrey.shade300,
-                  ),
-                  Expanded(
-                    flex: 5,
-                    child: Container(
-                      width: double.infinity,
-                      color: const Color(0xFF0F172A),
-                      child: currentSel != null && currentSel!.base64Image.isNotEmpty
-                          ? InteractiveViewer(
-                              minScale: 0.6,
-                              maxScale: 6.0,
-                              child: Image.memory(
-                                base64Decode(currentSel!.base64Image),
-                                fit: BoxFit.contain,
+                              SizedBox(
+                                width: totalW,
+                                height: photoH,
+                                child: buildShareRoomPhoto(),
                               ),
-                            )
-                          : const Center(
-                              child: Text(
-                                '위 표에서 항목을 터치하면 원본 사진이 표시됩니다.',
-                                style: TextStyle(color: Colors.white70),
-                              ),
-                            ),
+                            ],
+                          );
+                        }
+                      },
                     ),
                   ),
                 ],
@@ -6090,255 +6554,344 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// ★ 상단 [☁️ 현장 공유방] 버튼 클릭 시 열리는 허브 다이얼로그
+  /// - 상단에서 [GitHub 방식] / [OneDrive 방식]을 즉시 확인·전환 가능!
   /// - 오직 2개의 파일(`공문_통합.html` / `자재송장_통합.html`)만 깔끔하게 관리!
   Future<void> _openFieldShareRoomDialog() async {
     final officialCount =
         _records.where((r) => DocCategory.isOfficial(r.category)).length;
     final invoiceCount =
         _records.where((r) => r.category == DocCategory.invoice).length;
-    final hasConfig =
-        _normalizeGithubRepo(_githubRepo).isNotEmpty && _githubToken.trim().isNotEmpty;
 
     await showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Row(
-          children: const [
-            Icon(Icons.cloud_done, color: Color(0xFF1E3A8A)),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                '☁️ 현장 공유방 (공문 / 자재송장)',
-                style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: hasConfig ? const Color(0xFFDCFCE7) : const Color(0xFFFEF3C7),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: hasConfig ? Colors.green : Colors.amber.shade700,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setHubState) {
+          final isGithub = _shareRoomMode == 'github';
+          final hasGithubConfig =
+              _normalizeGithubRepo(_githubRepo).isNotEmpty &&
+                  _githubToken.trim().isNotEmpty;
+          final hasOneDriveLink = _oneDriveShareUrl.trim().isNotEmpty;
+          final isReady = isGithub ? hasGithubConfig : true;
+
+          return AlertDialog(
+            title: Row(
+              children: const [
+                Icon(Icons.cloud_done, color: Color(0xFF1E3A8A)),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '☁️ 현장 공유방 (공문 / 자재송장)',
+                    style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
                   ),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      hasConfig
-                          ? '✅ 연결된 공유방: ${_normalizeGithubRepo(_githubRepo)} / ${_githubFolder.trim()}'
-                          : '⚠️ 아직 현장 공유방(GitHub 저장소)이 설정되지 않았습니다.',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                        color: hasConfig ? const Color(0xFF166534) : Colors.brown.shade900,
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ★ 공유방 방식 빠른 선택 스위치 (GitHub 방식 vs OneDrive 방식)
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(7),
+                            onTap: () async {
+                              final prefs = await SharedPreferences.getInstance();
+                              await prefs.setString(_prefsShareRoomModeKey, 'github');
+                              setState(() => _shareRoomMode = 'github');
+                              setHubState(() {});
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: BoxDecoration(
+                                color: isGithub
+                                    ? const Color(0xFF1E3A8A)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(7),
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                '🐙 GitHub 방식 (자동동기화)',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: isGithub ? Colors.white : const Color(0xFF334155),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(7),
+                            onTap: () async {
+                              final prefs = await SharedPreferences.getInstance();
+                              await prefs.setString(_prefsShareRoomModeKey, 'onedrive');
+                              setState(() => _shareRoomMode = 'onedrive');
+                              setHubState(() {});
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              decoration: BoxDecoration(
+                                color: !isGithub
+                                    ? const Color(0xFF0078D4)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(7),
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                '☁️ OneDrive 방식 (간편공유)',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: !isGithub ? Colors.white : const Color(0xFF334155),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: isReady ? const Color(0xFFDCFCE7) : const Color(0xFFFEF3C7),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isReady ? Colors.green : Colors.amber.shade700,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '• 올린사람 표시 이름: ${_exporterUserName.trim().isEmpty ? "미입력 (설정에서 이름을 입력해 주세요)" : _exporterUserName.trim()}\n'
-                      '• 작성자별 개별 파일 없이 오직 [공문_통합.html]과 [자재송장_통합.html] 딱 2개 파일로만 자동 병합됩니다.',
-                      style: const TextStyle(fontSize: 11.5, height: 1.35),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              // 1) 공문 통합 HTML 카드 (수신 + 발신)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEFF6FF),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.blue.shade300),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        Text(
+                          isGithub
+                              ? (hasGithubConfig
+                                  ? '✅ [GitHub 방식] 연결됨: ${_normalizeGithubRepo(_githubRepo)} / ${_githubFolder.trim()}'
+                                  : '⚠️ 아직 GitHub 저장소와 토큰이 설정되지 않았습니다.')
+                              : (hasOneDriveLink
+                                  ? '✅ [OneDrive 방식] 공유폴더 링크 연동됨 (원드라이브 앱 연동 포함)'
+                                  : '✅ [OneDrive 방식] 원드라이브 앱/폴더에서 바로 불러와 합치고 저장합니다.'),
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                            color: isReady
+                                ? const Color(0xFF166534)
+                                : Colors.brown.shade900,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '• 올린사람 표시 이름: ${_exporterUserName.trim().isEmpty ? "미입력 (설정에서 이름을 입력해 주세요)" : _exporterUserName.trim()}\n'
+                          '• 작성자별 개별 파일 없이 오직 [공문_통합.html]과 [자재송장_통합.html] 딱 2개 파일로만 자동 병합됩니다.',
+                          style: const TextStyle(fontSize: 11.5, height: 1.35),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // 1) 공문 통합 HTML 카드 (수신 + 발신)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.blue.shade300),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              '📄 1. 공문 HTML (수신·발신 통합)',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13.5,
+                                color: Color(0xFF1E3A8A),
+                              ),
+                            ),
+                            Text(
+                              '내 앱 $officialCount건',
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.indigo,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
                         const Text(
-                          '📄 1. 공문 HTML (수신·발신 통합)',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13.5,
-                            color: Color(0xFF1E3A8A),
-                          ),
+                          '공유방 파일명: 공문_통합.html (올린사람 이름 자동 기록)',
+                          style: TextStyle(fontSize: 11.5, color: Colors.black87),
                         ),
-                        Text(
-                          '내 앱 $officialCount건',
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.indigo,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      '공유방 파일명: 공문_통합.html (올린사람 이름 자동 기록)',
-                      style: TextStyle(fontSize: 11.5, color: Colors.black87),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF1E3A8A),
-                              padding: const EdgeInsets.symmetric(vertical: 8),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.icon(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFF1E3A8A),
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _syncCategoryHtmlWithShareRoom(
+                                    isOfficialRoom: true,
+                                    openViewerAfterSync: true,
+                                  );
+                                },
+                                icon: const Icon(Icons.cloud_upload, size: 16),
+                                label: const Text(
+                                  '올려서 합치기',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                              ),
                             ),
-                            onPressed: () {
-                              Navigator.pop(ctx);
-                              _syncCategoryHtmlWithShareRoom(
-                                isOfficialRoom: true,
-                                openViewerAfterSync: true,
-                              );
-                            },
-                            icon: const Icon(Icons.cloud_upload, size: 16),
-                            label: const Text(
-                              '올려서 합치기',
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  side: const BorderSide(color: Color(0xFF1E3A8A)),
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _viewCategoryHtmlInShareRoom(isOfficialRoom: true);
+                                },
+                                icon: const Icon(Icons.visibility, size: 16),
+                                label: const Text(
+                                  '들어가서 보기',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                              side: const BorderSide(color: Color(0xFF1E3A8A)),
-                            ),
-                            onPressed: () {
-                              Navigator.pop(ctx);
-                              _viewCategoryHtmlInShareRoom(isOfficialRoom: true);
-                            },
-                            icon: const Icon(Icons.visibility, size: 16),
-                            label: const Text(
-                              '들어가서 보기',
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                          ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
+                  ),
+                  const SizedBox(height: 12),
 
-              // 2) 자재송장 통합 HTML 카드
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.amber.shade50,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.amber.shade400),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  // 2) 자재송장 통합 HTML 카드
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.amber.shade400),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          '📦 2. 자재송장 HTML (현장 입고 누적)',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13.5,
-                            color: Colors.brown.shade900,
-                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '📦 2. 자재송장 HTML (현장 입고 누적)',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13.5,
+                                color: Colors.brown.shade900,
+                              ),
+                            ),
+                            Text(
+                              '내 앱 $invoiceCount건',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.brown.shade800,
+                              ),
+                            ),
+                          ],
                         ),
-                        Text(
-                          '내 앱 $invoiceCount건',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.brown.shade800,
-                          ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          '공유방 파일명: 자재송장_통합.html (올린사람 이름 자동 기록)',
+                          style: TextStyle(fontSize: 11.5, color: Colors.black87),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.icon(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.brown.shade800,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _syncCategoryHtmlWithShareRoom(
+                                    isOfficialRoom: false,
+                                    openViewerAfterSync: true,
+                                  );
+                                },
+                                icon: const Icon(Icons.cloud_upload, size: 16),
+                                label: const Text(
+                                  '올려서 합치기',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  side: BorderSide(color: Colors.brown.shade800),
+                                  foregroundColor: Colors.brown.shade900,
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _viewCategoryHtmlInShareRoom(isOfficialRoom: false);
+                                },
+                                icon: const Icon(Icons.visibility, size: 16),
+                                label: const Text(
+                                  '들어가서 보기',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      '공유방 파일명: 자재송장_통합.html (올린사람 이름 자동 기록)',
-                      style: TextStyle(fontSize: 11.5, color: Colors.black87),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: Colors.brown.shade800,
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                            ),
-                            onPressed: () {
-                              Navigator.pop(ctx);
-                              _syncCategoryHtmlWithShareRoom(
-                                isOfficialRoom: false,
-                                openViewerAfterSync: true,
-                              );
-                            },
-                            icon: const Icon(Icons.cloud_upload, size: 16),
-                            label: const Text(
-                              '올려서 합치기',
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                              side: BorderSide(color: Colors.brown.shade800),
-                              foregroundColor: Colors.brown.shade900,
-                            ),
-                            onPressed: () {
-                              Navigator.pop(ctx);
-                              _viewCategoryHtmlInShareRoom(isOfficialRoom: false);
-                            },
-                            icon: const Icon(Icons.visibility, size: 16),
-                            label: const Text(
-                              '들어가서 보기',
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _openSettingsDialog();
+                },
+                icon: const Icon(Icons.settings, size: 16),
+                label: const Text('공유방 설정'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('닫기'),
               ),
             ],
-          ),
-        ),
-        actions: [
-          TextButton.icon(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _openSettingsDialog();
-            },
-            icon: const Icon(Icons.settings, size: 16),
-            label: const Text('공유방 설정'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('닫기'),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -6351,249 +6904,320 @@ class _HomeScreenState extends State<HomeScreen> {
     final githubFolderCtrl = TextEditingController(
       text: _githubFolder.trim().isEmpty ? '현장공유방' : _githubFolder,
     );
+    final oneDriveUrlCtrl = TextEditingController(text: _oneDriveShareUrl);
+    String tempMode = _shareRoomMode;
 
     await showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModalState) => AlertDialog(
-          title: const Text(
-            '☁️ 현장 공유방 & AI 설정 (v39)',
-            style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFEFF6FF),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blue.shade200),
+        builder: (ctx, setModalState) {
+          final isGithub = tempMode == 'github';
+          return AlertDialog(
+            title: const Text(
+              '☁️ 현장 공유방 & AI 설정',
+              style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.blue.shade200),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '1. 내 이름(담당자명) & 공유방 방식 선택',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: Color(0xFF1E3A8A),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          '• 아래 [내 이름]을 입력해 두면 공문·자재송장 표 리스트의 [올린사람] 칸에 내 이름이 자동으로 들어갑니다.\n'
+                          '• 우리 현장처럼 완전 자동 병합을 원하시면 [GitHub 방식]을, 일반 사용자가 쉽게 쓰려면 [OneDrive 방식]을 선택하세요.',
+                          style: TextStyle(fontSize: 11.5, height: 1.4),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: userNameCtrl,
+                          decoration: const InputDecoration(
+                            labelText: '내 이름 / 담당자명 (표의 [올린사람] 열에 자동 표시)',
+                            hintText: '예: 이경훈, 공무팀 등',
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        // ★ 방식 선택 탭 (GitHub 방식 vs OneDrive 방식)
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ChoiceChip(
+                                label: const Text(
+                                  '🐙 GitHub 방식',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                                selected: isGithub,
+                                selectedColor: const Color(0xFFDBEAFE),
+                                onSelected: (_) =>
+                                    setModalState(() => tempMode = 'github'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ChoiceChip(
+                                label: const Text(
+                                  '☁️ OneDrive 방식',
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                                selected: !isGithub,
+                                selectedColor: const Color(0xFFDBEAFE),
+                                onSelected: (_) =>
+                                    setModalState(() => tempMode = 'onedrive'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        if (isGithub) ...[
+                          TextField(
+                            controller: githubRepoCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'GitHub 저장소 (아이디/저장소명)',
+                              hintText: '예: myid/doc-snap-archive',
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: githubTokenCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'GitHub 토큰 (ghp_... 또는 github_pat_...)',
+                              hintText: 'GitHub > Settings > Developer settings > Tokens',
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: githubFolderCtrl,
+                            decoration: const InputDecoration(
+                              labelText: '공유방 폴더 이름',
+                              hintText: '기본값: 현장공유방',
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                        ] else ...[
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.blue.shade200),
+                            ),
+                            child: const Text(
+                              '💡 [OneDrive 방식 사용법]\n'
+                              '• 스마트폰에 [OneDrive 앱]만 설치되어 있으면 별도 토큰 없이도 [올려서 합치기]를 누를 때 OneDrive 공유폴더의 기존 파일을 불러와 합친 뒤 그대로 OneDrive에 덮어쓸 수 있습니다.\n'
+                              '• (선택사항) 아래에 원드라이브 공유폴더 링크(누구나 편집 가능)를 넣어두시면 파일 선택창 없이 자동 연동을 먼저 시도합니다.',
+                              style: TextStyle(fontSize: 11.2, height: 1.4, color: Color(0xFF1E293B)),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: oneDriveUrlCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'OneDrive 공유폴더 링크 (선택사항 · 비워두셔도 작동)',
+                              hintText: '예: https://1drv.ms/f/s!...',
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  const Divider(height: 20),
+
+                  const Text(
+                    '2. Gemini AI 키 등록 & 실제 작동 테스트',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: geminiKeyCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Gemini API Key (AQ... 또는 AIza... 형식)',
+                      hintText: '비워두셔도 내장 한국어 OCR이 즉시 작동합니다',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
                     children: [
-                      const Text(
-                        '1. 내 이름(담당자명) & 현장 공유방(GitHub) 설정',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                          color: Color(0xFF1E3A8A),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        '• 아래 [내 이름]을 입력해 두면 공문·자재송장 표 리스트의 [올린사람] 칸에 내 이름이 자동으로 들어갑니다.\n'
-                        '• 현장 공유방에는 작성자별 개별 파일 없이 오직 [공문_통합.html]과 [자재송장_통합.html] 딱 2개 파일만 유지되며 계속 합쳐집니다.',
-                        style: TextStyle(fontSize: 11.5, height: 1.4),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: userNameCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '내 이름 / 담당자명 (표의 [올린사람] 열에 자동 표시)',
-                          hintText: '예: 이경훈, 공무팀 등',
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: githubRepoCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'GitHub 저장소 (아이디/저장소명)',
-                          hintText: '예: myid/doc-snap-archive',
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: githubTokenCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'GitHub 토큰 (ghp_... 또는 github_pat_...)',
-                          hintText: 'GitHub > Settings > Developer settings > Tokens',
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: githubFolderCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '공유방 폴더 이름',
-                          hintText: '기본값: 현장공유방',
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: OutlineInputBorder(),
-                          isDense: true,
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.verified_outlined, size: 16),
+                          label: const Text(
+                            'Gemini API 키 실제 연결 테스트',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          onPressed: () async {
+                            setModalState(() {
+                              _lastGeminiStatusMsg = '⏳ Google 서버에 실제 연결 테스트 중...';
+                            });
+                            final res = await _verifyGeminiApiKey(geminiKeyCtrl.text);
+                            final ok = res['ok'] == true;
+                            final msg = res['msg']?.toString() ?? '';
+                            final prefs = await SharedPreferences.getInstance();
+                            await prefs.setBool('gemini_key_verified_v39', ok);
+                            if (mounted) {
+                              setState(() {
+                                _geminiKeyVerified = ok;
+                                _lastGeminiStatusMsg = msg;
+                              });
+                            }
+                            setModalState(() {});
+                          },
                         ),
                       ),
                     ],
                   ),
-                ),
-                const Divider(height: 20),
-
-                const Text(
-                  '2. Gemini AI 키 등록 & 실제 작동 테스트',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: geminiKeyCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Gemini API Key (AQ... 또는 AIza... 형식)',
-                    hintText: '비워두셔도 내장 한국어 OCR이 즉시 작동합니다',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.verified_outlined, size: 16),
-                        label: const Text(
-                          'Gemini API 키 실제 연결 테스트',
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  if (_lastGeminiStatusMsg.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: _lastGeminiStatusMsg.startsWith('✅')
+                            ? const Color(0xFFDCFCE7)
+                            : _lastGeminiStatusMsg.startsWith('⏳')
+                                ? const Color(0xFFEFF6FF)
+                                : const Color(0xFFFEE2E2),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: _lastGeminiStatusMsg.startsWith('✅')
+                              ? Colors.green
+                              : _lastGeminiStatusMsg.startsWith('⏳')
+                                  ? Colors.blue
+                                  : Colors.redAccent,
                         ),
-                        onPressed: () async {
-                          setModalState(() {
-                            _lastGeminiStatusMsg = '⏳ Google 서버에 실제 연결 테스트 중...';
-                          });
-                          final res = await _verifyGeminiApiKey(geminiKeyCtrl.text);
-                          final ok = res['ok'] == true;
-                          final msg = res['msg']?.toString() ?? '';
-                          final prefs = await SharedPreferences.getInstance();
-                          await prefs.setBool('gemini_key_verified_v39', ok);
-                          if (mounted) {
-                            setState(() {
-                              _geminiKeyVerified = ok;
-                              _lastGeminiStatusMsg = msg;
-                            });
-                          }
-                          setModalState(() {});
-                        },
+                      ),
+                      child: Text(
+                        _lastGeminiStatusMsg,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.bold,
+                          color: _lastGeminiStatusMsg.startsWith('✅')
+                              ? const Color(0xFF166534)
+                              : _lastGeminiStatusMsg.startsWith('⏳')
+                                  ? const Color(0xFF1E3A8A)
+                                  : const Color(0xFF991B1B),
+                        ),
                       ),
                     ),
                   ],
-                ),
-                if (_lastGeminiStatusMsg.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: _lastGeminiStatusMsg.startsWith('✅')
-                          ? const Color(0xFFDCFCE7)
-                          : _lastGeminiStatusMsg.startsWith('⏳')
-                              ? const Color(0xFFEFF6FF)
-                              : const Color(0xFFFEE2E2),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: _lastGeminiStatusMsg.startsWith('✅')
-                            ? Colors.green
-                            : _lastGeminiStatusMsg.startsWith('⏳')
-                                ? Colors.blue
-                                : Colors.redAccent,
-                      ),
-                    ),
-                    child: Text(
-                      _lastGeminiStatusMsg,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.bold,
-                        color: _lastGeminiStatusMsg.startsWith('✅')
-                            ? const Color(0xFF166534)
-                            : _lastGeminiStatusMsg.startsWith('⏳')
-                                ? const Color(0xFF1E3A8A)
-                                : const Color(0xFF991B1B),
-                      ),
-                    ),
-                  ),
                 ],
-              ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('닫기'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final enteredKey = geminiKeyCtrl.text.trim();
-                final enteredName = userNameCtrl.text.trim();
-                final enteredRepo = _normalizeGithubRepo(githubRepoCtrl.text);
-                final enteredToken = githubTokenCtrl.text.trim();
-                final enteredFolder = githubFolderCtrl.text.trim().isEmpty
-                    ? '현장공유방'
-                    : githubFolderCtrl.text.trim();
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('닫기'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  final enteredKey = geminiKeyCtrl.text.trim();
+                  final enteredName = userNameCtrl.text.trim();
+                  final enteredRepo = _normalizeGithubRepo(githubRepoCtrl.text);
+                  final enteredToken = githubTokenCtrl.text.trim();
+                  final enteredFolder = githubFolderCtrl.text.trim().isEmpty
+                      ? '현장공유방'
+                      : githubFolderCtrl.text.trim();
+                  final enteredOneDriveUrl = oneDriveUrlCtrl.text.trim();
 
-                bool verified = false;
-                String verifyMsg = '설정이 저장되었습니다.';
-                if (enteredKey.isNotEmpty) {
-                  setModalState(() {
-                    _lastGeminiStatusMsg = '⏳ 저장 전 Gemini API 키 유효성 검증 중...';
-                  });
-                  final check = await _verifyGeminiApiKey(enteredKey);
-                  verified = check['ok'] == true;
-                  verifyMsg = check['msg']?.toString() ?? '';
-                } else {
-                  _lastGeminiStatusMsg = '';
-                }
+                  bool verified = false;
+                  String verifyMsg = '설정이 저장되었습니다.';
+                  if (enteredKey.isNotEmpty) {
+                    setModalState(() {
+                      _lastGeminiStatusMsg = '⏳ 저장 전 Gemini API 키 유효성 검증 중...';
+                    });
+                    final check = await _verifyGeminiApiKey(enteredKey);
+                    verified = check['ok'] == true;
+                    verifyMsg = check['msg']?.toString() ?? '';
+                  } else {
+                    _lastGeminiStatusMsg = '';
+                  }
 
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setString(_prefsGeminiApiKey, enteredKey);
-                await prefs.setBool('gemini_key_verified_v39', verified);
-                await prefs.setString(_prefsUserNameKey, enteredName);
-                await prefs.setString(_prefsGithubRepoKey, enteredRepo);
-                await prefs.setString(_prefsGithubTokenKey, enteredToken);
-                await prefs.setString(_prefsGithubFolderKey, enteredFolder);
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString(_prefsShareRoomModeKey, tempMode);
+                  await prefs.setString(_prefsGeminiApiKey, enteredKey);
+                  await prefs.setBool('gemini_key_verified_v39', verified);
+                  await prefs.setString(_prefsUserNameKey, enteredName);
+                  await prefs.setString(_prefsGithubRepoKey, enteredRepo);
+                  await prefs.setString(_prefsGithubTokenKey, enteredToken);
+                  await prefs.setString(_prefsGithubFolderKey, enteredFolder);
+                  await prefs.setString(_prefsOneDriveUrlKey, enteredOneDriveUrl);
 
-                setState(() {
-                  _geminiApiKey = enteredKey;
-                  _geminiKeyVerified = verified;
-                  _exporterUserName = enteredName;
-                  _githubRepo = enteredRepo;
-                  _githubToken = enteredToken;
-                  _githubFolder = enteredFolder;
-                  // 아직 올린사람 이름이 비어있는 내 기록들에 담당자 이름 자동 반영
-                  if (enteredName.isNotEmpty) {
-                    for (int i = 0; i < _records.length; i++) {
-                      final cur = (_records[i].fields['uploaderName'] ?? '').trim();
-                      if (cur.isEmpty || cur == '-') {
-                        final nf = Map<String, String>.from(_records[i].fields);
-                        nf['uploaderName'] = enteredName;
-                        _records[i] = DocRecord(
-                          id: _records[i].id,
-                          category: _records[i].category,
-                          createdAt: _records[i].createdAt,
-                          imagePath: _records[i].imagePath,
-                          base64Image: _records[i].base64Image,
-                          fields: nf,
-                        );
+                  setState(() {
+                    _shareRoomMode = tempMode;
+                    _geminiApiKey = enteredKey;
+                    _geminiKeyVerified = verified;
+                    _exporterUserName = enteredName;
+                    _githubRepo = enteredRepo;
+                    _githubToken = enteredToken;
+                    _githubFolder = enteredFolder;
+                    _oneDriveShareUrl = enteredOneDriveUrl;
+                    // 아직 올린사람 이름이 비어있는 내 기록들에 담당자 이름 자동 반영
+                    if (enteredName.isNotEmpty) {
+                      for (int i = 0; i < _records.length; i++) {
+                        final cur = (_records[i].fields['uploaderName'] ?? '').trim();
+                        if (cur.isEmpty || cur == '-') {
+                          final nf = Map<String, String>.from(_records[i].fields);
+                          nf['uploaderName'] = enteredName;
+                          _records[i] = DocRecord(
+                            id: _records[i].id,
+                            category: _records[i].category,
+                            createdAt: _records[i].createdAt,
+                            imagePath: _records[i].imagePath,
+                            base64Image: _records[i].base64Image,
+                            fields: nf,
+                          );
+                        }
                       }
                     }
-                  }
-                });
-                await _saveLocalRecords();
-                if (ctx.mounted) Navigator.pop(ctx);
-                _showSnack(verifyMsg);
-              },
-              child: const Text('저장'),
-            ),
-          ],
-        ),
+                  });
+                  await _saveLocalRecords();
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  _showSnack(verifyMsg);
+                },
+                child: const Text('저장'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -6971,7 +7595,31 @@ class _HomeScreenState extends State<HomeScreen> {
     final cumMap = _computeInvoiceCumulativeMap(records);
     final cumMapJson = jsonEncode(cumMap);
     final repliedListJson = jsonEncode(repliedKeys.toList());
-    final majorCat = forcedInitialTab ?? _selectedCategoryFilter;
+
+    final bool isAllOfficial = records.isNotEmpty &&
+        records.every((r) => DocCategory.isOfficial(r.category));
+    final bool isAllInvoice = records.isNotEmpty &&
+        records.every((r) => r.category == DocCategory.invoice);
+    final bool isAllTravel = records.isNotEmpty &&
+        records.every((r) => r.category == DocCategory.travel);
+    final bool isAllMedical = records.isNotEmpty &&
+        records.every((r) => r.category == DocCategory.medical);
+
+    final List<String> allowedTabs = isAllOfficial
+        ? ['전체', DocCategory.officialIn, DocCategory.officialOut]
+        : isAllInvoice
+            ? [DocCategory.invoice]
+            : isAllTravel
+                ? [DocCategory.travel]
+                : isAllMedical
+                    ? [DocCategory.medical]
+                    : ['전체', DocCategory.officialIn, DocCategory.officialOut, DocCategory.invoice, DocCategory.travel, DocCategory.medical];
+    final String allowedTabsJson = jsonEncode(allowedTabs);
+
+    String majorCat = forcedInitialTab ?? _selectedCategoryFilter;
+    if (!allowedTabs.contains(majorCat)) {
+      majorCat = allowedTabs.first;
+    }
 
     final firstRecord = records.isNotEmpty ? records.first : null;
     final firstId = firstRecord?.id ?? '';
@@ -6989,7 +7637,7 @@ class _HomeScreenState extends State<HomeScreen> {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>증빙서류 스냅 v39 - $scopeTitle</title>
+  <title>증빙서류 스냅 - $scopeTitle</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     body {
@@ -7247,56 +7895,86 @@ class _HomeScreenState extends State<HomeScreen> {
       touch-action: none;
     }
 
-    @media (orientation: portrait) {
-      #main-split {
-        flex-direction: column;
-      }
-      #left-list-pane {
-        width: 100% !important;
-        height: 44%;
-      }
-      #resizer-bar {
-        width: 100%;
-        height: 24px;
-        cursor: ns-resize;
-        border-left: none;
-        border-right: none;
-        border-top: 1px solid #90a4ae;
-        border-bottom: 1px solid #90a4ae;
-      }
-      #resizer-pill {
-        display: none;
-      }
-      #resizer-text {
-        display: inline-block;
-      }
-      #right-photo-pane {
-        width: 100%;
-        height: auto;
-        flex: 1;
-      }
+    #main-split.portrait-mode {
+      flex-direction: column;
+    }
+    #main-split.portrait-mode #left-list-pane {
+      width: 100% !important;
+      height: 44%;
+    }
+    #main-split.portrait-mode #resizer-bar {
+      width: 100%;
+      height: 24px;
+      cursor: ns-resize;
+      border-left: none;
+      border-right: none;
+      border-top: 1px solid #90a4ae;
+      border-bottom: 1px solid #90a4ae;
+    }
+    #main-split.portrait-mode #resizer-pill {
+      display: none;
+    }
+    #main-split.portrait-mode #resizer-text {
+      display: inline-block;
+    }
+    #main-split.portrait-mode #right-photo-pane {
+      width: 100%;
+      height: auto;
+      flex: 1;
     }
 
-    /* 5) 앱의 _buildFixedHeaderCell & _buildFixedDataCell 100% 동일 고정 폭 그리드 */
+    #left-list-pane.grab-scrolling {
+      cursor: grabbing !important;
+      user-select: none;
+    }
+
+    /* 5) 앱의 _buildFixedHeaderCell & _buildFixedDataCell + 마우스 셀 가로 폭 조절 + 상단 제목행 완벽 고정(sticky) */
     table.app-fixed-table {
       table-layout: fixed;
-      border-collapse: collapse;
+      border-collapse: separate;
+      border-spacing: 0;
       text-align: center;
     }
-    table.app-fixed-table th {
+    table.app-fixed-table thead th {
       background: #e2e8f0;
       color: #1e293b;
       font-size: 11px;
       line-height: 1.2;
       font-weight: 700;
-      padding: 7px 4px;
+      padding: 7px 6px 7px 4px;
       border-right: 1px solid #94a3b8;
-      border-bottom: 1px solid #94a3b8;
+      border-bottom: 2px solid #64748b;
+      position: -webkit-sticky;
       position: sticky;
       top: 0;
-      z-index: 5;
+      z-index: 15;
       word-break: keep-all;
       overflow-wrap: break-word;
+      user-select: none;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+    table.app-fixed-table thead th.sortable-th {
+      cursor: pointer;
+    }
+    table.app-fixed-table thead th.sortable-th:hover {
+      background: #cbd5e1;
+    }
+    table.app-fixed-table thead th.sorted-active {
+      background: #dbeafe;
+      color: #1e3a8a;
+    }
+    .col-resizer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 7px;
+      height: 100%;
+      cursor: col-resize;
+      z-index: 20;
+      touch-action: none;
+    }
+    .col-resizer:hover, .col-resizer.resizing {
+      background: rgba(37, 99, 235, 0.45);
     }
     table.app-fixed-table td {
       padding: 7px 4px;
@@ -7438,17 +8116,8 @@ class _HomeScreenState extends State<HomeScreen> {
 <body>
   <header class="app-bar">
     <div class="title-wrap">
-      <span>증빙서류 스냅 v39</span>
+      <span>증빙서류 스냅 - $scopeTitle</span>
       <span style="font-size:12px; font-weight:500; color:#fde047;">(<span id="count-label">${records.length}</span>건)</span>
-    </div>
-    <div class="actions-wrap">
-      <label class="app-btn merge" title="여러 명이 보낸 HTML 파일들을 한꺼번에 불러와 합치기">
-        📂 +HTML 합치기
-        <input type="file" id="merge-file-input" accept=".html,.htm" multiple style="display:none;" onchange="mergeExternalHtmlFiles(this.files)" />
-      </label>
-      <button class="app-btn save" onclick="downloadMergedHtml()" title="현재 필터/수정 상태가 반영된 통합 HTML 파일 저장">
-        💾 통합본 저장
-      </button>
     </div>
   </header>
 
@@ -7499,14 +8168,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   <script>
     const archiveRecords = /*ARCHIVE_DATA_START*/ $recordsJson /*ARCHIVE_DATA_END*/;
-    const ALL_TABS = ['전체', '공문(수신)', '공문(발신)', '자재송장', '출장비', '병원비'];
+    const ALL_TABS = $allowedTabsJson;
     const TRAVEL_DIVS = ['전체', '자차', '택시', '기차', '식대', '통행료'];
+    const IS_ALL_OFFICIAL_DOC = archiveRecords.length > 0 && archiveRecords.every(function(r) {
+      return r.category === '공문(수신)' || r.category === '공문(발신)';
+    });
 
     let selectedCategoryFilter = "$majorCat";
-    // 만약 내보낸 데이터에 현재 탭 항목이 없고 다른 탭만 있으면 자동으로 해당 탭 선택
-    if (selectedCategoryFilter !== '전체' && !archiveRecords.some(function(r) { return r.category === selectedCategoryFilter; })) {
-      const uniqueCats = Array.from(new Set(archiveRecords.map(function(r) { return r.category; })));
-      selectedCategoryFilter = uniqueCats.length === 1 ? uniqueCats[0] : '전체';
+    if (!ALL_TABS.includes(selectedCategoryFilter)) {
+      selectedCategoryFilter = ALL_TABS[0];
+    } else if (selectedCategoryFilter !== '전체' && !archiveRecords.some(function(r) { return r.category === selectedCategoryFilter; })) {
+      selectedCategoryFilter = ALL_TABS[0];
     }
 
     let selectedSubCategoryFilter = '전체';
@@ -7524,17 +8196,43 @@ class _HomeScreenState extends State<HomeScreen> {
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
     let editingRecordId = null;
 
+    // ★ 정렬 상태 (기본: 날짜 최신순 = 'date', sortAscending = false)
+    let sortColumn = 'date';
+    let sortAscending = false;
+    // ★ 사용자가 마우스로 조절한 열 너비 저장 맵 (탭_열인덱스 -> px)
+    const customColWidths = {};
+
     // -------------------------------------------------------------------------
-    // A. 분할 화면 리사이저 (세로/가로 자동 감지)
+    // A. 분할 화면 리사이저 (세로/가로 방향 전환 시 좌/우 ↔ 상/하 즉시 자동 전환)
     // -------------------------------------------------------------------------
     const resizerBar = document.getElementById('resizer-bar');
     const leftPane = document.getElementById('left-list-pane');
     const mainSplit = document.getElementById('main-split');
     let isResizing = false;
+    let savedPortraitHeightPct = 44;
+    let savedLandscapeWidthPct = 48;
 
     function isPortraitMode() {
-      return window.matchMedia("(orientation: portrait)").matches;
+      return window.innerHeight >= window.innerWidth;
     }
+
+    function applyOrientationLayout() {
+      if (isPortraitMode()) {
+        mainSplit.classList.add('portrait-mode');
+        leftPane.style.width = '100%';
+        leftPane.style.height = savedPortraitHeightPct + '%';
+      } else {
+        mainSplit.classList.remove('portrait-mode');
+        leftPane.style.height = '100%';
+        leftPane.style.width = savedLandscapeWidthPct + '%';
+      }
+    }
+
+    window.addEventListener('resize', applyOrientationLayout);
+    window.addEventListener('orientationchange', function() {
+      setTimeout(applyOrientationLayout, 80);
+    });
+    applyOrientationLayout();
 
     resizerBar.addEventListener('pointerdown', function(e) {
       isResizing = true;
@@ -7544,14 +8242,55 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!isResizing) return;
       const rect = mainSplit.getBoundingClientRect();
       if (isPortraitMode()) {
-        const newH = ((e.clientY - rect.top) / rect.height) * 100;
-        leftPane.style.height = Math.max(18, Math.min(82, newH)) + '%';
+        const newH = Math.max(18, Math.min(82, ((e.clientY - rect.top) / rect.height) * 100));
+        savedPortraitHeightPct = newH;
+        leftPane.style.height = newH + '%';
       } else {
-        const newW = ((e.clientX - rect.left) / rect.width) * 100;
-        leftPane.style.width = Math.max(20, Math.min(82, newW)) + '%';
+        const newW = Math.max(20, Math.min(82, ((e.clientX - rect.left) / rect.width) * 100));
+        savedLandscapeWidthPct = newW;
+        leftPane.style.width = newW + '%';
       }
     });
     resizerBar.addEventListener('pointerup', function() { isResizing = false; });
+
+    // ★ 리스트가 길어져서 화면을 넘어갈 때 마우스로 잡고 위아래/좌우로 끌어 스크롤 (상단 제목행은 고정!)
+    let isListDragScrolling = false;
+    let listDragMoved = false;
+    let listStartX = 0;
+    let listStartY = 0;
+    let listScrollLeftStart = 0;
+    let listScrollTopStart = 0;
+
+    leftPane.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      if (e.target.closest('.col-resizer') || e.target.closest('button') || e.target.closest('thead')) return;
+      isListDragScrolling = true;
+      listDragMoved = false;
+      listStartX = e.pageX;
+      listStartY = e.pageY;
+      listScrollLeftStart = leftPane.scrollLeft;
+      listScrollTopStart = leftPane.scrollTop;
+    });
+    window.addEventListener('mousemove', function(e) {
+      if (!isListDragScrolling) return;
+      const dx = e.pageX - listStartX;
+      const dy = e.pageY - listStartY;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+        listDragMoved = true;
+        leftPane.classList.add('grab-scrolling');
+      }
+      if (listDragMoved) {
+        leftPane.scrollLeft = listScrollLeftStart - dx;
+        leftPane.scrollTop = listScrollTopStart - dy;
+      }
+    });
+    window.addEventListener('mouseup', function() {
+      if (isListDragScrolling) {
+        isListDragScrolling = false;
+        leftPane.classList.remove('grab-scrolling');
+        setTimeout(function() { listDragMoved = false; }, 50);
+      }
+    });
 
     // -------------------------------------------------------------------------
     // B. 우측/하단 사진 뷰어 줌(확대/축소) 및 드래그 이동 (앱의 InteractiveViewer와 동일)
@@ -7749,9 +8488,31 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     }
 
+    function extractSortableDateStr(item) {
+      const f = item.fields || {};
+      let raw = '';
+      if (item.category === '공문(수신)' || item.category === '공문(발신)') raw = f.sentDate || '';
+      else if (item.category === '자재송장') raw = f.arrivalDate || '';
+      else if (item.category === '출장비') raw = f.date || '';
+      else if (item.category === '병원비') raw = f.issueDate || '';
+      const d = dotDate(raw);
+      if (/^\d{4}\.\d{2}\.\d{2}\$/.test(d)) return d;
+      return dotDate((item.createdAt || '').split(' ')[0]);
+    }
+
+    function toggleSort(colKey) {
+      if (sortColumn === colKey) {
+        sortAscending = !sortAscending;
+      } else {
+        sortColumn = colKey;
+        sortAscending = (colKey !== 'date');
+      }
+      render();
+    }
+
     function getFilteredRecords() {
       const base = getRecordsInMajorCategory();
-      return base.filter(function(r) {
+      const filtered = base.filter(function(r) {
         const f = r.fields || {};
         if (selectedCategoryFilter === '출장비' || selectedCategoryFilter === '병원비') {
           if (selectedSubCategoryFilter !== '전체') {
@@ -7769,6 +8530,31 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         return true;
       });
+
+      const repliedKeys = computeRepliedKeySet();
+      filtered.sort(function(a, b) {
+        const fa = a.fields || {};
+        const fb = b.fields || {};
+        let cmp = 0;
+        if (sortColumn === 'docNumber') {
+          cmp = String(fa.docNumber || '').trim().localeCompare(String(fb.docNumber || '').trim(), 'ko');
+        } else if (sortColumn === 'replied') {
+          const ka = normalizeDocKey(fa.docNumber);
+          const kb = normalizeDocKey(fb.docNumber);
+          const ra = (ka && repliedKeys.has(ka)) ? 0 : 1;
+          const rb = (kb && repliedKeys.has(kb)) ? 0 : 1;
+          cmp = ra - rb;
+        } else if (sortColumn === 'uploader') {
+          cmp = String(fa.uploaderName || '-').trim().localeCompare(String(fb.uploaderName || '-').trim(), 'ko');
+        } else {
+          cmp = extractSortableDateStr(a).localeCompare(extractSortableDateStr(b));
+        }
+        if (cmp === 0) {
+          cmp = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+        }
+        return sortAscending ? cmp : -cmp;
+      });
+      return filtered;
     }
 
     // -------------------------------------------------------------------------
@@ -7811,7 +8597,7 @@ class _HomeScreenState extends State<HomeScreen> {
     function renderSummaryAndFilterBar() {
       const bar = document.getElementById('summary-filter-bar');
       const cat = selectedCategoryFilter;
-      if (cat === '공문(수신)' || cat === '공문(발신)') {
+      if (cat === '공문(수신)' || cat === '공문(발신)' || (cat === '전체' && IS_ALL_OFFICIAL_DOC)) {
         bar.style.display = 'none';
         return;
       }
@@ -7980,9 +8766,85 @@ class _HomeScreenState extends State<HomeScreen> {
       return '';
     }
 
+    function buildHeaderCell(label, defaultWidth, colIdx, sortKey) {
+      const wKey = selectedCategoryFilter + '_' + colIdx;
+      const w = customColWidths[wKey] || defaultWidth;
+      const isSortable = Boolean(sortKey);
+      const isActive = isSortable && (sortColumn === sortKey);
+      const arrow = isActive ? (sortAscending ? ' ▲' : ' ▼') : (isSortable ? ' ↕' : '');
+      const cls = (isSortable ? 'sortable-th' : '') + (isActive ? ' sorted-active' : '');
+      const clickAttr = isSortable ? (' onclick="toggleSort(\'' + sortKey + '\')"') : '';
+      return '<th class="' + cls + '" data-col-idx="' + colIdx + '" style="width:' + w + 'px;"' + clickAttr + '>' +
+        escapeHtml(label) + arrow +
+        '<div class="col-resizer" onmousedown="startColResize(event, ' + colIdx + ')" onclick="event.stopPropagation()"></div>' +
+        '</th>';
+    }
+
+    function getColWidth(defaultWidth, colIdx) {
+      const wKey = selectedCategoryFilter + '_' + colIdx;
+      return customColWidths[wKey] || defaultWidth;
+    }
+
+    function buildTableColGroup(defaultWidths) {
+      let totalW = 0;
+      let colsHtml = '<colgroup>';
+      defaultWidths.forEach(function(dw, idx) {
+        const w = getColWidth(dw, idx);
+        totalW += w;
+        colsHtml += '<col id="col-def-' + idx + '" style="width:' + w + 'px;" />';
+      });
+      colsHtml += '</colgroup>';
+      return { totalWidth: totalW, colGroupHtml: colsHtml };
+    }
+
+    let activeResizeColIdx = -1;
+    let resizeStartX = 0;
+    let resizeStartWidth = 0;
+    let resizeTableStartWidth = 0;
+
+    function startColResize(e, colIdx) {
+      e.stopPropagation();
+      e.preventDefault();
+      const table = leftPane.querySelector('table.app-fixed-table');
+      const colEl = document.getElementById('col-def-' + colIdx);
+      if (!table || !colEl) return;
+      activeResizeColIdx = colIdx;
+      resizeStartX = e.clientX;
+      resizeStartWidth = parseFloat(colEl.style.width) || colEl.offsetWidth || 64;
+      resizeTableStartWidth = parseFloat(table.style.width) || table.offsetWidth || 600;
+      if (e.target && e.target.classList) e.target.classList.add('resizing');
+    }
+
+    window.addEventListener('mousemove', function(e) {
+      if (activeResizeColIdx === -1) return;
+      const dx = e.clientX - resizeStartX;
+      const newW = Math.max(38, Math.round(resizeStartWidth + dx));
+      const delta = newW - resizeStartWidth;
+      const wKey = selectedCategoryFilter + '_' + activeResizeColIdx;
+      customColWidths[wKey] = newW;
+
+      const table = leftPane.querySelector('table.app-fixed-table');
+      const colEl = document.getElementById('col-def-' + activeResizeColIdx);
+      const thEl = leftPane.querySelector('th[data-col-idx="' + activeResizeColIdx + '"]');
+      if (colEl) colEl.style.width = newW + 'px';
+      if (thEl) thEl.style.width = newW + 'px';
+      if (table) table.style.width = (resizeTableStartWidth + delta) + 'px';
+    });
+
+    window.addEventListener('mouseup', function() {
+      if (activeResizeColIdx !== -1) {
+        const rEls = leftPane.querySelectorAll('.col-resizer.resizing');
+        rEls.forEach(function(el) { el.classList.remove('resizing'); });
+        activeResizeColIdx = -1;
+      }
+    });
+
     function render() {
       renderMajorTabsBar();
       renderSummaryAndFilterBar();
+
+      const prevScrollTop = leftPane.scrollTop;
+      const prevScrollLeft = leftPane.scrollLeft;
 
       const items = getFilteredRecords();
       document.getElementById('count-label').textContent = items.length;
@@ -8001,22 +8863,36 @@ class _HomeScreenState extends State<HomeScreen> {
       const cat = selectedCategoryFilter;
       let html = '';
 
-      if (cat === '공문(수신)' || cat === '공문(발신)') {
+      if (cat === '공문(수신)' || cat === '공문(발신)' || (cat === '전체' && IS_ALL_OFFICIAL_DOC)) {
         const isOutTab = (cat === '공문(발신)');
-        const partyHeader = isOutTab ? '받는사람' : '보낸사람';
-        const tableWidth = isOutTab ? 750 : 730;
-        html += '<table class="app-fixed-table" style="width:' + tableWidth + 'px;"><thead><tr>' +
-          '<th style="width:64px;">날짜</th>' +
-          '<th style="width:76px;">공문번호</th>' +
-          '<th style="width:68px;">' + partyHeader + '</th>' +
-          (isOutTab ? '<th style="width:76px;">회신번호</th>' : '') +
-          '<th style="width:118px;">제목</th>' +
-          '<th style="width:152px;">내용</th>' +
-          '<th style="width:64px;">회신요청일</th>' +
-          (!isOutTab ? '<th style="width:56px;">회신완료</th>' : '') +
-          '<th style="width:64px;">올린사람</th>' +
-          '<th style="width:68px;">수정/삭제</th>' +
-          '</tr></thead><tbody>';
+        const partyHeader = (cat === '전체') ? '보낸/받는사람' : (isOutTab ? '받는사람' : '보낸사람');
+        const defaultWidths = isOutTab
+          ? [64, 76, 68, 76, 118, 152, 64, 64, 68]
+          : [64, 76, 68, 118, 152, 64, 56, 64, 68];
+        const cg = buildTableColGroup(defaultWidths);
+        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>';
+        if (isOutTab) {
+          html += buildHeaderCell('날짜', 64, 0, 'date') +
+            buildHeaderCell('공문번호', 76, 1, 'docNumber') +
+            buildHeaderCell(partyHeader, 68, 2, null) +
+            buildHeaderCell('회신번호', 76, 3, null) +
+            buildHeaderCell('제목', 118, 4, null) +
+            buildHeaderCell('내용', 152, 5, null) +
+            buildHeaderCell('회신요청일', 64, 6, null) +
+            buildHeaderCell('올린사람', 64, 7, 'uploader') +
+            buildHeaderCell('수정/삭제', 68, 8, null);
+        } else {
+          html += buildHeaderCell('날짜', 64, 0, 'date') +
+            buildHeaderCell('공문번호', 76, 1, 'docNumber') +
+            buildHeaderCell(partyHeader, 68, 2, null) +
+            buildHeaderCell('제목', 118, 3, null) +
+            buildHeaderCell('내용', 152, 4, null) +
+            buildHeaderCell('회신요청일', 64, 5, null) +
+            buildHeaderCell('회신완료', 56, 6, 'replied') +
+            buildHeaderCell('올린사람', 64, 7, 'uploader') +
+            buildHeaderCell('수정/삭제', 68, 8, null);
+        }
+        html += '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
           const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
@@ -8027,32 +8903,34 @@ class _HomeScreenState extends State<HomeScreen> {
           const isReplied = Boolean(myKey && repliedKeys.has(myKey));
           const cls = item.id === selectedId ? 'active' : '';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
-            '<td style="width:64px;">' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
-            '<td style="width:76px;">' + escapeHtml(f.docNumber || '-') + '</td>' +
-            '<td style="width:68px;">' + escapeHtml(partyVal) + '</td>' +
-            (isOutTab ? '<td style="width:76px; color:#1e3a8a; font-weight:700;">' + escapeHtml(replyNum) + '</td>' : '') +
-            '<td style="width:118px;">' + escapeHtml(f.title || '-') + '</td>' +
-            '<td style="width:152px;">' + escapeHtml(f.aiSummary || '-') + '</td>' +
-            '<td style="width:64px;">' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
-            (!isOutTab ? '<td style="width:56px; color:#16a34a; font-weight:700; font-size:14px;">' + (isReplied ? '○' : '') + '</td>' : '') +
-            '<td style="width:64px; color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+            '<td>' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
+            '<td>' + escapeHtml(f.docNumber || '-') + '</td>' +
+            '<td>' + escapeHtml(partyVal) + '</td>' +
+            (isOutTab ? '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(replyNum) + '</td>' : '') +
+            '<td>' + escapeHtml(f.title || '-') + '</td>' +
+            '<td>' + escapeHtml(f.aiSummary || '-') + '</td>' +
+            '<td>' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
+            (!isOutTab ? '<td style="color:#16a34a; font-weight:700; font-size:14px;">' + (isReplied ? '○' : '') + '</td>' : '') +
+            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
       } else if (cat === '자재송장') {
-        html += '<table class="app-fixed-table" style="width:706px;"><thead><tr>' +
-          '<th style="width:64px;">날짜</th>' +
-          '<th style="width:72px;">제품명</th>' +
-          '<th style="width:62px;">규격명</th>' +
-          '<th style="width:44px;">단위</th>' +
-          '<th style="width:64px;">수량</th>' +
-          '<th style="width:68px;">누적수량</th>' +
-          '<th style="width:78px;">공급자</th>' +
-          '<th style="width:122px;">주문송장번호</th>' +
-          '<th style="width:64px;">올린사람</th>' +
-          '<th style="width:68px;">수정/삭제</th>' +
+        const defaultWidths = [64, 72, 62, 44, 64, 68, 78, 122, 64, 68];
+        const cg = buildTableColGroup(defaultWidths);
+        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
+          buildHeaderCell('날짜', 64, 0, 'date') +
+          buildHeaderCell('제품명', 72, 1, null) +
+          buildHeaderCell('규격명', 62, 2, null) +
+          buildHeaderCell('단위', 44, 3, null) +
+          buildHeaderCell('수량', 64, 4, null) +
+          buildHeaderCell('누적수량', 68, 5, null) +
+          buildHeaderCell('공급자', 78, 6, null) +
+          buildHeaderCell('주문송장번호', 122, 7, null) +
+          buildHeaderCell('올린사람', 64, 8, 'uploader') +
+          buildHeaderCell('수정/삭제', 68, 9, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
@@ -8060,27 +8938,29 @@ class _HomeScreenState extends State<HomeScreen> {
           const cumVal = cumMap[item.id] || f.quantity || '-';
           const uploaderVal = f.uploaderName || '-';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
-            '<td style="width:64px;">' + escapeHtml(dotDate(f.arrivalDate)) + '</td>' +
-            '<td style="width:72px;">' + escapeHtml(f.productName || '-') + '</td>' +
-            '<td style="width:62px;">' + escapeHtml(f.specName || '-') + '</td>' +
-            '<td style="width:44px;">' + escapeHtml(f.unit || 'ton') + '</td>' +
-            '<td style="width:64px;">' + escapeHtml(f.quantity || '-') + '</td>' +
-            '<td style="width:68px; color:#1e3a8a; font-weight:700;">' + escapeHtml(cumVal) + '</td>' +
-            '<td style="width:78px;">' + escapeHtml(f.supplierName || '-') + '</td>' +
-            '<td style="width:122px;">' + escapeHtml(f.orderNumber || '-') + '</td>' +
-            '<td style="width:64px; color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+            '<td>' + escapeHtml(dotDate(f.arrivalDate)) + '</td>' +
+            '<td>' + escapeHtml(f.productName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.specName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.unit || 'ton') + '</td>' +
+            '<td>' + escapeHtml(f.quantity || '-') + '</td>' +
+            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(cumVal) + '</td>' +
+            '<td>' + escapeHtml(f.supplierName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.orderNumber || '-') + '</td>' +
+            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
       } else if (cat === '출장비') {
-        html += '<table class="app-fixed-table" style="width:446px;"><thead><tr>' +
-          '<th style="width:100px;">카테고리(날짜)</th>' +
-          '<th style="width:58px;">구분</th>' +
-          '<th style="width:136px;">상호</th>' +
-          '<th style="width:84px;">금액</th>' +
-          '<th style="width:68px;">수정/삭제</th>' +
+        const defaultWidths = [100, 58, 136, 84, 68];
+        const cg = buildTableColGroup(defaultWidths);
+        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
+          buildHeaderCell('카테고리(날짜)', 100, 0, 'date') +
+          buildHeaderCell('구분', 58, 1, null) +
+          buildHeaderCell('상호', 136, 2, null) +
+          buildHeaderCell('금액', 84, 3, null) +
+          buildHeaderCell('수정/삭제', 68, 4, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
@@ -8095,23 +8975,25 @@ class _HomeScreenState extends State<HomeScreen> {
             : (f.merchantName || '-');
           const amt = formatNumber(getNumericAmount(item)) + '원';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
-            '<td style="width:100px;">' + escapeHtml(sub) + '<br/>(' + escapeHtml(dateStr) + ')</td>' +
-            '<td style="width:58px; color:#451a03; font-weight:700;">' + escapeHtml(div) + '</td>' +
-            '<td style="width:136px;">' + escapeHtml(desc) + '</td>' +
-            '<td style="width:84px; color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
-            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+            '<td>' + escapeHtml(sub) + '<br/>(' + escapeHtml(dateStr) + ')</td>' +
+            '<td style="color:#451a03; font-weight:700;">' + escapeHtml(div) + '</td>' +
+            '<td>' + escapeHtml(desc) + '</td>' +
+            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
       } else if (cat === '병원비') {
-        html += '<table class="app-fixed-table" style="width:492px;"><thead><tr>' +
-          '<th style="width:74px;">카테고리</th>' +
-          '<th style="width:68px;">날짜</th>' +
-          '<th style="width:104px;">상호</th>' +
-          '<th style="width:80px;">금액</th>' +
-          '<th style="width:98px;">사업자등록번호</th>' +
-          '<th style="width:68px;">수정/삭제</th>' +
+        const defaultWidths = [74, 68, 104, 80, 98, 68];
+        const cg = buildTableColGroup(defaultWidths);
+        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
+          buildHeaderCell('카테고리', 74, 0, null) +
+          buildHeaderCell('날짜', 68, 1, 'date') +
+          buildHeaderCell('상호', 104, 2, null) +
+          buildHeaderCell('금액', 80, 3, null) +
+          buildHeaderCell('사업자등록번호', 98, 4, null) +
+          buildHeaderCell('수정/삭제', 68, 5, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
@@ -8120,24 +9002,25 @@ class _HomeScreenState extends State<HomeScreen> {
           const dateStr = dotDate(f.issueDate || (item.createdAt || '').split(' ')[0]);
           const amt = formatNumber(getNumericAmount(item)) + '원';
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
-            '<td style="width:74px;">' + escapeHtml(sub) + '</td>' +
-            '<td style="width:68px;">' + escapeHtml(dateStr) + '</td>' +
-            '<td style="width:104px;">' + escapeHtml(f.clinicName || '-') + '</td>' +
-            '<td style="width:80px; color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
-            '<td style="width:98px;">' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
-            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+            '<td>' + escapeHtml(sub) + '</td>' +
+            '<td>' + escapeHtml(dateStr) + '</td>' +
+            '<td>' + escapeHtml(f.clinicName || '-') + '</td>' +
+            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
+            '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
       } else {
-        // 전체 탭 (앱의 5번째 표와 100% 동일: 분류 72 | 날짜 68 | 제목/상호/품목 150 | 상세/금액/수량 132 | 수정/삭제 68 = 490px)
-        html += '<table class="app-fixed-table" style="width:490px;"><thead><tr>' +
-          '<th style="width:72px;">분류</th>' +
-          '<th style="width:68px;">날짜</th>' +
-          '<th style="width:150px;">제목 / 상호 / 품목</th>' +
-          '<th style="width:132px;">상세 / 금액 / 수량</th>' +
-          '<th style="width:68px;">수정/삭제</th>' +
+        const defaultWidths = [72, 68, 150, 132, 68];
+        const cg = buildTableColGroup(defaultWidths);
+        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
+          buildHeaderCell('분류', 72, 0, null) +
+          buildHeaderCell('날짜', 68, 1, 'date') +
+          buildHeaderCell('제목 / 상호 / 품목', 150, 2, null) +
+          buildHeaderCell('상세 / 금액 / 수량', 132, 3, null) +
+          buildHeaderCell('수정/삭제', 68, 4, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
@@ -8148,18 +9031,20 @@ class _HomeScreenState extends State<HomeScreen> {
           else if (item.category === '출장비') dateStr = dotDate(f.date);
           else if (item.category === '병원비') dateStr = dotDate(f.issueDate);
           const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="selectRow(\\'' + sid + '\\')">' +
-            '<td style="width:72px;">' + escapeHtml(item.category) + '</td>' +
-            '<td style="width:68px;">' + escapeHtml(dateStr) + '</td>' +
-            '<td style="width:150px;">' + escapeHtml(getDisplayTitle(item)) + '</td>' +
-            '<td style="width:132px;">' + escapeHtml(getDisplaySubtitle(item)) + '</td>' +
-            '<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
+            '<td>' + escapeHtml(item.category) + '</td>' +
+            '<td>' + escapeHtml(dateStr) + '</td>' +
+            '<td>' + escapeHtml(getDisplayTitle(item)) + '</td>' +
+            '<td>' + escapeHtml(getDisplaySubtitle(item)) + '</td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
       }
 
       leftPane.innerHTML = html;
+      leftPane.scrollTop = prevScrollTop;
+      leftPane.scrollLeft = prevScrollLeft;
       selectRow(selectedId);
     }
 
@@ -8583,7 +9468,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: IntrinsicHeight(
                     child: Row(
                       children: [
-                        _buildFixedHeaderCell('날짜', width: 64),
+                        _buildFixedHeaderCell('날짜', width: 64, sortKey: 'date'),
                         _buildFixedHeaderCell('제품명', width: 72),
                         _buildFixedHeaderCell('규격명', width: 62),
                         _buildFixedHeaderCell('단위', width: 44),
@@ -8591,7 +9476,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell('누적수량', width: 68),
                         _buildFixedHeaderCell('공급자', width: 78),
                         _buildFixedHeaderCell('주문송장번호', width: 122),
-                        _buildFixedHeaderCell('올린사람', width: 64),
+                        _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader'),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
@@ -8708,8 +9593,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: IntrinsicHeight(
                     child: Row(
                       children: [
-                        _buildFixedHeaderCell('날짜', width: 64),
-                        _buildFixedHeaderCell('공문번호', width: 76),
+                        _buildFixedHeaderCell('날짜', width: 64, sortKey: 'date'),
+                        _buildFixedHeaderCell('공문번호', width: 76, sortKey: 'docNumber'),
                         _buildFixedHeaderCell(partyHeader, width: 68),
                         if (isOutTab)
                           _buildFixedHeaderCell('회신번호', width: 76),
@@ -8717,8 +9602,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell('내용', width: 152),
                         _buildFixedHeaderCell('회신요청일', width: 64),
                         if (!isOutTab)
-                          _buildFixedHeaderCell('회신완료', width: 56),
-                        _buildFixedHeaderCell('올린사람', width: 64),
+                          _buildFixedHeaderCell('회신완료', width: 56, sortKey: 'replied'),
+                        _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader'),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
@@ -8839,7 +9724,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: IntrinsicHeight(
                     child: Row(
                       children: [
-                        _buildFixedHeaderCell('카테고리(날짜)', width: 100),
+                        _buildFixedHeaderCell('카테고리(날짜)', width: 100, sortKey: 'date'),
                         _buildFixedHeaderCell('구분', width: 58),
                         _buildFixedHeaderCell('상호', width: 136),
                         _buildFixedHeaderCell('금액', width: 84),
@@ -8949,7 +9834,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       children: [
                         _buildFixedHeaderCell('카테고리', width: 74),
-                        _buildFixedHeaderCell('날짜', width: 68),
+                        _buildFixedHeaderCell('날짜', width: 68, sortKey: 'date'),
                         _buildFixedHeaderCell('상호', width: 104),
                         _buildFixedHeaderCell('금액', width: 80),
                         _buildFixedHeaderCell('사업자등록번호', width: 98),
@@ -9047,7 +9932,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Row(
                     children: [
                       _buildFixedHeaderCell('분류', width: 72),
-                      _buildFixedHeaderCell('날짜', width: 68),
+                      _buildFixedHeaderCell('날짜', width: 68, sortKey: 'date'),
                       _buildFixedHeaderCell('제목 / 상호 / 품목', width: 150),
                       _buildFixedHeaderCell('상세 / 금액 / 수량', width: 132),
                       _buildFixedHeaderCell('수정/삭제', width: 68),
@@ -9125,28 +10010,50 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildFixedHeaderCell(String label, {required double width}) {
-    return Container(
+  Widget _buildFixedHeaderCell(
+    String label, {
+    required double width,
+    String? sortKey,
+    String? currentSortCol,
+    bool? currentSortAsc,
+    VoidCallback? onSortTap,
+  }) {
+    final effectiveSortCol = currentSortCol ?? _sortColumn;
+    final effectiveSortAsc = currentSortAsc ?? _sortAscending;
+    final bool isSortable = sortKey != null;
+    final bool isActive = isSortable && effectiveSortCol == sortKey;
+    final String arrow = isActive
+        ? (effectiveSortAsc ? ' ▲' : ' ▼')
+        : (isSortable ? ' ↕' : '');
+
+    final cell = Container(
       width: width,
-      padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
-      decoration: const BoxDecoration(
-        border: Border(
+      padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 3),
+      decoration: BoxDecoration(
+        color: isActive ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0),
+        border: const Border(
           right: BorderSide(color: Color(0xFF94A3B8), width: 1),
           bottom: BorderSide(color: Color(0xFF94A3B8), width: 1),
         ),
       ),
       alignment: Alignment.center,
       child: Text(
-        label,
+        '$label$arrow',
         textAlign: TextAlign.center,
         softWrap: true,
-        style: const TextStyle(
-          fontSize: 11,
+        style: TextStyle(
+          fontSize: 10.8,
           height: 1.2,
           fontWeight: FontWeight.bold,
-          color: Color(0xFF1E293B),
+          color: isActive ? const Color(0xFF1E3A8A) : const Color(0xFF1E293B),
         ),
       ),
+    );
+
+    if (!isSortable) return cell;
+    return InkWell(
+      onTap: onSortTap ?? () => _toggleSortColumn(sortKey),
+      child: cell,
     );
   }
 
@@ -9199,7 +10106,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        title: const Text('증빙서류 스냅 v39'),
+        title: const Text('증빙서류 스냅'),
         actions: [
           IconButton(
             tooltip: _geminiApiKey.trim().isEmpty
@@ -9225,8 +10132,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: _isBusy ? null : _openFieldShareRoomDialog,
             icon: Icon(
               Icons.cloud_done_outlined,
-              color: _normalizeGithubRepo(_githubRepo).isNotEmpty &&
-                      _githubToken.trim().isNotEmpty
+              color: _isShareRoomConfigured
                   ? Colors.greenAccent
                   : Colors.lightBlueAccent,
               size: 18,
