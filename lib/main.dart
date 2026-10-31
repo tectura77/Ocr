@@ -5687,6 +5687,62 @@ class _HomeScreenState extends State<HomeScreen> {
     return null;
   }
 
+  /// ★ GitHub Actions 4~5분 앱 자동 빌드 방지:
+  /// 1) 커밋 메시지에 `[skip ci] [ no ci ]`를 자동 포함하여 GitHub Actions 워크플로우가 아예 실행되지 않도록 차단!
+  /// 2) 혹시라도 저장소 설정상 트리거된 대기/실행 중 워크플로우가 있다면 즉시 자동 취소(cancel) 호출하여 GitHub 무료 시간 소모를 0초로 방어!
+  Future<void> _cancelRunningGithubWorkflowsIfAny(
+    String repo,
+    String token,
+  ) async {
+    try {
+      final runsUri = Uri.parse(
+        'https://api.github.com/repos/$repo/actions/runs?per_page=5',
+      );
+      final runsResp = await http.get(
+        runsUri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      ).timeout(const Duration(seconds: 8));
+      if (runsResp.statusCode == 200) {
+        final data =
+            jsonDecode(utf8.decode(runsResp.bodyBytes)) as Map<String, dynamic>;
+        final runs = (data['workflow_runs'] as List<dynamic>?) ?? const [];
+        for (final r in runs) {
+          if (r is Map<String, dynamic>) {
+            final status = r['status']?.toString() ?? '';
+            final headMsg =
+                (r['head_commit'] as Map<String, dynamic>?)?['message']
+                        ?.toString() ??
+                    '';
+            final runId = r['id'];
+            if ((status == 'queued' ||
+                    status == 'in_progress' ||
+                    status == 'waiting') &&
+                runId != null &&
+                (headMsg.contains('공문_통합.html') ||
+                    headMsg.contains('자재송장_통합.html') ||
+                    headMsg.contains('[skip ci]'))) {
+              final cancelUri = Uri.parse(
+                'https://api.github.com/repos/$repo/actions/runs/$runId/cancel',
+              );
+              await http.post(
+                cancelUri,
+                headers: {
+                  'Authorization': 'Bearer $token',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              ).timeout(const Duration(seconds: 6));
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
   Future<bool> _putGithubFileContent({
     required String fileName,
     required String htmlContent,
@@ -5704,8 +5760,13 @@ class _HomeScreenState extends State<HomeScreen> {
       'https://api.github.com/repos/$repo/contents/$encodedPath',
     );
 
+    // ★ [skip ci] 태그를 커밋 메시지에 자동 부착 -> GitHub Actions 앱 빌드가 절대 돌아가지 않도록 차단!
+    final safeCommitMsg = commitMessage.contains('[skip ci]')
+        ? commitMessage
+        : '$commitMessage [skip ci]';
+
     final bodyMap = <String, dynamic>{
-      'message': commitMessage,
+      'message': safeCommitMsg,
       'content': base64Encode(utf8.encode(htmlContent)),
     };
     if (existingSha != null && existingSha.isNotEmpty) {
@@ -5723,7 +5784,12 @@ class _HomeScreenState extends State<HomeScreen> {
       body: jsonEncode(bodyMap),
     ).timeout(const Duration(seconds: 35));
 
-    return resp.statusCode == 200 || resp.statusCode == 201;
+    final ok = resp.statusCode == 200 || resp.statusCode == 201;
+    if (ok) {
+      // 혹시라도 트리거된 워크플로우가 있으면 백그라운드에서 즉시 취소하여 GitHub Actions 시간 절약
+      unawaited(_cancelRunningGithubWorkflowsIfAny(repo, token));
+    }
+    return ok;
   }
 
   // ---------------------------------------------------------------------------
@@ -5861,16 +5927,26 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_shareRoomMode == 'github') {
       final repo = _normalizeGithubRepo(_githubRepo);
       final token = _githubToken.trim();
-      if (repo.isEmpty || token.isEmpty) {
-        _showSnack('먼저 설정(⚙️)에서 [GitHub 저장소 & 토큰]을 등록하거나 [OneDrive 방식]으로 전환해 주세요.');
+      final siteFolder = _githubFolder.trim();
+      if (repo.isEmpty || token.isEmpty || siteFolder.isEmpty) {
+        _showSnack('먼저 설정(⚙️)에서 [GitHub 저장소 · 토큰 · 현장명(공유방 폴더 이름)]을 입력해 주세요!');
         await _openSettingsDialog();
-        return;
+        if (_normalizeGithubRepo(_githubRepo).isEmpty ||
+            _githubToken.trim().isEmpty ||
+            _githubFolder.trim().isEmpty) {
+          return;
+        }
       }
     }
 
     final String targetFileName =
         isOfficialRoom ? _shareOfficialFileName : _shareInvoiceFileName;
-    final String scopeTitle = isOfficialRoom ? '공문(수신·발신)' : '자재송장';
+    final String siteFolder = _githubFolder.trim().isEmpty
+        ? '현장공유방'
+        : _githubFolder.trim();
+    final String scopeTitle = isOfficialRoom
+        ? '[$siteFolder] 공문(수신·발신)'
+        : '[$siteFolder] 자재송장';
 
     setState(() => _isBusy = true);
     try {
@@ -5991,11 +6067,11 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         if (ok) {
           _showSnack(
-            '✅ [$targetFileName] GitHub 공유방 합치기 완료! (올림 +$uploadedNewCount건 / 받음 +$downloadedNewCount건 · 총 ${mergedRoomList.length}건)',
+            '✅ [$siteFolder/$targetFileName] 현장 공유방 합치기 완료! (올림 +$uploadedNewCount건 / 받음 +$downloadedNewCount건 · 총 ${mergedRoomList.length}건)',
           );
           if (openViewerAfterSync && mounted) {
             await _openShareRoomViewerDialog(
-              title: '☁️ 현장 공유방 - $targetFileName (${mergedRoomList.length}건)',
+              title: '☁️ [$siteFolder] $targetFileName (${mergedRoomList.length}건)',
               records: mergedRoomList,
               repliedKeys: repliedKeys,
               isOfficialRoom: isOfficialRoom,
@@ -6049,10 +6125,15 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_shareRoomMode == 'github') {
       final repo = _normalizeGithubRepo(_githubRepo);
       final token = _githubToken.trim();
-      if (repo.isEmpty || token.isEmpty) {
-        _showSnack('먼저 설정(⚙️)에서 [GitHub 저장소 & 토큰]을 등록하거나 [OneDrive 방식]으로 전환해 주세요.');
+      final siteFolder = _githubFolder.trim();
+      if (repo.isEmpty || token.isEmpty || siteFolder.isEmpty) {
+        _showSnack('먼저 설정(⚙️)에서 [GitHub 저장소 · 토큰 · 현장명(공유방 폴더 이름)]을 입력해 주세요!');
         await _openSettingsDialog();
-        return;
+        if (_normalizeGithubRepo(_githubRepo).isEmpty ||
+            _githubToken.trim().isEmpty ||
+            _githubFolder.trim().isEmpty) {
+          return;
+        }
       }
     }
 
@@ -6113,8 +6194,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final repliedKeys = _computeRepliedDocNumKeys(_records);
       if (!mounted) return;
+      final siteFolder =
+          _githubFolder.trim().isEmpty ? '현장공유방' : _githubFolder.trim();
       await _openShareRoomViewerDialog(
-        title: '☁️ 현장 공유방 - $targetFileName (${remoteRecords.length}건)',
+        title: '☁️ [$siteFolder] $targetFileName (${remoteRecords.length}건)',
         records: remoteRecords,
         repliedKeys: repliedKeys,
         isOfficialRoom: isOfficialRoom,
@@ -6711,17 +6794,30 @@ class _HomeScreenState extends State<HomeScreen> {
         _records.where((r) => DocCategory.isOfficial(r.category)).length;
     final invoiceCount =
         _records.where((r) => r.category == DocCategory.invoice).length;
+    final siteFolderCtrl = TextEditingController(text: _githubFolder.trim());
 
     await showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setHubState) {
           final isGithub = _shareRoomMode == 'github';
+          final currentSiteName = siteFolderCtrl.text.trim().isEmpty
+              ? '현장명미지정'
+              : siteFolderCtrl.text.trim();
           final hasGithubConfig =
               _normalizeGithubRepo(_githubRepo).isNotEmpty &&
-                  _githubToken.trim().isNotEmpty;
+                  _githubToken.trim().isNotEmpty &&
+                  siteFolderCtrl.text.trim().isNotEmpty;
           final hasOneDriveLink = _oneDriveShareUrl.trim().isNotEmpty;
           final isReady = isGithub ? hasGithubConfig : true;
+
+          Future<void> saveQuickSiteFolder(String val) async {
+            final clean = val.trim().replaceAll(RegExp(r'^/+|/+\$'), '');
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString(_prefsGithubFolderKey, clean);
+            setState(() => _githubFolder = clean);
+            setHubState(() {});
+          }
 
           return AlertDialog(
             title: Row(
@@ -6730,8 +6826,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    '☁️ 현장 공유방 (공문 / 자재송장)',
-                    style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
+                    '☁️ 현장 공유방 (현장별 공문 · 자재송장)',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                 ),
               ],
@@ -6741,13 +6837,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ★ 공유방 방식 빠른 선택 스위치 (GitHub 방식 vs OneDrive 방식)
+                  // ★ 상단: [GitHub 방식] vs [OneDrive 방식] 원터치 전환 스위치
                   Container(
-                    padding: const EdgeInsets.all(6),
+                    padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF1F5F9),
+                      color: const Color(0xFFE2E8F0),
                       borderRadius: BorderRadius.circular(9),
-                      border: Border.all(color: const Color(0xFFCBD5E1)),
                     ),
                     child: Row(
                       children: [
@@ -6770,9 +6865,9 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               alignment: Alignment.center,
                               child: Text(
-                                '🐙 GitHub 방식 (자동동기화)',
+                                '🐙 GitHub 방식 (현장폴더 자동병합)',
                                 style: TextStyle(
-                                  fontSize: 11.5,
+                                  fontSize: 11.2,
                                   fontWeight: FontWeight.bold,
                                   color: isGithub ? Colors.white : const Color(0xFF334155),
                                 ),
@@ -6802,7 +6897,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               child: Text(
                                 '☁️ OneDrive 방식 (간편공유)',
                                 style: TextStyle(
-                                  fontSize: 11.5,
+                                  fontSize: 11.2,
                                   fontWeight: FontWeight.bold,
                                   color: !isGithub ? Colors.white : const Color(0xFF334155),
                                 ),
@@ -6814,6 +6909,51 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const SizedBox(height: 10),
+
+                  // ★ 현장명 (공유방 폴더 이름) 바로 입력/변경 칸
+                  if (isGithub) ...[
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFFBEB),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.amber.shade600, width: 1.2),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '🏗️ 현장명 (공유방 폴더 이름)',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF92400E),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            '동일한 GitHub 저장소·토큰 안에서 입력한 [현장명]으로 폴더가 자동 생성되며, 해당 현장 폴더 안에 공문·자재송장 HTML이 따로 합쳐집니다.',
+                            style: TextStyle(fontSize: 11, height: 1.35, color: Colors.black87),
+                          ),
+                          const SizedBox(height: 6),
+                          TextField(
+                            controller: siteFolderCtrl,
+                            onChanged: (v) => saveQuickSiteFolder(v),
+                            decoration: const InputDecoration(
+                              labelText: '현장명 (공유방 폴더 이름)',
+                              hintText: '예: 김해현장, 여의도현장, 부산에코델타 등',
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(10),
@@ -6830,10 +6970,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         Text(
                           isGithub
                               ? (hasGithubConfig
-                                  ? '✅ [GitHub 방식] 연결됨: ${_normalizeGithubRepo(_githubRepo)} / ${_githubFolder.trim()}'
-                                  : '⚠️ 아직 GitHub 저장소와 토큰이 설정되지 않았습니다.')
+                                  ? '✅ 연결됨: ${_normalizeGithubRepo(_githubRepo)} / [$currentSiteName]'
+                                  : '⚠️ 설정에서 [GitHub 저장소 · 토큰 · 현장명]을 확인해 주세요.')
                               : (hasOneDriveLink
-                                  ? '✅ [OneDrive 방식] 공유폴더 링크 연동됨 (원드라이브 앱 연동 포함)'
+                                  ? '✅ [OneDrive 방식] 공유폴더 링크 연동됨'
                                   : '✅ [OneDrive 방식] 원드라이브 앱/폴더에서 바로 불러와 합치고 저장합니다.'),
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
@@ -6845,9 +6985,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '• 올린사람 표시 이름: ${_exporterUserName.trim().isEmpty ? "미입력 (설정에서 이름을 입력해 주세요)" : _exporterUserName.trim()}\n'
-                          '• 작성자별 개별 파일 없이 오직 [공문_통합.html]과 [자재송장_통합.html] 딱 2개 파일로만 자동 병합됩니다.',
-                          style: const TextStyle(fontSize: 11.5, height: 1.35),
+                          '• 내 이름(올린사람): ${_exporterUserName.trim().isEmpty ? "미입력 (설정에서 입력)" : _exporterUserName.trim()}\n'
+                          '• GitHub Actions 자동빌드 방지([skip ci]) 적용 완료 (올릴 때 앱 빌드 안 돎)',
+                          style: const TextStyle(fontSize: 11.2, height: 1.35),
                         ),
                       ],
                     ),
@@ -6887,9 +7027,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           ],
                         ),
                         const SizedBox(height: 4),
-                        const Text(
-                          '공유방 파일명: 공문_통합.html (올린사람 이름 자동 기록)',
-                          style: TextStyle(fontSize: 11.5, color: Colors.black87),
+                        Text(
+                          '저장 경로: [$currentSiteName/$_shareOfficialFileName]',
+                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.black87),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -6900,8 +7040,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                   backgroundColor: const Color(0xFF1E3A8A),
                                   padding: const EdgeInsets.symmetric(vertical: 8),
                                 ),
-                                onPressed: () {
-                                  Navigator.pop(ctx);
+                                onPressed: () async {
+                                  await saveQuickSiteFolder(siteFolderCtrl.text);
+                                  if (ctx.mounted) Navigator.pop(ctx);
                                   _syncCategoryHtmlWithShareRoom(
                                     isOfficialRoom: true,
                                     openViewerAfterSync: true,
@@ -6921,8 +7062,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                   padding: const EdgeInsets.symmetric(vertical: 8),
                                   side: const BorderSide(color: Color(0xFF1E3A8A)),
                                 ),
-                                onPressed: () {
-                                  Navigator.pop(ctx);
+                                onPressed: () async {
+                                  await saveQuickSiteFolder(siteFolderCtrl.text);
+                                  if (ctx.mounted) Navigator.pop(ctx);
                                   _viewCategoryHtmlInShareRoom(isOfficialRoom: true);
                                 },
                                 icon: const Icon(Icons.visibility, size: 16),
@@ -6972,9 +7114,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           ],
                         ),
                         const SizedBox(height: 4),
-                        const Text(
-                          '공유방 파일명: 자재송장_통합.html (올린사람 이름 자동 기록)',
-                          style: TextStyle(fontSize: 11.5, color: Colors.black87),
+                        Text(
+                          '저장 경로: [$currentSiteName/$_shareInvoiceFileName]',
+                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.black87),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -6985,8 +7127,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                   backgroundColor: Colors.brown.shade800,
                                   padding: const EdgeInsets.symmetric(vertical: 8),
                                 ),
-                                onPressed: () {
-                                  Navigator.pop(ctx);
+                                onPressed: () async {
+                                  await saveQuickSiteFolder(siteFolderCtrl.text);
+                                  if (ctx.mounted) Navigator.pop(ctx);
                                   _syncCategoryHtmlWithShareRoom(
                                     isOfficialRoom: false,
                                     openViewerAfterSync: true,
@@ -7007,8 +7150,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                   side: BorderSide(color: Colors.brown.shade800),
                                   foregroundColor: Colors.brown.shade900,
                                 ),
-                                onPressed: () {
-                                  Navigator.pop(ctx);
+                                onPressed: () async {
+                                  await saveQuickSiteFolder(siteFolderCtrl.text);
+                                  if (ctx.mounted) Navigator.pop(ctx);
                                   _viewCategoryHtmlInShareRoom(isOfficialRoom: false);
                                 },
                                 icon: const Icon(Icons.visibility, size: 16),
@@ -7028,15 +7172,19 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             actions: [
               TextButton.icon(
-                onPressed: () {
-                  Navigator.pop(ctx);
+                onPressed: () async {
+                  await saveQuickSiteFolder(siteFolderCtrl.text);
+                  if (ctx.mounted) Navigator.pop(ctx);
                   _openSettingsDialog();
                 },
                 icon: const Icon(Icons.settings, size: 16),
-                label: const Text('공유방 설정'),
+                label: const Text('상세 설정'),
               ),
               TextButton(
-                onPressed: () => Navigator.pop(ctx),
+                onPressed: () async {
+                  await saveQuickSiteFolder(siteFolderCtrl.text);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
                 child: const Text('닫기'),
               ),
             ],
@@ -7083,18 +7231,18 @@ class _HomeScreenState extends State<HomeScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          '1. 내 이름(담당자명) & 공유방 방식 선택',
+                          '1. 내 이름(담당자명) & 현장 공유방 (GitHub) 설정',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            fontSize: 13,
+                            fontSize: 13.5,
                             color: Color(0xFF1E3A8A),
                           ),
                         ),
                         const SizedBox(height: 6),
                         const Text(
-                          '• 아래 [내 이름]을 입력해 두면 공문·자재송장 표 리스트의 [올린사람] 칸에 내 이름이 자동으로 들어갑니다.\n'
-                          '• 우리 현장처럼 완전 자동 병합을 원하시면 [GitHub 방식]을, 일반 사용자가 쉽게 쓰려면 [OneDrive 방식]을 선택하세요.',
-                          style: TextStyle(fontSize: 11.5, height: 1.4),
+                          '· [현장명(공유방 폴더 이름)]을 입력하면 동일 GitHub 저장소·토큰 안에 해당 현장명 폴더가 자동 생성됩니다.\n'
+                          '· 저장소의 [{현장명}/공문_통합.html] 및 [{현장명}/자재송장_통합.html] 파일로 현장별 서류가 계속 합쳐집니다.',
+                          style: TextStyle(fontSize: 11.5, height: 1.45),
                         ),
                         const SizedBox(height: 8),
                         TextField(
@@ -7167,12 +7315,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           const SizedBox(height: 8),
                           TextField(
                             controller: githubFolderCtrl,
-                            decoration: const InputDecoration(
-                              labelText: '공유방 폴더 이름',
-                              hintText: '기본값: 현장공유방',
+                            decoration: InputDecoration(
+                              labelText: '현장명 (공유방 폴더 이름)',
+                              hintText: '예: 김해현장, 여의도현장 등 (현장별 폴더 자동 생성)',
                               filled: true,
                               fillColor: Colors.white,
-                              border: OutlineInputBorder(),
+                              border: const OutlineInputBorder(),
+                              enabledBorder: OutlineInputBorder(
+                                borderSide: BorderSide(color: Colors.amber.shade700, width: 1.5),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderSide: BorderSide(color: Colors.amber.shade900, width: 2.0),
+                              ),
                               isDense: true,
                             ),
                           ),
@@ -7466,36 +7620,198 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// ★ 상단 [HTML] 버튼을 누르면 [HTML 내보내기] / [HTML 가져오기(업로드)]를 선택하는 다이얼로그
+  Future<void> _openHtmlActionMenuDialog() async {
+    final bool isOfficialTab = DocCategory.isOfficial(_selectedCategoryFilter);
+    final bool isInvoiceTab = _selectedCategoryFilter == DocCategory.invoice;
+    final String currentTargetDesc = isOfficialTab
+        ? '공문(수신·발신) 통합 HTML'
+        : isInvoiceTab
+            ? '자재송장 통합 HTML'
+            : '$_selectedCategoryFilter HTML';
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: const [
+            Icon(Icons.html, color: Color(0xFF1E3A8A)),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'HTML 내보내기 / 가져오기',
+                style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 1) HTML 내보내기 카드
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () {
+                Navigator.pop(ctx);
+                _exportCumulativeFilteredHtml();
+              },
+              child: Container(
+                padding: const EdgeInsets.all(13),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.blue.shade300, width: 1.2),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E3A8A),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.upload_file, color: Colors.white, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '📤 HTML 내보내기 (공유 · 다운로드)',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                              color: Color(0xFF1E3A8A),
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            '현재 조회 중인 [$currentTargetDesc] 파일을 만들어 카톡·이메일·기기 다운로드 폴더로 내보냅니다.',
+                            style: const TextStyle(fontSize: 11.5, height: 1.35, color: Colors.black87),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // 2) HTML 가져오기 (다운받은 HTML 업로드) 카드
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () {
+                Navigator.pop(ctx);
+                _importExistingHtmlToMerge();
+              },
+              child: Container(
+                padding: const EdgeInsets.all(13),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.amber.shade500, width: 1.2),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        color: Colors.brown.shade800,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.download_for_offline, color: Colors.white, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '📥 HTML 가져오기 (다운받은 HTML 업로드)',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                              color: Color(0xFF78350F),
+                            ),
+                          ),
+                          SizedBox(height: 3),
+                          Text(
+                            '내보내기하여 다운받은 HTML 파일(1개 또는 여러 개)을 선택해 업로드하면 내 앱 목록에 자동으로 합쳐집니다.',
+                            style: TextStyle(fontSize: 11.5, height: 1.35, color: Colors.black87),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('닫기'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _importExistingHtmlToMerge() async {
     try {
-      // ★ 여러 명이 각자 올린 HTML 파일 여러 개를 한꺼번에(allowMultiple: true) 선택해서 1초 만에 하나로 합산!
+      // ★ 다운받은 HTML 파일(내보내기한 파일)을 1개 또는 여러 개 선택하여 업로드 & 병합 (withData: true로 안드로이드 다운로드 폴더 완벽 호환)
       final picked = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['html', 'htm'],
         allowMultiple: true,
+        withData: true,
       );
       if (picked == null || picked.files.isEmpty) return;
 
       final List<DocRecord> importedRecords = [];
       for (final pf in picked.files) {
-        if (pf.path == null) continue;
-        final file = File(pf.path!);
-        final htmlContent = await file.readAsString();
-        importedRecords.addAll(_parseRecordsFromHtml(htmlContent));
+        String htmlContent = '';
+        if (pf.bytes != null && pf.bytes!.isNotEmpty) {
+          htmlContent = utf8.decode(pf.bytes!, allowMalformed: true);
+        } else if (pf.path != null) {
+          final file = File(pf.path!);
+          htmlContent = await file.readAsString();
+        }
+        if (htmlContent.isNotEmpty) {
+          importedRecords.addAll(_parseRecordsFromHtml(htmlContent));
+        }
       }
       if (importedRecords.isEmpty) {
         _showSnack('선택한 HTML 파일에서 증빙서류 데이터를 찾지 못했습니다.');
         return;
       }
 
+      // ★ 가져온 항목의 수정사항도 반영될 수 있도록 id 및 contentSignature 기준으로 최신 병합
       final Map<String, DocRecord> sigMap = {
         for (final r in _records) r.contentSignature: r,
       };
       int addedCount = 0;
+      int updatedCount = 0;
       for (final r in importedRecords) {
-        if (!sigMap.containsKey(r.contentSignature)) {
+        final byIdKey = sigMap.entries
+            .where((e) => e.value.id == r.id)
+            .map((e) => e.key)
+            .toList();
+        if (byIdKey.isNotEmpty) {
+          for (final k in byIdKey) {
+            sigMap.remove(k);
+          }
+          sigMap[r.contentSignature] = r;
+          updatedCount++;
+        } else if (!sigMap.containsKey(r.contentSignature)) {
           sigMap[r.contentSignature] = r;
           addedCount++;
+        } else {
+          sigMap[r.contentSignature] = r;
         }
       }
 
@@ -7504,16 +7820,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
       setState(() {
         _records = updatedList;
-        if (_selectedRecord == null && _filteredRecords.isNotEmpty) {
+        // 가져온 첫 번째 서류의 카테고리 탭으로 자연스럽게 이동
+        final firstCat = importedRecords.first.category;
+        if (DocCategory.filterList.contains(firstCat)) {
+          _selectedCategoryFilter = firstCat;
+        }
+        if (_filteredRecords.isNotEmpty) {
           _selectedRecord = _filteredRecords.first;
         }
       });
       await _saveLocalRecords();
       _showSnack(
-        '기존 HTML에서 중복을 제외한 신규 $addedCount건을 불러와 누적 합산했습니다! (전체 ${updatedList.length}건)',
+        '✅ HTML 가져오기 완료! (신규 +$addedCount건 · 업데이트 $updatedCount건 · 전체 ${updatedList.length}건)',
       );
     } catch (e) {
-      _showSnack('기존 HTML 병합 중 오류: $e');
+      _showSnack('HTML 가져오기 중 오류: $e');
     }
   }
 
@@ -8162,7 +8483,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     .row-btn:hover { background: rgba(0,0,0,0.08); }
 
-    /* 6) 우측/하단 InteractiveViewer 사진 확대·축소·드래그 팬 컨트롤 */
+    /* 6) 우측/하단 InteractiveViewer 사진 확대·축소·드래그·손가락 2개 핀치줌 컨트롤 */
     #photo-viewport {
       width: 100%;
       height: 100%;
@@ -8171,6 +8492,7 @@ class _HomeScreenState extends State<HomeScreen> {
       justify-content: center;
       overflow: hidden;
       cursor: grab;
+      touch-action: none;
     }
     #photo-viewport:active { cursor: grabbing; }
     #preview-img {
@@ -8454,7 +8776,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     // -------------------------------------------------------------------------
-    // B. 우측/하단 사진 뷰어 줌(확대/축소) 및 드래그 이동 (앱의 InteractiveViewer와 동일)
+    // B. 우측/하단 사진 뷰어: 손가락 2개 핀치 줌(확대/축소) + 1손가락/마우스 드래그 이동 + 휠 줌
     // -------------------------------------------------------------------------
     const photoViewport = document.getElementById('photo-viewport');
     const previewImg = document.getElementById('preview-img');
@@ -8465,12 +8787,21 @@ class _HomeScreenState extends State<HomeScreen> {
     let panStartX = 0;
     let panStartY = 0;
 
+    // 멀티터치(손가락 2개 핀치 줌) 상태 변수
+    let isPinchingPhoto = false;
+    let pinchStartDist = 0;
+    let pinchStartScale = 1;
+    let pinchStartMidX = 0;
+    let pinchStartMidY = 0;
+    let pinchStartTx = 0;
+    let pinchStartTy = 0;
+
     function applyPhotoTransform() {
       previewImg.style.transform = 'translate(' + photoTx + 'px, ' + photoTy + 'px) scale(' + photoScale + ')';
     }
     function zoomPhoto(delta) {
-      photoScale = Math.max(0.6, Math.min(8.0, photoScale + delta));
-      if (photoScale === 1) { photoTx = 0; photoTy = 0; }
+      photoScale = Math.max(0.5, Math.min(8.0, photoScale + delta));
+      if (Math.abs(photoScale - 1) < 0.05) { photoScale = 1; photoTx = 0; photoTy = 0; }
       applyPhotoTransform();
     }
     function resetPhotoZoom() {
@@ -8480,26 +8811,94 @@ class _HomeScreenState extends State<HomeScreen> {
       applyPhotoTransform();
     }
 
+    function getTouchDistance(t1, t2) {
+      const dx = t1.clientX - t2.clientX;
+      const dy = t1.clientY - t2.clientY;
+      return Math.hypot(dx, dy);
+    }
+
+    // 1) 모바일/태블릿 터치 이벤트: 손가락 2개 핀치 확대·축소 + 손가락 1개 드래그 이동 완벽 지원!
+    photoViewport.addEventListener('touchstart', function(e) {
+      if (e.target.tagName === 'BUTTON') return;
+      if (e.touches.length >= 2) {
+        e.preventDefault();
+        isPinchingPhoto = true;
+        isPanningPhoto = false;
+        previewImg.style.transition = 'none';
+        pinchStartDist = getTouchDistance(e.touches[0], e.touches[1]);
+        pinchStartScale = photoScale;
+        pinchStartMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        pinchStartMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        pinchStartTx = photoTx;
+        pinchStartTy = photoTy;
+      } else if (e.touches.length === 1) {
+        isPinchingPhoto = false;
+        isPanningPhoto = true;
+        previewImg.style.transition = 'none';
+        panStartX = e.touches[0].clientX - photoTx;
+        panStartY = e.touches[0].clientY - photoTy;
+      }
+    }, { passive: false });
+
+    photoViewport.addEventListener('touchmove', function(e) {
+      if (isPinchingPhoto && e.touches.length >= 2) {
+        e.preventDefault();
+        const dist = getTouchDistance(e.touches[0], e.touches[1]);
+        if (pinchStartDist > 5) {
+          const ratio = dist / pinchStartDist;
+          photoScale = Math.max(0.5, Math.min(8.0, pinchStartScale * ratio));
+        }
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        photoTx = pinchStartTx + (midX - pinchStartMidX);
+        photoTy = pinchStartTy + (midY - pinchStartMidY);
+        applyPhotoTransform();
+      } else if (isPanningPhoto && e.touches.length === 1) {
+        e.preventDefault();
+        photoTx = e.touches[0].clientX - panStartX;
+        photoTy = e.touches[0].clientY - panStartY;
+        applyPhotoTransform();
+      }
+    }, { passive: false });
+
+    photoViewport.addEventListener('touchend', function(e) {
+      if (e.touches.length < 2) {
+        isPinchingPhoto = false;
+      }
+      if (e.touches.length === 1) {
+        isPanningPhoto = true;
+        panStartX = e.touches[0].clientX - photoTx;
+        panStartY = e.touches[0].clientY - photoTy;
+      } else if (e.touches.length === 0) {
+        isPanningPhoto = false;
+        previewImg.style.transition = 'transform 0.05s ease-out';
+      }
+    });
+
+    // 2) PC 마우스 휠 확대·축소 및 마우스 드래그 이동
     photoViewport.addEventListener('wheel', function(e) {
       e.preventDefault();
       zoomPhoto(e.deltaY < 0 ? 0.25 : -0.25);
     }, { passive: false });
 
-    photoViewport.addEventListener('pointerdown', function(e) {
-      if (e.target.tagName === 'BUTTON') return;
+    photoViewport.addEventListener('mousedown', function(e) {
+      if (e.button !== 0 || e.target.tagName === 'BUTTON') return;
       isPanningPhoto = true;
+      previewImg.style.transition = 'none';
       panStartX = e.clientX - photoTx;
       panStartY = e.clientY - photoTy;
-      if (photoViewport.setPointerCapture) photoViewport.setPointerCapture(e.pointerId);
     });
-    photoViewport.addEventListener('pointermove', function(e) {
-      if (!isPanningPhoto) return;
+    window.addEventListener('mousemove', function(e) {
+      if (!isPanningPhoto || isPinchingPhoto) return;
       photoTx = e.clientX - panStartX;
       photoTy = e.clientY - panStartY;
       applyPhotoTransform();
     });
-    photoViewport.addEventListener('pointerup', function() {
-      isPanningPhoto = false;
+    window.addEventListener('mouseup', function() {
+      if (isPanningPhoto && !isPinchingPhoto) {
+        isPanningPhoto = false;
+        previewImg.style.transition = 'transform 0.05s ease-out';
+      }
     });
     photoViewport.addEventListener('dblclick', function() {
       if (photoScale > 1.05) resetPhotoZoom();
@@ -10307,19 +10706,14 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
-          IconButton(
-            tooltip: '외부 HTML 파일 불러와 합치기',
-            icon: const Icon(Icons.file_open_outlined, size: 18),
-            onPressed: _isBusy ? null : _importExistingHtmlToMerge,
-          ),
           TextButton.icon(
-            onPressed: _isBusy ? null : _exportCumulativeFilteredHtml,
-            icon: const Icon(Icons.html, color: Colors.white, size: 17),
+            onPressed: _isBusy ? null : _openHtmlActionMenuDialog,
+            icon: const Icon(Icons.html, color: Colors.white, size: 18),
             label: const Text(
               'HTML',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 11.5,
+                fontSize: 12,
                 fontWeight: FontWeight.bold,
               ),
             ),
