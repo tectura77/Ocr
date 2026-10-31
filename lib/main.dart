@@ -1,4 +1,5 @@
 // ignore_for_file: unused_field, unused_element, unused_local_variable, unnecessary_import, deprecated_member_use, prefer_const_constructors, unnecessary_brace_in_string_interps, unnecessary_string_escapes
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -5787,7 +5788,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final ok = resp.statusCode == 200 || resp.statusCode == 201;
     if (ok) {
       // 혹시라도 트리거된 워크플로우가 있으면 백그라운드에서 즉시 취소하여 GitHub Actions 시간 절약
-      unawaited(_cancelRunningGithubWorkflowsIfAny(repo, token));
+      _cancelRunningGithubWorkflowsIfAny(repo, token);
     }
     return ok;
   }
