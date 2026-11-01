@@ -307,6 +307,7 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
 
   final dst = img.Image(width: dstW, height: dstH);
 
+  // 1단계: 사다리꼴 평탄화 원본 픽셀 복사
   for (int y = 0; y < dstH; y++) {
     final v = dstH > 1 ? y / (dstH - 1) : 0.0;
     for (int x = 0; x < dstW; x++) {
@@ -323,23 +324,108 @@ Uint8List _performPerspectiveWarpIsolate(WarpRequest req) {
           .clamp(0.0, (src.height - 1).toDouble());
 
       final pixel = src.getPixelLinear(sx, sy);
+      dst.setPixel(x, y, pixel);
+    }
+  }
 
-      if (req.enhanceContrast) {
-        // ★ vFlat 스타일 깨끗한 문서 스캔 보정: 종이 배경의 회색 그림자는 하얗게 날리고 글자는 더 선명하게 강조
-        final luma = 0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b;
-        if (luma > 175) {
-          int r = (pixel.r + (255 - pixel.r) * 0.68).round().clamp(0, 255);
-          int g = (pixel.g + (255 - pixel.g) * 0.68).round().clamp(0, 255);
-          int b = (pixel.b + (255 - pixel.b) * 0.68).round().clamp(0, 255);
-          dst.setPixelRgb(x, y, r, g, b);
-        } else {
-          int r = ((pixel.r - 128) * 1.28 + 124).round().clamp(0, 255);
-          int g = ((pixel.g - 128) * 1.28 + 124).round().clamp(0, 255);
-          int b = ((pixel.b - 128) * 1.28 + 124).round().clamp(0, 255);
-          dst.setPixelRgb(x, y, r, g, b);
+  // 2단계: ★ 구역별 그림자 자동 제거(Local Adaptive Background Illumination Normalization)
+  // 기존 고정 기준값(luma 175) 때문에 그림자 진 곳이 시커멓게 얼룩지던 문제를 완벽 해결!
+  // 문서 전체를 격자로 나누어 각 구역의 '종이 배경 밝기'를 추정한 뒤, 어두운 그림자 구역도
+  // 전체적으로 균일하고 깨끗한 흰색 종이 배경이 되도록 부드럽게 보정합니다.
+  if (req.enhanceContrast) {
+    const int gridCols = 24;
+    const int gridRows = 32;
+    final List<double> gridBg = List<double>.filled(gridCols * gridRows, 220.0);
+
+    for (int gy = 0; gy < gridRows; gy++) {
+      final int y0 = (gy * dstH) ~/ gridRows;
+      final int y1 = math.max(y0 + 1, ((gy + 1) * dstH) ~/ gridRows);
+      final int stepY = math.max(1, (y1 - y0) ~/ 8);
+      for (int gx = 0; gx < gridCols; gx++) {
+        final int x0 = (gx * dstW) ~/ gridCols;
+        final int x1 = math.max(x0 + 1, ((gx + 1) * dstW) ~/ gridCols);
+        final int stepX = math.max(1, (x1 - x0) ~/ 8);
+
+        final List<double> samples = <double>[];
+        for (int sy = y0; sy < y1; sy += stepY) {
+          for (int sx = x0; sx < x1; sx += stepX) {
+            final p = dst.getPixel(sx, sy);
+            samples.add(0.299 * p.r + 0.587 * p.g + 0.114 * p.b);
+          }
         }
-      } else {
-        dst.setPixel(x, y, pixel);
+        samples.sort();
+        if (samples.isNotEmpty) {
+          // 각 격자 내 상위 82% 지점 밝기를 해당 영역의 종이 바탕 밝기로 추정
+          final int idx82 = ((samples.length - 1) * 0.82).round();
+          gridBg[gy * gridCols + gx] = samples[idx82].clamp(85.0, 252.0);
+        }
+      }
+    }
+
+    // 격자 간 경계가 티 나지 않도록 3x3 스무딩 필터 2회 적용
+    List<double> smoothBg = List<double>.from(gridBg);
+    for (int pass = 0; pass < 2; pass++) {
+      final List<double> nextBg = List<double>.from(smoothBg);
+      for (int gy = 0; gy < gridRows; gy++) {
+        for (int gx = 0; gx < gridCols; gx++) {
+          double sum = 0.0;
+          double wSum = 0.0;
+          for (int dy = -1; dy <= 1; dy++) {
+            final int ny = (gy + dy).clamp(0, gridRows - 1);
+            for (int dx = -1; dx <= 1; dx++) {
+              final int nx = (gx + dx).clamp(0, gridCols - 1);
+              final double w = (dx == 0 && dy == 0) ? 4.0 : 1.0;
+              sum += smoothBg[ny * gridCols + nx] * w;
+              wSum += w;
+            }
+          }
+          nextBg[gy * gridCols + gx] = sum / wSum;
+        }
+      }
+      smoothBg = nextBg;
+    }
+
+    for (int y = 0; y < dstH; y++) {
+      final double fy = (y / dstH) * (gridRows - 1);
+      final int gy0 = fy.floor().clamp(0, gridRows - 1);
+      final int gy1 = (gy0 + 1).clamp(0, gridRows - 1);
+      final double wy = fy - gy0;
+
+      for (int x = 0; x < dstW; x++) {
+        final double fx = (x / dstW) * (gridCols - 1);
+        final int gx0 = fx.floor().clamp(0, gridCols - 1);
+        final int gx1 = (gx0 + 1).clamp(0, gridCols - 1);
+        final double wx = fx - gx0;
+
+        final double bg00 = smoothBg[gy0 * gridCols + gx0];
+        final double bg10 = smoothBg[gy0 * gridCols + gx1];
+        final double bg01 = smoothBg[gy1 * gridCols + gx0];
+        final double bg11 = smoothBg[gy1 * gridCols + gx1];
+        final double localBg = (bg00 * (1 - wx) + bg10 * wx) * (1 - wy) +
+            (bg01 * (1 - wx) + bg11 * wx) * wy;
+
+        final p = dst.getPixel(x, y);
+        final double luma = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+        // 지역 종이 밝기 대비 현재 픽셀의 상대 밝기 비율 (그림자 속 종이도 ratio ≈ 0.88~1.05가 됨!)
+        final double ratio = (luma / localBg).clamp(0.0, 1.25);
+
+        double gain;
+        if (ratio >= 0.84) {
+          // 종이 배경 영역(그림자 진 종이 포함) → 전체적으로 깨끗하고 밝은 흰색(246~255)으로 화이트닝!
+          final double targetLuma =
+              243.0 + ((ratio - 0.84) / 0.16).clamp(0.0, 1.0) * 12.0;
+          gain = luma > 1.0 ? (targetLuma / luma) : 1.0;
+        } else {
+          // 글자·도장·표 테두리 영역 → 시커멓게 뭉개지지 않도록 부드러운 감마 곡선으로 또렷하게 보존
+          final double norm = (ratio / 0.84).clamp(0.0, 1.0);
+          final double targetLuma = math.pow(norm, 1.12).toDouble() * 243.0;
+          gain = luma > 1.0 ? (targetLuma / luma) : 1.0;
+        }
+
+        final int nr = (p.r * gain).round().clamp(0, 255);
+        final int ng = (p.g * gain).round().clamp(0, 255);
+        final int nb = (p.b * gain).round().clamp(0, 255);
+        dst.setPixelRgb(x, y, nr, ng, nb);
       }
     }
   }
@@ -732,6 +818,35 @@ class DocRecord {
     return fields['subCategory']?.trim() ?? '';
   }
 
+  /// ★ 병원비 전용 추가 증빙첨부(진료비 세부내역서, 처방전 등) base64 이미지 목록
+  List<String> get extraProofImages {
+    final raw = fields['proofImagesJson']?.trim() ?? '';
+    if (raw.isEmpty) return const <String>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .map((e) => e?.toString() ?? '')
+            .where((s) => s.trim().isNotEmpty)
+            .toList();
+      }
+    } catch (_) {}
+    return const <String>[];
+  }
+
+  /// ★ 병원비 전용 추가 증빙첨부 로컬 파일 경로 목록
+  List<String> get extraProofImagePaths {
+    final raw = fields['proofPathsJson']?.trim() ?? '';
+    if (raw.isEmpty) return const <String>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e?.toString() ?? '').toList();
+      }
+    } catch (_) {}
+    return const <String>[];
+  }
+
   String get travelDivision {
     final div = fields['travelDivision']?.trim() ?? '';
     return div.isNotEmpty ? div : TravelDivision.meal;
@@ -1055,6 +1170,7 @@ class _HomeScreenState extends State<HomeScreen> {
     end: DateTime(DateTime.now().year, 12, 31),
   );
   DocRecord? _selectedRecord;
+  int _selectedPhotoIndex = 0; // ★ 병원비 다중 증빙사진 선택 인덱스 (0: 기본 영수증, 1~: 추가 증빙첨부)
   bool _isBusy = false;
 
   // ★ 표 헤더 클릭 정렬 상태 (기본값: 날짜 최신순 = 'date', ascending: false)
@@ -2118,8 +2234,10 @@ class _HomeScreenState extends State<HomeScreen> {
       raw = f['issueDate'] ?? '';
     }
     final formatted = DocRecord.formatDotDate(raw);
-    if (RegExp(r'^\d{4}\.\d{2}\.\d{2}\$').hasMatch(formatted)) {
-      return formatted;
+    // ★ 주의: 기존 raw 문자열 내 `\$` 오타 때문에 정규식이 매칭되지 않아 createdAt으로 잘못 정렬되던 버그 수정!
+    final m = RegExp(r'(\d{4})\.(\d{2})\.(\d{2})').firstMatch(formatted);
+    if (m != null) {
+      return '${m.group(1)}.${m.group(2)}.${m.group(3)}';
     }
     return DocRecord.formatDotDate(r.createdAt.split(' ').first);
   }
@@ -2130,8 +2248,8 @@ class _HomeScreenState extends State<HomeScreen> {
         _sortAscending = !_sortAscending;
       } else {
         _sortColumn = colKey;
-        // 날짜는 처음 클릭 시 최신순(내림차순), 공문번호·올린사람·회신완료는 오름차순(또는 완료 우선)으로 시작
-        _sortAscending = colKey != 'date';
+        // 날짜·금액은 처음 클릭 시 최신순/큰금액순(내림차순), 카테고리·환자성명·상호·공문번호·올린사람 등은 가나다 오름차순으로 시작
+        _sortAscending = (colKey != 'date' && colKey != 'amount');
       }
     });
   }
@@ -2157,11 +2275,60 @@ class _HomeScreenState extends State<HomeScreen> {
         final ua = _resolveUploaderName(a);
         final ub = _resolveUploaderName(b);
         cmp = ua.compareTo(ub);
+      } else if (sortCol == 'subCategory') {
+        final ca = a.subCategory.isNotEmpty ? a.subCategory : '미지정';
+        final cb = b.subCategory.isNotEmpty ? b.subCategory : '미지정';
+        cmp = ca.compareTo(cb);
+      } else if (sortCol == 'patientName') {
+        final pa = (a.fields['patientName'] ?? '').trim().isNotEmpty
+            ? a.fields['patientName']!.trim()
+            : '-';
+        final pb = (b.fields['patientName'] ?? '').trim().isNotEmpty
+            ? b.fields['patientName']!.trim()
+            : '-';
+        cmp = pa.compareTo(pb);
+      } else if (sortCol == 'merchant') {
+        String ma = '';
+        String mb = '';
+        if (a.category == DocCategory.medical) {
+          ma = (a.fields['clinicName'] ?? '').trim();
+        } else if (a.category == DocCategory.travel) {
+          ma = (a.fields['merchantName'] ?? '').trim();
+        } else if (a.category == DocCategory.invoice) {
+          ma = (a.fields['supplierName'] ?? '').trim();
+        } else {
+          ma = a.displayTitle.trim();
+        }
+        if (b.category == DocCategory.medical) {
+          mb = (b.fields['clinicName'] ?? '').trim();
+        } else if (b.category == DocCategory.travel) {
+          mb = (b.fields['merchantName'] ?? '').trim();
+        } else if (b.category == DocCategory.invoice) {
+          mb = (b.fields['supplierName'] ?? '').trim();
+        } else {
+          mb = b.displayTitle.trim();
+        }
+        cmp = ma.compareTo(mb);
+      } else if (sortCol == 'amount') {
+        cmp = a.numericAmount.compareTo(b.numericAmount);
+      } else if (sortCol == 'productName') {
+        final pa = (a.fields['productName'] ?? '').trim();
+        final pb = (b.fields['productName'] ?? '').trim();
+        cmp = pa.compareTo(pb);
+      } else if (sortCol == 'specName') {
+        final sa = (a.fields['specName'] ?? '').trim();
+        final sb = (b.fields['specName'] ?? '').trim();
+        cmp = sa.compareTo(sb);
       } else {
         // 'date'
         final ka = _extractSortableDateKey(a);
         final kb = _extractSortableDateKey(b);
         cmp = ka.compareTo(kb);
+      }
+      if (cmp == 0) {
+        final da = _extractSortableDateKey(a);
+        final db = _extractSortableDateKey(b);
+        cmp = da.compareTo(db);
       }
       if (cmp == 0) {
         cmp = a.createdAt.compareTo(b.createdAt);
@@ -4201,6 +4368,311 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
+  // ★ 병원비 전용 추가 증빙첨부 사진 촬영/갤러리 선택 & 사다리꼴 자동 보정 헬퍼
+  // ===========================================================================
+  Future<Map<String, String>?> _pickAndCropSingleProofPhoto(
+    ImageSource source,
+  ) async {
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: source,
+        maxWidth: 2400,
+        maxHeight: 2400,
+        imageQuality: 95,
+      );
+      if (picked == null) return null;
+      final rawBytes = await picked.readAsBytes();
+      if (!mounted) return null;
+
+      final Uint8List? flattenedBytes = await Navigator.push<Uint8List>(
+        context,
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => PerspectiveCropDialog(originalBytes: rawBytes),
+        ),
+      );
+      if (flattenedBytes == null) return null;
+
+      final base64Str = base64Encode(flattenedBytes);
+      final appDir = await getApplicationDocumentsDirectory();
+      final fileName = 'proof_${const Uuid().v4()}.jpg';
+      final savedFile =
+          await File(p.join(appDir.path, fileName)).writeAsBytes(flattenedBytes);
+      return {
+        'path': savedFile.path,
+        'base64': base64Str,
+      };
+    } catch (e) {
+      _showSnack('증빙 사진 추가 중 오류: $e');
+      return null;
+    }
+  }
+
+  /// ★ 병원비 표의 [증빙첨부] 칸을 눌렀을 때 바로 추가 증빙사진을 촬영/첨부·열람·삭제하는 다이얼로그
+  Future<void> _openMedicalProofAttachmentDialog(DocRecord record) async {
+    final List<String> proofBase64List =
+        List<String>.from(record.extraProofImages);
+    final List<String> proofPathList =
+        List<String>.from(record.extraProofImagePaths);
+    while (proofPathList.length < proofBase64List.length) {
+      proofPathList.add('');
+    }
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            Future<void> addProofFrom(ImageSource src) async {
+              final added = await _pickAndCropSingleProofPhoto(src);
+              if (added != null && ctx.mounted) {
+                setModalState(() {
+                  proofBase64List.add(added['base64'] ?? '');
+                  proofPathList.add(added['path'] ?? '');
+                });
+              }
+            }
+
+            return AlertDialog(
+              title: Row(
+                children: [
+                  const Icon(Icons.attach_file, color: Color(0xFF1E3A8A)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '병원비 추가 증빙첨부 (${proofBase64List.length}장)',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Text(
+                          '· [${record.displayTitle}] 항목에 진료비 세부내역서, 처방전, 진단서 등 추가 증빙 사진을 여러 장 첨부할 수 있습니다.\n'
+                          '· 첨부된 모든 증빙 사진은 상단 [PDF내보내기] 시 기본 영수증 바로 다음 페이지에 순서대로 함께 출력됩니다.',
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            height: 1.4,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF1E3A8A),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 9),
+                              ),
+                              onPressed: () => addProofFrom(ImageSource.camera),
+                              icon: const Icon(Icons.camera_alt, size: 16),
+                              label: const Text(
+                                '카메라로 증빙 촬영',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 9),
+                                side: const BorderSide(
+                                    color: Color(0xFF1E3A8A)),
+                              ),
+                              onPressed: () =>
+                                  addProofFrom(ImageSource.gallery),
+                              icon: const Icon(Icons.photo_library, size: 16),
+                              label: const Text(
+                                '갤러리에서 추가',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      if (proofBase64List.isEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(vertical: 24),
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: const Text(
+                            '아직 추가된 증빙첨부 사진이 없습니다.\n위 버튼을 눌러 증빙 사진을 추가해 주세요.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        )
+                      else
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children:
+                              List.generate(proofBase64List.length, (pIdx) {
+                            final b64 = proofBase64List[pIdx];
+                            return Stack(
+                              children: [
+                                Container(
+                                  width: 96,
+                                  height: 116,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF0F172A),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                        color: const Color(0xFF1E3A8A),
+                                        width: 1.5),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 2),
+                                        color: const Color(0xFF1E3A8A),
+                                        alignment: Alignment.center,
+                                        child: Text(
+                                          '증빙첨부 ${pIdx + 1}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                      Expanded(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(3),
+                                          child: Image.memory(
+                                            base64Decode(b64),
+                                            fit: BoxFit.contain,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 2,
+                                  right: 2,
+                                  child: InkWell(
+                                    onTap: () {
+                                      setModalState(() {
+                                        proofBase64List.removeAt(pIdx);
+                                        if (pIdx < proofPathList.length) {
+                                          proofPathList.removeAt(pIdx);
+                                        }
+                                      });
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.all(2),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.redAccent,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(
+                                        Icons.close,
+                                        size: 14,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          }),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('저장'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (saved != true) return;
+
+    final idx = _records.indexWhere((r) => r.id == record.id);
+    if (idx == -1) return;
+
+    final updatedFields = Map<String, String>.from(record.fields);
+    if (proofBase64List.isEmpty) {
+      updatedFields.remove('proofImagesJson');
+      updatedFields.remove('proofPathsJson');
+      updatedFields['proofStatus'] = '';
+    } else {
+      updatedFields['proofImagesJson'] = jsonEncode(proofBase64List);
+      updatedFields['proofPathsJson'] = jsonEncode(proofPathList);
+      updatedFields['proofStatus'] = '첨부(${proofBase64List.length}장)';
+    }
+
+    final updatedRecord = DocRecord(
+      id: record.id,
+      category: record.category,
+      createdAt: record.createdAt,
+      imagePath: record.imagePath,
+      base64Image: record.base64Image,
+      fields: updatedFields,
+    );
+
+    setState(() {
+      _records[idx] = updatedRecord;
+      _selectedRecord = updatedRecord;
+      _selectedPhotoIndex = proofBase64List.isNotEmpty ? 1 : 0;
+    });
+    await _saveLocalRecords();
+    _showSnack(
+      proofBase64List.isEmpty
+          ? '추가 증빙첨부가 해제되었습니다.'
+          : '✅ 추가 증빙첨부(${proofBase64List.length}장)가 저장되었습니다! (PDF 내보내기 시 함께 출력됩니다)',
+    );
+  }
+
+  // ===========================================================================
   // 사진 촬영 → 입력 다이얼로그
   // ===========================================================================
   Future<void> _addRecordDialog(ImageSource source) async {
@@ -4306,12 +4778,14 @@ class _HomeScreenState extends State<HomeScreen> {
         travelAmountCtrl.text = fare.toString();
       }
 
-      // 4. 병원비 컨트롤러
+      // 4. 병원비 컨트롤러 & 추가 증빙첨부 사진 리스트
       final patientNameCtrl = TextEditingController();
       final clinicNameCtrl = TextEditingController();
       final bizRegNumberCtrl = TextEditingController();
       final issueDateCtrl = TextEditingController(text: todayDotStr);
       final totalPaidCtrl = TextEditingController();
+      final List<String> medicalProofBase64List = <String>[];
+      final List<String> medicalProofPathList = <String>[];
 
       void applyExtractedMap(Map<String, String> extracted) {
         if (DocCategory.isOfficial(chosenCategory)) {
@@ -5096,6 +5570,179 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           _buildField(
                               bizRegNumberCtrl, '사업자등록번호', '예: 840-78-00407'),
+                          Container(
+                            margin: const EdgeInsets.only(top: 4),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFEFF6FF),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.blue.shade200),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      '📎 추가 증빙첨부 (${medicalProofBase64List.length}장)',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12.5,
+                                        color: Color(0xFF1E3A8A),
+                                      ),
+                                    ),
+                                    const Text(
+                                      'PDF 내보내기 시 함께 출력',
+                                      style: TextStyle(
+                                        fontSize: 10.5,
+                                        color: Colors.indigo,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: FilledButton.icon(
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor:
+                                              const Color(0xFF1E3A8A),
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 6),
+                                        ),
+                                        onPressed: () async {
+                                          final added =
+                                              await _pickAndCropSingleProofPhoto(
+                                                  ImageSource.camera);
+                                          if (added != null && ctx.mounted) {
+                                            setDialogState(() {
+                                              medicalProofBase64List
+                                                  .add(added['base64'] ?? '');
+                                              medicalProofPathList
+                                                  .add(added['path'] ?? '');
+                                            });
+                                          }
+                                        },
+                                        icon: const Icon(Icons.camera_alt,
+                                            size: 15),
+                                        label: const Text(
+                                          '+ 카메라 촬영',
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: OutlinedButton.icon(
+                                        style: OutlinedButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 6),
+                                          side: const BorderSide(
+                                              color: Color(0xFF1E3A8A)),
+                                        ),
+                                        onPressed: () async {
+                                          final added =
+                                              await _pickAndCropSingleProofPhoto(
+                                                  ImageSource.gallery);
+                                          if (added != null && ctx.mounted) {
+                                            setDialogState(() {
+                                              medicalProofBase64List
+                                                  .add(added['base64'] ?? '');
+                                              medicalProofPathList
+                                                  .add(added['path'] ?? '');
+                                            });
+                                          }
+                                        },
+                                        icon: const Icon(Icons.photo_library,
+                                            size: 15),
+                                        label: const Text(
+                                          '+ 갤러리 추가',
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (medicalProofBase64List.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  SizedBox(
+                                    height: 78,
+                                    child: ListView.separated(
+                                      scrollDirection: Axis.horizontal,
+                                      itemCount: medicalProofBase64List.length,
+                                      separatorBuilder: (_, __) =>
+                                          const SizedBox(width: 6),
+                                      itemBuilder: (_, pIdx) {
+                                        return Stack(
+                                          children: [
+                                            Container(
+                                              width: 68,
+                                              height: 78,
+                                              padding: const EdgeInsets.all(2),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF0F172A),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
+                                                border: Border.all(
+                                                    color: const Color(
+                                                        0xFF1E3A8A)),
+                                              ),
+                                              child: Image.memory(
+                                                base64Decode(
+                                                    medicalProofBase64List[
+                                                        pIdx]),
+                                                fit: BoxFit.contain,
+                                              ),
+                                            ),
+                                            Positioned(
+                                              top: 2,
+                                              right: 2,
+                                              child: InkWell(
+                                                onTap: () {
+                                                  setDialogState(() {
+                                                    medicalProofBase64List
+                                                        .removeAt(pIdx);
+                                                    if (pIdx <
+                                                        medicalProofPathList
+                                                            .length) {
+                                                      medicalProofPathList
+                                                          .removeAt(pIdx);
+                                                    }
+                                                  });
+                                                },
+                                                child: Container(
+                                                  padding:
+                                                      const EdgeInsets.all(2),
+                                                  decoration:
+                                                      const BoxDecoration(
+                                                    color: Colors.redAccent,
+                                                    shape: BoxShape.circle,
+                                                  ),
+                                                  child: const Icon(
+                                                    Icons.close,
+                                                    size: 12,
+                                                    color: Colors.white,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
                         ],
                       ],
                     ),
@@ -5217,6 +5864,14 @@ class _HomeScreenState extends State<HomeScreen> {
           collectedFields['issueDate'] =
               DocRecord.formatDotDate(issueDateCtrl.text.trim());
           collectedFields['totalPaid'] = totalPaidCtrl.text.trim();
+          if (medicalProofBase64List.isNotEmpty) {
+            collectedFields['proofImagesJson'] =
+                jsonEncode(medicalProofBase64List);
+            collectedFields['proofPathsJson'] =
+                jsonEncode(medicalProofPathList);
+            collectedFields['proofStatus'] =
+                '첨부(${medicalProofBase64List.length}장)';
+          }
         }
 
         createdRecords.add(
@@ -5367,7 +6022,7 @@ class _HomeScreenState extends State<HomeScreen> {
       travelAmountCtrl.text = fare.toString();
     }
 
-    // 4. 병원비 컨트롤러
+    // 4. 병원비 컨트롤러 & 추가 증빙첨부 사진 리스트
     final patientNameCtrl =
         TextEditingController(text: f['patientName'] ?? '');
     final issueDateCtrl =
@@ -5376,6 +6031,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final totalPaidCtrl = TextEditingController(text: f['totalPaid'] ?? '');
     final bizRegNumberCtrl =
         TextEditingController(text: f['bizRegNumber'] ?? '');
+    final List<String> editProofBase64List =
+        List<String>.from(record.extraProofImages);
+    final List<String> editProofPathList =
+        List<String>.from(record.extraProofImagePaths);
+    while (editProofPathList.length < editProofBase64List.length) {
+      editProofPathList.add('');
+    }
 
     final saved = await showDialog<bool>(
       context: context,
@@ -5691,6 +6353,177 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         _buildField(
                             bizRegNumberCtrl, '사업자등록번호', '예: 840-78-00407'),
+                        Container(
+                          margin: const EdgeInsets.only(top: 4),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue.shade200),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    '📎 추가 증빙첨부 (${editProofBase64List.length}장)',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12.5,
+                                      color: Color(0xFF1E3A8A),
+                                    ),
+                                  ),
+                                  const Text(
+                                    'PDF 내보내기 시 함께 출력',
+                                    style: TextStyle(
+                                      fontSize: 10.5,
+                                      color: Colors.indigo,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: FilledButton.icon(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor:
+                                            const Color(0xFF1E3A8A),
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 6),
+                                      ),
+                                      onPressed: () async {
+                                        final added =
+                                            await _pickAndCropSingleProofPhoto(
+                                                ImageSource.camera);
+                                        if (added != null && ctx.mounted) {
+                                          setDialogState(() {
+                                            editProofBase64List
+                                                .add(added['base64'] ?? '');
+                                            editProofPathList
+                                                .add(added['path'] ?? '');
+                                          });
+                                        }
+                                      },
+                                      icon: const Icon(Icons.camera_alt,
+                                          size: 15),
+                                      label: const Text(
+                                        '+ 카메라 촬영',
+                                        style: TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      style: OutlinedButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 6),
+                                        side: const BorderSide(
+                                            color: Color(0xFF1E3A8A)),
+                                      ),
+                                      onPressed: () async {
+                                        final added =
+                                            await _pickAndCropSingleProofPhoto(
+                                                ImageSource.gallery);
+                                        if (added != null && ctx.mounted) {
+                                          setDialogState(() {
+                                            editProofBase64List
+                                                .add(added['base64'] ?? '');
+                                            editProofPathList
+                                                .add(added['path'] ?? '');
+                                          });
+                                        }
+                                      },
+                                      icon: const Icon(Icons.photo_library,
+                                          size: 15),
+                                      label: const Text(
+                                        '+ 갤러리 추가',
+                                        style: TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (editProofBase64List.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                SizedBox(
+                                  height: 78,
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    itemCount: editProofBase64List.length,
+                                    separatorBuilder: (_, __) =>
+                                        const SizedBox(width: 6),
+                                    itemBuilder: (_, pIdx) {
+                                      return Stack(
+                                        children: [
+                                          Container(
+                                            width: 68,
+                                            height: 78,
+                                            padding: const EdgeInsets.all(2),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF0F172A),
+                                              borderRadius:
+                                                  BorderRadius.circular(6),
+                                              border: Border.all(
+                                                  color:
+                                                      const Color(0xFF1E3A8A)),
+                                            ),
+                                            child: Image.memory(
+                                              base64Decode(
+                                                  editProofBase64List[pIdx]),
+                                              fit: BoxFit.contain,
+                                            ),
+                                          ),
+                                          Positioned(
+                                            top: 2,
+                                            right: 2,
+                                            child: InkWell(
+                                              onTap: () {
+                                                setDialogState(() {
+                                                  editProofBase64List
+                                                      .removeAt(pIdx);
+                                                  if (pIdx <
+                                                      editProofPathList
+                                                          .length) {
+                                                    editProofPathList
+                                                        .removeAt(pIdx);
+                                                  }
+                                                });
+                                              },
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.all(2),
+                                                decoration: const BoxDecoration(
+                                                  color: Colors.redAccent,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: const Icon(
+                                                  Icons.close,
+                                                  size: 12,
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
                       ],
                     ],
                   ),
@@ -5776,6 +6609,15 @@ class _HomeScreenState extends State<HomeScreen> {
       updatedFields['clinicName'] = clinicNameCtrl.text.trim();
       updatedFields['totalPaid'] = totalPaidCtrl.text.trim();
       updatedFields['bizRegNumber'] = bizRegNumberCtrl.text.trim();
+      if (editProofBase64List.isEmpty) {
+        updatedFields.remove('proofImagesJson');
+        updatedFields.remove('proofPathsJson');
+        updatedFields['proofStatus'] = '';
+      } else {
+        updatedFields['proofImagesJson'] = jsonEncode(editProofBase64List);
+        updatedFields['proofPathsJson'] = jsonEncode(editProofPathList);
+        updatedFields['proofStatus'] = '첨부(${editProofBase64List.length}장)';
+      }
     }
 
     final idx = _records.indexWhere((r) => r.id == record.id);
@@ -8214,13 +9056,14 @@ class _HomeScreenState extends State<HomeScreen> {
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.medical || allMedical) {
-      sb.write('<table class="app-fixed-table" style="width:556px;"><thead><tr>');
+      sb.write('<table class="app-fixed-table" style="width:632px;"><thead><tr>');
       sb.write('<th style="width:74px;">카테고리</th>');
       sb.write('<th style="width:64px;">환자성명</th>');
       sb.write('<th style="width:68px;">날짜</th>');
       sb.write('<th style="width:104px;">상호</th>');
       sb.write('<th style="width:80px;">금액</th>');
       sb.write('<th style="width:98px;">사업자등록번호</th>');
+      sb.write('<th style="width:76px;">증빙첨부</th>');
       sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
       for (final item in records) {
@@ -8236,6 +9079,8 @@ class _HomeScreenState extends State<HomeScreen> {
             f['issueDate'] ?? item.createdAt.split(' ').first);
         final amt =
             '${NumberFormat('#,###').format(item.numericAmount)}원';
+        final proofCnt = item.extraProofImages.length;
+        final proofText = proofCnt > 0 ? '📎 첨부($proofCnt)' : '+ 증빙추가';
         final safeId = _escapeHtmlText(item.id);
         sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
         sb.write('<td style="width:74px;">${_escapeHtmlText(sub)}</td>');
@@ -8244,6 +9089,7 @@ class _HomeScreenState extends State<HomeScreen> {
         sb.write('<td style="width:104px;">${_escapeHtmlText(f['clinicName'] ?? '-')}</td>');
         sb.write('<td style="width:80px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
         sb.write('<td style="width:98px;">${_escapeHtmlText(f['bizRegNumber'] ?? '-')}</td>');
+        sb.write('<td style="width:76px; font-weight:700; color:${proofCnt > 0 ? '#166534' : '#334155'};">${_escapeHtmlText(proofText)}</td>');
         sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
@@ -8836,10 +9682,12 @@ class _HomeScreenState extends State<HomeScreen> {
       <span>증빙서류 스냅 - $scopeTitle</span>
       <span style="font-size:12px; font-weight:500; color:#fde047;">(<span id="count-label">${records.length}</span>건)</span>
     </div>
-    <div class="bar-actions">
+    <div class="bar-actions" style="display:flex; gap:6px; align-items:center;">
+      <button class="app-btn merge" onclick="exportFilteredPdfInHtml()" title="현재 조회된 증빙서류와 병원비 추가 증빙첨부 사진을 한 묶음 PDF로 인쇄/저장">📄 PDF 내보내기</button>
       <button class="app-btn save" onclick="downloadMergedHtml()" title="수정한 내용이나 삭제한 내역이 반영된 HTML 파일 저장">💾 수정본 HTML 저장</button>
     </div>
   </header>
+  <input type="file" id="proof-file-input" accept="image/*" multiple style="display:none;" onchange="handleProofFilesAdded(this.files)" />
 
   <!-- 1) 앱과 100% 동일한 상단 카테고리 탭 바 -->
   <div id="major-tabs-bar"></div>
@@ -8857,6 +9705,7 @@ class _HomeScreenState extends State<HomeScreen> {
       </div>
     </div>
     <div id="right-photo-pane">
+      <div id="photo-tabs-bar" style="display:none; position:absolute; top:8px; left:8px; right:8px; z-index:12; overflow-x:auto; white-space:nowrap;"></div>
       <div id="photo-viewport">
         <img id="preview-img" src="${firstBase64.isNotEmpty ? 'data:image/jpeg;base64,$firstBase64' : ''}" style="${firstBase64.isNotEmpty ? 'display:block;' : 'display:none;'}" alt="증빙서류 사진" />
         <div id="empty-photo-msg" style="${firstBase64.isNotEmpty ? 'display:none;' : 'display:block;'} color:#cbd5e1; font-size:13px; text-align:center; padding:16px;">
@@ -9416,7 +10265,7 @@ class _HomeScreenState extends State<HomeScreen> {
         sortAscending = !sortAscending;
       } else {
         sortColumn = colKey;
-        sortAscending = (colKey !== 'date');
+        sortAscending = (colKey !== 'date' && colKey !== 'amount');
       }
       render();
     }
@@ -9460,7 +10309,28 @@ class _HomeScreenState extends State<HomeScreen> {
           cmp = ra - rb;
         } else if (sortColumn === 'uploader') {
           cmp = String(fa.uploaderName || '-').trim().localeCompare(String(fb.uploaderName || '-').trim(), 'ko');
+        } else if (sortColumn === 'subCategory') {
+          const ca = (fa.subCategory || '').trim() || '미지정';
+          const cb = (fb.subCategory || '').trim() || '미지정';
+          cmp = ca.localeCompare(cb, 'ko');
+        } else if (sortColumn === 'patientName') {
+          const pa = (fa.patientName || '').trim() || '-';
+          const pb = (fb.patientName || '').trim() || '-';
+          cmp = pa.localeCompare(pb, 'ko');
+        } else if (sortColumn === 'merchant') {
+          const ma = (fa.clinicName || fa.merchantName || fa.supplierName || '').trim();
+          const mb = (fb.clinicName || fb.merchantName || fb.supplierName || '').trim();
+          cmp = ma.localeCompare(mb, 'ko');
+        } else if (sortColumn === 'amount') {
+          cmp = getNumericAmount(a) - getNumericAmount(b);
+        } else if (sortColumn === 'productName') {
+          cmp = String(fa.productName || '').trim().localeCompare(String(fb.productName || '').trim(), 'ko');
+        } else if (sortColumn === 'specName') {
+          cmp = String(fa.specName || '').trim().localeCompare(String(fb.specName || '').trim(), 'ko');
         } else {
+          cmp = extractSortableDateStr(a).localeCompare(extractSortableDateStr(b));
+        }
+        if (cmp === 0) {
           cmp = extractSortableDateStr(a).localeCompare(extractSortableDateStr(b));
         }
         if (cmp === 0) {
@@ -9693,11 +10563,12 @@ class _HomeScreenState extends State<HomeScreen> {
       const cls = ((isSortable || groupKey) ? 'sortable-th' : '') + (isActive ? ' sorted-active' : '');
       const extraStyle = isGroupActive ? ' background:#fef3c7; color:#92400e;' : '';
       let clickAttr = '';
-      if (groupKey === 'inv_product') clickAttr = ' onclick="toggleInvoiceGroup(\\'product\\')"';
-      else if (groupKey === 'inv_spec') clickAttr = ' onclick="toggleInvoiceGroup(\\'spec\\')"';
-      else if (groupKey === 'med_cat') clickAttr = ' onclick="toggleMedicalGroup(\\'cat\\')"';
-      else if (groupKey === 'med_patient') clickAttr = ' onclick="toggleMedicalGroup(\\'patient\\')"';
-      else if (isSortable) clickAttr = ' onclick="toggleSort(\\'' + sortKey + '\\')"';
+      const sortCall = isSortable ? ('toggleSort(\\'' + sortKey + '\\');') : '';
+      if (groupKey === 'inv_product') clickAttr = ' onclick="' + sortCall + 'toggleInvoiceGroup(\\'product\\')"';
+      else if (groupKey === 'inv_spec') clickAttr = ' onclick="' + sortCall + 'toggleInvoiceGroup(\\'spec\\')"';
+      else if (groupKey === 'med_cat') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\\'cat\\')"';
+      else if (groupKey === 'med_patient') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\\'patient\\')"';
+      else if (isSortable) clickAttr = ' onclick="' + sortCall + '"';
       return '<th class="' + cls + '" data-col-idx="' + colIdx + '" style="width:' + w + 'px;' + extraStyle + '"' + clickAttr + '>' +
         escapeHtml(label) + groupMark + arrow +
         '<div class="col-resizer" onmousedown="startColResize(event, ' + colIdx + ')" onclick="event.stopPropagation()"></div>' +
@@ -9909,16 +10780,17 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         html += '</tbody></table>';
       } else if (cat === '병원비') {
-        const defaultWidths = [74, 64, 68, 104, 80, 98, 68];
+        const defaultWidths = [74, 64, 68, 104, 80, 98, 76, 68];
         const cg = buildTableColGroup(defaultWidths);
         html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('카테고리', 74, 0, null, 'med_cat', medSumByCat) +
-          buildHeaderCell('환자성명', 64, 1, null, 'med_patient', medSumByPatient) +
+          buildHeaderCell('카테고리', 74, 0, 'subCategory', 'med_cat', medSumByCat) +
+          buildHeaderCell('환자성명', 64, 1, 'patientName', 'med_patient', medSumByPatient) +
           buildHeaderCell('날짜', 68, 2, 'date') +
-          buildHeaderCell('상호', 104, 3, null) +
-          buildHeaderCell('금액', 80, 4, null) +
+          buildHeaderCell('상호', 104, 3, 'merchant') +
+          buildHeaderCell('금액', 80, 4, 'amount') +
           buildHeaderCell('사업자등록번호', 98, 5, null) +
-          buildHeaderCell('수정/삭제', 68, 6, null) +
+          buildHeaderCell('증빙첨부', 76, 6, null) +
+          buildHeaderCell('수정/삭제', 68, 7, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
@@ -9927,6 +10799,10 @@ class _HomeScreenState extends State<HomeScreen> {
           const patientName = (f.patientName || '').trim() || '-';
           const dateStr = dotDate(f.issueDate || (item.createdAt || '').split(' ')[0]);
           const amt = formatNumber(getNumericAmount(item)) + '원';
+          const proofs = getExtraProofImages(item);
+          const proofBadge = proofs.length > 0
+            ? ('<span style="display:inline-block; background:#dcfce7; color:#166534; border:1px solid #16a34a; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">📎 첨부(' + proofs.length + ')</span>')
+            : '<span style="display:inline-block; background:#f1f5f9; color:#334155; border:1px solid #94a3b8; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">+ 증빙추가</span>';
           const sid = escapeHtml(item.id);
           html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(sub) + '</td>' +
@@ -9935,6 +10811,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(f.clinicName || '-') + '</td>' +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
             '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
+            '<td onclick="event.stopPropagation(); selectRow(\\'' + sid + '\\'); triggerAddProofForRecord(\\'' + sid + '\\');">' + proofBadge + '</td>' +
             '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
@@ -9975,7 +10852,137 @@ class _HomeScreenState extends State<HomeScreen> {
       selectRow(selectedId);
     }
 
+    let selectedPhotoIdx = 0;
+    let proofTargetRecordId = null;
+
+    function getExtraProofImages(item) {
+      if (!item || !item.fields || !item.fields.proofImagesJson) return [];
+      try {
+        const arr = JSON.parse(item.fields.proofImagesJson);
+        if (Array.isArray(arr)) {
+          return arr.filter(function(s) { return typeof s === 'string' && s.trim().length > 0; });
+        }
+      } catch (_) {}
+      return [];
+    }
+
+    function setExtraProofImages(item, arr) {
+      if (!item.fields) item.fields = {};
+      if (!arr || arr.length === 0) {
+        delete item.fields.proofImagesJson;
+        item.fields.proofStatus = '';
+      } else {
+        item.fields.proofImagesJson = JSON.stringify(arr);
+        item.fields.proofStatus = '첨부(' + arr.length + '장)';
+      }
+    }
+
+    function triggerAddProofForRecord(id) {
+      proofTargetRecordId = id;
+      const inp = document.getElementById('proof-file-input');
+      if (inp) {
+        inp.value = '';
+        inp.click();
+      }
+    }
+
+    function handleProofFilesAdded(fileList) {
+      if (!fileList || fileList.length === 0 || !proofTargetRecordId) return;
+      const rec = archiveRecords.find(function(r) { return r.id === proofTargetRecordId; });
+      if (!rec) return;
+      const proofs = getExtraProofImages(rec);
+      const files = Array.from(fileList);
+      let loaded = 0;
+      files.forEach(function(file) {
+        const reader = new FileReader();
+        reader.onload = function(ev) {
+          const dataUrl = String(ev.target.result || '');
+          const commaIdx = dataUrl.indexOf(',');
+          const b64 = commaIdx !== -1 ? dataUrl.substring(commaIdx + 1) : dataUrl;
+          if (b64) proofs.push(b64);
+          loaded++;
+          if (loaded === files.length) {
+            setExtraProofImages(rec, proofs);
+            selectedId = rec.id;
+            selectedPhotoIdx = proofs.length;
+            render();
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function removeProofImageAt(id, proofIdx) {
+      const rec = archiveRecords.find(function(r) { return r.id === id; });
+      if (!rec) return;
+      const proofs = getExtraProofImages(rec);
+      if (proofIdx < 0 || proofIdx >= proofs.length) return;
+      if (!confirm('선택한 증빙첨부 ' + (proofIdx + 1) + '번 사진을 삭제하시겠습니까?')) return;
+      proofs.splice(proofIdx, 1);
+      setExtraProofImages(rec, proofs);
+      selectedPhotoIdx = 0;
+      render();
+    }
+
+    function selectPhotoTab(idx) {
+      selectedPhotoIdx = idx;
+      updatePhotoViewerForCurrent();
+    }
+
+    function updatePhotoViewerForCurrent() {
+      const current = archiveRecords.find(function(r) { return r.id === selectedId; });
+      const imgEl = document.getElementById('preview-img');
+      const emptyMsg = document.getElementById('empty-photo-msg');
+      const tabsBar = document.getElementById('photo-tabs-bar');
+      resetPhotoZoom();
+
+      if (!current) {
+        imgEl.style.display = 'none';
+        if (emptyMsg) emptyMsg.style.display = 'block';
+        if (tabsBar) tabsBar.style.display = 'none';
+        return;
+      }
+
+      const proofs = current.category === '병원비' ? getExtraProofImages(current) : [];
+      if (selectedPhotoIdx > proofs.length) selectedPhotoIdx = 0;
+
+      if (current.category === '병원비' && tabsBar) {
+        const sid = escapeHtml(current.id);
+        let tHtml = '<div style="display:inline-flex; align-items:center; gap:4px; background:rgba(15,23,42,0.84); padding:4px 6px; border-radius:8px; border:1px solid rgba(255,255,255,0.22);">';
+        tHtml += '<button onclick="selectPhotoTab(0)" style="border:none; border-radius:5px; padding:4px 8px; font-size:11px; font-weight:700; cursor:pointer; color:#fff; background:' + (selectedPhotoIdx === 0 ? '#2563eb' : 'transparent') + ';">기본 영수증</button>';
+        proofs.forEach(function(_, pIdx) {
+          const isAct = selectedPhotoIdx === (pIdx + 1);
+          tHtml += '<span style="display:inline-flex; align-items:center; background:' + (isAct ? '#16a34a' : 'rgba(255,255,255,0.12)') + '; border-radius:5px; overflow:hidden;">' +
+            '<button onclick="selectPhotoTab(' + (pIdx + 1) + ')" style="border:none; background:transparent; color:#fff; padding:4px 6px; font-size:11px; font-weight:700; cursor:pointer;">증빙첨부 ' + (pIdx + 1) + '</button>' +
+            '<button onclick="removeProofImageAt(\\'' + sid + '\\', ' + pIdx + ')" title="이 증빙 사진 삭제" style="border:none; background:rgba(220,38,38,0.85); color:#fff; padding:4px 5px; font-size:10px; font-weight:700; cursor:pointer;">✕</button>' +
+            '</span>';
+        });
+        tHtml += '<button onclick="triggerAddProofForRecord(\\'' + sid + '\\')" style="border:none; border-radius:5px; padding:4px 8px; font-size:11px; font-weight:700; cursor:pointer; background:#f59e0b; color:#0f172a;">+ 증빙첨부 추가</button>';
+        tHtml += '</div>';
+        tabsBar.innerHTML = tHtml;
+        tabsBar.style.display = 'block';
+      } else if (tabsBar) {
+        tabsBar.style.display = 'none';
+      }
+
+      const activeB64 = (selectedPhotoIdx > 0 && selectedPhotoIdx - 1 < proofs.length)
+        ? proofs[selectedPhotoIdx - 1]
+        : (current.base64Image || '');
+
+      if (activeB64) {
+        imgEl.src = 'data:image/jpeg;base64,' + activeB64;
+        imgEl.style.display = 'block';
+        if (emptyMsg) emptyMsg.style.display = 'none';
+      } else {
+        imgEl.style.display = 'none';
+        if (emptyMsg) emptyMsg.style.display = 'block';
+      }
+    }
+
     function selectRow(id) {
+      if (selectedId !== id) {
+        selectedPhotoIdx = 0;
+      }
       selectedId = id;
       const rows = leftPane.querySelectorAll('tbody tr');
       rows.forEach(function(tr) {
@@ -9985,20 +10992,54 @@ class _HomeScreenState extends State<HomeScreen> {
           tr.classList.remove('active');
         }
       });
-      const current = archiveRecords.find(function(r) { return r.id === selectedId; });
-      const imgEl = document.getElementById('preview-img');
-      const emptyMsg = document.getElementById('empty-photo-msg');
-      resetPhotoZoom();
-      if (current && current.base64Image) {
-        imgEl.src = 'data:image/jpeg;base64,' + current.base64Image;
-        imgEl.style.display = 'block';
-        if (emptyMsg) emptyMsg.style.display = 'none';
-      } else {
-        imgEl.style.display = 'none';
-        if (emptyMsg) emptyMsg.style.display = 'block';
-      }
+      updatePhotoViewerForCurrent();
     }
 
+    // ★ HTML 파일 내부에서도 [PDF 내보내기] 클릭 시 현재 조회된 항목 + 병원비 추가 증빙첨부 사진까지 여러 장 모두 출력!
+    function exportFilteredPdfInHtml() {
+      const items = getFilteredRecords();
+      if (!items || items.length === 0) {
+        alert('내보낼 증빙서류가 없습니다.');
+        return;
+      }
+      const pages = [];
+      items.forEach(function(rec, idx) {
+        const proofs = rec.category === '병원비' ? getExtraProofImages(rec) : [];
+        if (rec.base64Image) {
+          const badge = proofs.length > 0
+            ? ('[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + ' · 기본영수증 (증빙 ' + proofs.length + '장 포함)] ')
+            : ('[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + '] ');
+          pages.push({
+            header: badge + getDisplayTitle(rec) + ' (' + getDisplaySubtitle(rec) + ')',
+            base64: rec.base64Image
+          });
+        }
+        proofs.forEach(function(pb64, pIdx) {
+          pages.push({
+            header: '[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + ' · 증빙첨부 ' + (pIdx + 1) + '/' + proofs.length + '] ' + getDisplayTitle(rec) + ' (' + getDisplaySubtitle(rec) + ')',
+            base64: pb64
+          });
+        });
+      });
+      if (pages.length === 0) {
+        alert('출력할 이미지가 없습니다.');
+        return;
+      }
+      const win = window.open('', '_blank');
+      if (!win) {
+        alert('팝업 차단을 해제해 주세요.');
+        return;
+      }
+      let pHtml = '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>증빙서류 PDF 출력 (' + pages.length + '장)</title>';
+      pHtml += '<style>@page { size: A4 portrait; margin: 10mm; } * { box-sizing: border-box; margin:0; padding:0; } body { font-family: "Malgun Gothic", sans-serif; background:#fff; } .pdf-page { width: 100%; height: 272mm; display:flex; flex-direction:column; page-break-after: always; padding: 4mm; } .pdf-page:last-child { page-break-after: auto; } .pdf-hdr { background:#e2e8f0; color:#0f172a; padding:6px 10px; border-radius:4px; font-size:12px; font-weight:700; margin-bottom:8px; display:flex; justify-content:space-between; } .pdf-img-wrap { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; } .pdf-img-wrap img { max-width:100%; max-height:245mm; object-fit:contain; }</style></head><body>';
+      pages.forEach(function(pg, i) {
+        pHtml += '<div class="pdf-page"><div class="pdf-hdr"><span>' + escapeHtml(pg.header) + '</span><span>' + (i + 1) + ' / ' + pages.length + '쪽</span></div><div class="pdf-img-wrap"><img src="data:image/jpeg;base64,' + pg.base64 + '" /></div></div>';
+      });
+      pHtml += '<script>window.onload=function(){ setTimeout(function(){ window.print(); }, 350); };<\\/script></body></html>';
+      win.document.open();
+      win.document.write(pHtml);
+      win.document.close();
+    }
     // -------------------------------------------------------------------------
     // F. HTML 내부에서 직접 항목 수정(✏️) 및 삭제(🗑️)
     // -------------------------------------------------------------------------
@@ -10173,13 +11214,48 @@ class _HomeScreenState extends State<HomeScreen> {
       final String safeScope = _sanitizeFileNameForOneDrive(filterScopeName);
 
       // ★ 하나의 pw.Document() 안에 모든 증빙서류 페이지를 순서대로 묶어서 한 파일로 생성!
+      // ★ 병원비 항목에 추가 [증빙첨부] 사진이 있으면 영수증 페이지 바로 다음에 추가 증빙 페이지들도 모두 묶어서 내보냄!
       final combinedPdf = pw.Document();
-      final totalPages = uniquePhotoRecords.length;
+      final List<Map<String, dynamic>> pdfPageSpecs = [];
+      final int totalRecordCount = uniquePhotoRecords.length;
 
-      for (int i = 0; i < totalPages; i++) {
+      for (int i = 0; i < totalRecordCount; i++) {
         final rec = uniquePhotoRecords[i];
-        if (rec.base64Image.trim().isEmpty) continue;
-        final imgBytes = base64Decode(rec.base64Image);
+        final extraProofs = rec.category == DocCategory.medical
+            ? rec.extraProofImages
+            : const <String>[];
+
+        if (rec.base64Image.trim().isNotEmpty) {
+          final String pageBadge = extraProofs.isNotEmpty
+              ? '[$filterScopeName ${i + 1}/$totalRecordCount · 기본영수증 (증빙 ${extraProofs.length}장 포함)]'
+              : '[$filterScopeName ${i + 1}/$totalRecordCount]';
+          pdfPageSpecs.add({
+            'rec': rec,
+            'base64': rec.base64Image,
+            'headerTitle':
+                '$pageBadge ${rec.displayTitle}  (${rec.displaySubtitle})',
+          });
+        }
+
+        for (int pIdx = 0; pIdx < extraProofs.length; pIdx++) {
+          final proofB64 = extraProofs[pIdx].trim();
+          if (proofB64.isEmpty) continue;
+          pdfPageSpecs.add({
+            'rec': rec,
+            'base64': proofB64,
+            'headerTitle':
+                '[$filterScopeName ${i + 1}/$totalRecordCount · 증빙첨부 ${pIdx + 1}/${extraProofs.length}] ${rec.displayTitle}  (${rec.displaySubtitle})',
+          });
+        }
+      }
+
+      final totalPages = pdfPageSpecs.length;
+      for (int pageIdx = 0; pageIdx < totalPages; pageIdx++) {
+        final spec = pdfPageSpecs[pageIdx];
+        final rec = spec['rec'] as DocRecord;
+        final b64 = spec['base64'] as String;
+        final headerTitle = spec['headerTitle'] as String;
+        final imgBytes = base64Decode(b64);
         final pdfImage = pw.MemoryImage(imgBytes);
 
         combinedPdf.addPage(
@@ -10203,7 +11279,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         pw.Expanded(
                           child: pw.Text(
-                            '[$filterScopeName ${i + 1}/$totalPages] ${rec.displayTitle}  (${rec.displaySubtitle})',
+                            headerTitle,
                             style: pw.TextStyle(
                               font: koreanBoldFont,
                               fontSize: 10.5,
@@ -10213,7 +11289,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         pw.SizedBox(width: 8),
                         pw.Text(
-                          rec.pdfFileBaseName.split('-').first,
+                          '${rec.pdfFileBaseName.split('-').first} (${pageIdx + 1}/$totalPages쪽)',
                           style: pw.TextStyle(
                             font: koreanFont,
                             fontSize: 9.5,
@@ -10405,19 +11481,21 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell(
                           '제품명',
                           width: 72,
+                          sortKey: 'productName',
                           isGroupActive: _invSumByProduct,
                           onGroupTap: () => _toggleInvoiceGroupHeader('product'),
                         ),
                         _buildFixedHeaderCell(
                           '규격명',
                           width: 62,
+                          sortKey: 'specName',
                           isGroupActive: _invSumBySpec,
                           onGroupTap: () => _toggleInvoiceGroupHeader('spec'),
                         ),
                         _buildFixedHeaderCell('단위', width: 44),
                         _buildFixedHeaderCell('수량', width: 64),
                         _buildFixedHeaderCell('누적수량', width: 68),
-                        _buildFixedHeaderCell('공급자', width: 78),
+                        _buildFixedHeaderCell('공급자', width: 78, sortKey: 'merchant'),
                         _buildFixedHeaderCell('주문송장번호', width: 122),
                         _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader'),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
@@ -10669,8 +11747,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         _buildFixedHeaderCell('카테고리(날짜)', width: 100, sortKey: 'date'),
                         _buildFixedHeaderCell('구분', width: 58),
-                        _buildFixedHeaderCell('상호', width: 136),
-                        _buildFixedHeaderCell('금액', width: 84),
+                        _buildFixedHeaderCell('상호', width: 136, sortKey: 'merchant'),
+                        _buildFixedHeaderCell('금액', width: 84, sortKey: 'amount'),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
@@ -10760,7 +11838,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // ★ 4) 병원비: 카테고리 - 환자성명 - 날짜 - 상호 - 금액 - 사업자등록번호 + 수정/삭제
+    // ★ 4) 병원비: 카테고리 - 환자성명 - 날짜 - 상호 - 금액 - 사업자등록번호 - 증빙첨부 + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.medical) {
       return ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
@@ -10768,7 +11846,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 556,
+            width: 632,
             child: Column(
               children: [
                 Container(
@@ -10779,19 +11857,22 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell(
                           '카테고리',
                           width: 74,
+                          sortKey: 'subCategory',
                           isGroupActive: _medSumByCat,
                           onGroupTap: () => _toggleMedicalGroupHeader('cat'),
                         ),
                         _buildFixedHeaderCell(
                           '환자성명',
                           width: 64,
+                          sortKey: 'patientName',
                           isGroupActive: _medSumByPatient,
                           onGroupTap: () => _toggleMedicalGroupHeader('patient'),
                         ),
                         _buildFixedHeaderCell('날짜', width: 68, sortKey: 'date'),
-                        _buildFixedHeaderCell('상호', width: 104),
-                        _buildFixedHeaderCell('금액', width: 80),
+                        _buildFixedHeaderCell('상호', width: 104, sortKey: 'merchant'),
+                        _buildFixedHeaderCell('금액', width: 80, sortKey: 'amount'),
                         _buildFixedHeaderCell('사업자등록번호', width: 98),
+                        _buildFixedHeaderCell('증빙첨부', width: 76),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
@@ -10814,9 +11895,13 @@ class _HomeScreenState extends State<HomeScreen> {
                           f['issueDate'] ?? rec.createdAt.split(' ').first);
                       final amtStr =
                           '${DocRecord._formatCurrency(f['totalPaid'])}원';
+                      final proofCount = rec.extraProofImages.length;
 
                       return InkWell(
-                        onTap: () => setState(() => _selectedRecord = rec),
+                        onTap: () => setState(() {
+                          _selectedRecord = rec;
+                          _selectedPhotoIndex = 0;
+                        }),
                         onLongPress: () => _editLocalRecord(rec),
                         child: Container(
                           decoration: BoxDecoration(
@@ -10863,6 +11948,54 @@ class _HomeScreenState extends State<HomeScreen> {
                                   f['bizRegNumber'] ?? '-',
                                   width: 98,
                                   isSelected: isSelected,
+                                ),
+                                InkWell(
+                                  onTap: () {
+                                    setState(() {
+                                      _selectedRecord = rec;
+                                    });
+                                    _openMedicalProofAttachmentDialog(rec);
+                                  },
+                                  child: Container(
+                                    width: 76,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 5, horizontal: 3),
+                                    decoration: const BoxDecoration(
+                                      border: Border(
+                                        right: BorderSide(
+                                            color: Color(0xFFCBD5E1), width: 1),
+                                      ),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: proofCount > 0
+                                            ? const Color(0xFFDCFCE7)
+                                            : const Color(0xFFF1F5F9),
+                                        borderRadius: BorderRadius.circular(5),
+                                        border: Border.all(
+                                          color: proofCount > 0
+                                              ? const Color(0xFF16A34A)
+                                              : const Color(0xFF94A3B8),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        proofCount > 0
+                                            ? '📎 첨부($proofCount)'
+                                            : '+ 증빙추가',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontSize: 10.2,
+                                          fontWeight: FontWeight.bold,
+                                          color: proofCount > 0
+                                              ? const Color(0xFF166534)
+                                              : const Color(0xFF334155),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                                 _buildRowActionButtons(rec),
                               ],
@@ -11023,17 +12156,24 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
 
-    if (onGroupTap != null) {
+    if (onGroupTap != null || isSortable) {
       return InkWell(
-        onTap: onGroupTap,
+        onTap: () {
+          if (onGroupTap != null) {
+            onGroupTap();
+          }
+          if (isSortable) {
+            if (onSortTap != null) {
+              onSortTap();
+            } else {
+              _toggleSortColumn(sortKey);
+            }
+          }
+        },
         child: cell,
       );
     }
-    if (!isSortable) return cell;
-    return InkWell(
-      onTap: onSortTap ?? () => _toggleSortColumn(sortKey),
-      child: cell,
-    );
+    return cell;
   }
 
   Widget _buildFixedDataCell(
@@ -11757,20 +12897,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                         style: TextStyle(color: Colors.white70),
                                       ),
                                     )
-                                  : ClipRect(
-                                      child: InteractiveViewer(
-                                        clipBehavior: Clip.none,
-                                        boundaryMargin:
-                                            const EdgeInsets.all(400),
-                                        minScale: 0.6,
-                                        maxScale: 8.0,
-                                        child: SizedBox(
-                                          width: photoW,
-                                          height: totalH,
-                                          child: _buildRecordImage(
-                                              _selectedRecord!),
-                                        ),
-                                      ),
+                                  : _buildRecordImageSection(
+                                      _selectedRecord!,
+                                      width: photoW,
+                                      height: totalH,
                                     ),
                             ),
                           ),
@@ -11854,20 +12984,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                       style: TextStyle(color: Colors.white70),
                                     ),
                                   )
-                                : ClipRect(
-                                    child: InteractiveViewer(
-                                      clipBehavior: Clip.none,
-                                      boundaryMargin:
-                                          const EdgeInsets.all(400),
-                                      minScale: 0.6,
-                                      maxScale: 8.0,
-                                      child: SizedBox(
-                                        width: double.infinity,
-                                        height: detailH,
-                                        child: _buildRecordImage(
-                                            _selectedRecord!),
-                                      ),
-                                    ),
+                                : _buildRecordImageSection(
+                                    _selectedRecord!,
+                                    width: double.infinity,
+                                    height: detailH,
                                   ),
                           ),
                         ),
@@ -11908,7 +13028,175 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildRecordImage(DocRecord record) {
+  Widget _buildRecordImageSection(
+    DocRecord record, {
+    required double width,
+    required double height,
+  }) {
+    final extraProofs = record.category == DocCategory.medical
+        ? record.extraProofImages
+        : const <String>[];
+    final extraPaths = record.category == DocCategory.medical
+        ? record.extraProofImagePaths
+        : const <String>[];
+    final int maxIndex = extraProofs.length;
+    final int activeIdx =
+        _selectedPhotoIndex.clamp(0, maxIndex);
+
+    return Stack(
+      children: [
+        ClipRect(
+          child: InteractiveViewer(
+            key: ValueKey('${record.id}_photo_$activeIdx'),
+            clipBehavior: Clip.none,
+            boundaryMargin: const EdgeInsets.all(400),
+            minScale: 0.6,
+            maxScale: 8.0,
+            child: SizedBox(
+              width: width,
+              height: height,
+              child: _buildRecordImage(
+                record,
+                photoIndex: activeIdx,
+                extraProofs: extraProofs,
+                extraPaths: extraPaths,
+              ),
+            ),
+          ),
+        ),
+        if (record.category == DocCategory.medical)
+          Positioned(
+            top: 8,
+            left: 8,
+            right: 8,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xCC0F172A),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      onTap: () => setState(() => _selectedPhotoIndex = 0),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: activeIdx == 0
+                              ? const Color(0xFF2563EB)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '기본 영수증',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: activeIdx == 0
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    ),
+                    for (int pIdx = 0; pIdx < extraProofs.length; pIdx++) ...[
+                      const SizedBox(width: 4),
+                      InkWell(
+                        onTap: () =>
+                            setState(() => _selectedPhotoIndex = pIdx + 1),
+                        borderRadius: BorderRadius.circular(6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: activeIdx == pIdx + 1
+                                ? const Color(0xFF16A34A)
+                                : Colors.white12,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '증빙첨부 ${pIdx + 1}',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: activeIdx == pIdx + 1
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 6),
+                    InkWell(
+                      onTap: () => _openMedicalProofAttachmentDialog(record),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF59E0B),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          extraProofs.isEmpty
+                              ? '+ 증빙첨부 추가'
+                              : '📎 증빙관리(${extraProofs.length})',
+                          style: const TextStyle(
+                            color: Color(0xFF0F172A),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildRecordImage(
+    DocRecord record, {
+    int photoIndex = 0,
+    List<String> extraProofs = const <String>[],
+    List<String> extraPaths = const <String>[],
+  }) {
+    if (photoIndex > 0 && photoIndex - 1 < extraProofs.length) {
+      final int pIdx = photoIndex - 1;
+      if (pIdx < extraPaths.length && extraPaths[pIdx].trim().isNotEmpty) {
+        final pFile = File(extraPaths[pIdx]);
+        if (pFile.existsSync()) {
+          return Image.file(
+            pFile,
+            width: double.infinity,
+            height: double.infinity,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.high,
+          );
+        }
+      }
+      final b64 = extraProofs[pIdx];
+      if (b64.isNotEmpty) {
+        return Image.memory(
+          base64Decode(b64),
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.contain,
+          filterQuality: FilterQuality.high,
+        );
+      }
+    }
+
     final file = File(record.imagePath);
     if (file.existsSync()) {
       return Image.file(
