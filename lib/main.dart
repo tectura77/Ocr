@@ -938,6 +938,14 @@ class DocRecord {
     return div.isNotEmpty ? div : TravelDivision.meal;
   }
 
+  /// ★ 병원비 청구여부 상태 ('Y' / 'true' / '청구완료' 이면 true, 기본값 false = 미청구)
+  bool get isMedicalClaimed {
+    final raw = (fields['isClaimed'] ?? '').trim().toUpperCase();
+    return raw == 'Y' || raw == 'TRUE' || raw == '1' || raw == '청구완료';
+  }
+
+  String get medicalClaimLabel => isMedicalClaimed ? '청구완료' : '미청구';
+
   bool get isOutgoingOfficialDoc {
     return category == DocCategory.officialOut;
   }
@@ -1288,6 +1296,8 @@ class _HomeScreenState extends State<HomeScreen> {
   //   - 둘 다 true: 카테고리-환자성명별 합산
   bool _medSumByCat = true;
   bool _medSumByPatient = false;
+  bool _medSumByClaim = false;
+  String _selectedMedicalClaimFilter = '전체'; // '전체' | '미청구' | '청구완료'
 
   // ★ 자재송장 열 제목('제품명' / '규격명') 클릭에 따른 상단 합산 모드 토글 상태
   //   - _invSumByProduct만 true: 제품명별 합산 (기본값)
@@ -2317,57 +2327,77 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  /// 병원비 레코드의 현재 합산 모드('카테고리' / '환자성명' / '카테고리-환자별') 키 반환
+  /// 병원비 레코드의 현재 합산 모드('카테고리' / '환자성명' / '청구여부' 조합) 키 반환
   String _medicalGroupKeyOf(DocRecord r) {
     final cat = r.subCategory.isNotEmpty ? r.subCategory : '미지정';
     final pat = (r.fields['patientName'] ?? '').trim().isNotEmpty
         ? (r.fields['patientName'] ?? '').trim()
         : '환자미상';
-    if (_medSumByCat && _medSumByPatient) {
-      return '$cat-$pat';
-    } else if (_medSumByPatient) {
-      return pat;
-    } else {
-      return cat;
-    }
+    final clm = r.medicalClaimLabel;
+
+    final List<String> parts = <String>[];
+    if (_medSumByCat) parts.add(cat);
+    if (_medSumByPatient) parts.add(pat);
+    if (_medSumByClaim) parts.add(clm);
+    if (parts.isEmpty) return cat;
+    return parts.join('-');
   }
 
   String get _medicalSummaryModeLabel {
-    if (_medSumByCat && _medSumByPatient) return '카테고리-환자별';
-    if (_medSumByPatient) return '환자성명별';
-    return '카테고리별';
+    final List<String> labels = <String>[];
+    if (_medSumByCat) labels.add('카테고리');
+    if (_medSumByPatient) labels.add('환자');
+    if (_medSumByClaim) labels.add('청구여부');
+    if (labels.isEmpty) return '카테고리별';
+    return '${labels.join('-')}별';
   }
 
   void _toggleMedicalGroupHeader(String fieldType) {
     setState(() {
       if (fieldType == 'cat') {
-        if (_medSumByCat && _medSumByPatient) {
-          // 둘 다 선택된 상태에서 '카테고리'를 누르면 카테고리만 또는 환자성명만 토글
+        if (_medSumByCat && !_medSumByPatient && !_medSumByClaim) {
+          _medSumByCat = true;
+        } else if (!_medSumByCat) {
+          _medSumByCat = true;
           _medSumByPatient = false;
-          _medSumByCat = true;
-        } else if (!_medSumByCat && _medSumByPatient) {
-          // 환자성명만 선택된 상태에서 '카테고리'를 누르면 -> 둘 다 선택(카테고리-환자별)!
-          _medSumByCat = true;
+          _medSumByClaim = false;
         } else {
           _medSumByCat = true;
           _medSumByPatient = false;
+          _medSumByClaim = false;
         }
       } else if (fieldType == 'patient') {
-        if (_medSumByCat && !_medSumByPatient) {
-          // 기본(카테고리별) 상태에서 '환자성명' 열 제목을 누르면 -> 환자성명별로 전환!
+        if (!_medSumByPatient && !_medSumByClaim) {
+          // 기본 상태에서 '환자성명' 클릭 -> 환자성명별로 전환!
           _medSumByCat = false;
           _medSumByPatient = true;
-        } else if (!_medSumByCat && _medSumByPatient) {
-          // 환자성명별 상태에서 '환자성명'을 한 번 더 누르면 -> 카테고리-환자별(둘 다) 전환!
+          _medSumByClaim = false;
+        } else if (_medSumByPatient && !_medSumByCat && !_medSumByClaim) {
+          // 환자성명별 상태에서 한 번 더 클릭 -> 카테고리-환자별!
           _medSumByCat = true;
           _medSumByPatient = true;
         } else {
-          // 둘 다 켜진 상태에서 '환자성명'을 누르면 -> 환자성명만!
           _medSumByCat = false;
           _medSumByPatient = true;
+          _medSumByClaim = false;
+        }
+      } else if (fieldType == 'claim') {
+        if (!_medSumByClaim) {
+          // '청구여부' 열 제목 클릭 -> 청구여부별(미청구 / 청구완료)로 상단 합산 칩 전환!
+          _medSumByCat = false;
+          _medSumByPatient = false;
+          _medSumByClaim = true;
+        } else if (_medSumByClaim && !_medSumByPatient && !_medSumByCat) {
+          // 청구여부별 상태에서 한 번 더 클릭 -> 환자-청구여부별 전환!
+          _medSumByPatient = true;
+          _medSumByClaim = true;
+        } else {
+          _medSumByCat = false;
+          _medSumByPatient = false;
+          _medSumByClaim = true;
         }
       }
-      if (!_medSumByCat && !_medSumByPatient) {
+      if (!_medSumByCat && !_medSumByPatient && !_medSumByClaim) {
         _medSumByCat = true;
       }
       _selectedSubCategoryFilter = '전체';
@@ -2376,6 +2406,88 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedRecord = currentList.isNotEmpty ? currentList.first : null;
       }
     });
+  }
+
+  /// ★ 병원비 개별 항목의 [청구여부] 체크박스 즉시 토글
+  Future<void> _toggleSingleMedicalClaimed(DocRecord rec) async {
+    final idx = _records.indexWhere((r) => r.id == rec.id);
+    if (idx == -1) return;
+    final bool nextClaimed = !rec.isMedicalClaimed;
+    final nf = Map<String, String>.from(rec.fields);
+    nf['isClaimed'] = nextClaimed ? 'Y' : 'N';
+    final updated = DocRecord(
+      id: rec.id,
+      category: rec.category,
+      createdAt: rec.createdAt,
+      imagePath: rec.imagePath,
+      base64Image: rec.base64Image,
+      fields: nf,
+    );
+    setState(() {
+      _records[idx] = updated;
+      if (_selectedRecord?.id == rec.id) {
+        _selectedRecord = updated;
+      }
+    });
+    await _saveLocalRecords();
+  }
+
+  /// ★ 현재 필터링되어 화면에 보이는 병원비 항목 전체 [일괄 청구완료 체크 / 일괄 해제]
+  Future<void> _toggleAllFilteredMedicalClaimed(List<DocRecord> targetItems) async {
+    final medItems =
+        targetItems.where((r) => r.category == DocCategory.medical).toList();
+    if (medItems.isEmpty) return;
+    final bool allAlreadyClaimed = medItems.every((r) => r.isMedicalClaimed);
+    final bool nextState = !allAlreadyClaimed;
+    final Set<String> targetIds = medItems.map((r) => r.id).toSet();
+
+    setState(() {
+      for (int i = 0; i < _records.length; i++) {
+        final r = _records[i];
+        if (targetIds.contains(r.id)) {
+          final nf = Map<String, String>.from(r.fields);
+          nf['isClaimed'] = nextState ? 'Y' : 'N';
+          final updated = DocRecord(
+            id: r.id,
+            category: r.category,
+            createdAt: r.createdAt,
+            imagePath: r.imagePath,
+            base64Image: r.base64Image,
+            fields: nf,
+          );
+          _records[i] = updated;
+          if (_selectedRecord?.id == r.id) {
+            _selectedRecord = updated;
+          }
+        }
+      }
+    });
+    await _saveLocalRecords();
+    _showSnack(
+      nextState
+          ? '✅ 현재 목록 ${medItems.length}건을 모두 [청구완료]로 일괄 체크했습니다!'
+          : '↩️ 현재 목록 ${medItems.length}건을 모두 [미청구]로 일괄 해제했습니다.',
+    );
+  }
+
+  int _sumByMedicalClaimStatus(String statusFilter) {
+    final baseList = _subCategoryFilteredRecords
+        .where((r) => r.category == DocCategory.medical);
+    if (statusFilter == '전체') {
+      return baseList.fold(0, (sum, r) => sum + r.numericAmount);
+    }
+    final bool wantClaimed = statusFilter == '청구완료';
+    return baseList
+        .where((r) => r.isMedicalClaimed == wantClaimed)
+        .fold(0, (sum, r) => sum + r.numericAmount);
+  }
+
+  int _countByMedicalClaimStatus(String statusFilter) {
+    final baseList = _subCategoryFilteredRecords
+        .where((r) => r.category == DocCategory.medical);
+    if (statusFilter == '전체') return baseList.length;
+    final bool wantClaimed = statusFilter == '청구완료';
+    return baseList.where((r) => r.isMedicalClaimed == wantClaimed).length;
   }
 
   /// 자재송장 탭에서 기간 필터가 적용된 목록 내의 그룹(제품명 / 규격명 / 제품명-규격명) 목록
@@ -2513,6 +2625,10 @@ class _HomeScreenState extends State<HomeScreen> {
             ? b.fields['patientName']!.trim()
             : '-';
         cmp = pa.compareTo(pb);
+      } else if (sortCol == 'claimed') {
+        final ca = a.isMedicalClaimed ? 1 : 0;
+        final cb = b.isMedicalClaimed ? 1 : 0;
+        cmp = ca.compareTo(cb);
       } else if (sortCol == 'merchant') {
         String ma = '';
         String mb = '';
@@ -2577,6 +2693,12 @@ class _HomeScreenState extends State<HomeScreen> {
       base = subFiltered
           .where((r) => _invoiceGroupKeyOf(r) == _selectedInvoiceProductFilter)
           .toList();
+    } else if (_selectedCategoryFilter == DocCategory.medical &&
+        _selectedMedicalClaimFilter != '전체') {
+      final bool wantClaimed = _selectedMedicalClaimFilter == '청구완료';
+      base = subFiltered
+          .where((r) => r.isMedicalClaimed == wantClaimed)
+          .toList();
     }
     final repliedKeys = _computeRepliedDocNumKeys(_records);
     return _sortRecordsList(
@@ -2631,7 +2753,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<String> get _userRegisteredSubCategoriesForCurrentTab {
     if (!_usesSubCategory(_selectedCategoryFilter)) return ['전체'];
     if (_selectedCategoryFilter == DocCategory.medical) {
-      if (_medSumByCat && !_medSumByPatient) {
+      if (_medSumByCat && !_medSumByPatient && !_medSumByClaim) {
         final Set<String> subs = {};
         subs.addAll(_userSubCategoriesMap[DocCategory.medical] ?? []);
         for (final r in _recordsInSelectedMajorCategory) {
@@ -9648,13 +9770,14 @@ class _HomeScreenState extends State<HomeScreen> {
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.medical || allMedical) {
-      sb.write('<table class="app-fixed-table" style="width:632px;"><thead><tr>');
+      sb.write('<table class="app-fixed-table" style="width:704px;"><thead><tr>');
       sb.write('<th style="width:74px;">카테고리</th>');
       sb.write('<th style="width:64px;">환자성명</th>');
       sb.write('<th style="width:68px;">날짜</th>');
       sb.write('<th style="width:104px;">상호</th>');
       sb.write('<th style="width:80px;">금액</th>');
       sb.write('<th style="width:98px;">사업자등록번호</th>');
+      sb.write('<th style="width:72px;">청구여부</th>');
       sb.write('<th style="width:76px;">증빙첨부</th>');
       sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
@@ -9671,6 +9794,8 @@ class _HomeScreenState extends State<HomeScreen> {
             f['issueDate'] ?? item.createdAt.split(' ').first);
         final amt =
             '${NumberFormat('#,###').format(item.numericAmount)}원';
+        final claimed = item.isMedicalClaimed;
+        final claimText = claimed ? '☑ 청구완료' : '☐ 미청구';
         final proofCnt = item.proofAttachmentCount;
         final proofText = proofCnt > 0 ? '📎 첨부($proofCnt)' : '+ 증빙추가';
         final safeId = _escapeHtmlText(item.id);
@@ -9681,6 +9806,7 @@ class _HomeScreenState extends State<HomeScreen> {
         sb.write('<td style="width:104px;">${_escapeHtmlText(f['clinicName'] ?? '-')}</td>');
         sb.write('<td style="width:80px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
         sb.write('<td style="width:98px;">${_escapeHtmlText(f['bizRegNumber'] ?? '-')}</td>');
+        sb.write('<td style="width:72px; font-weight:700; color:${claimed ? '#166534' : '#be123c'};">${_escapeHtmlText(claimText)}</td>');
         sb.write('<td style="width:76px; font-weight:700; color:${proofCnt > 0 ? '#166534' : '#334155'};">${_escapeHtmlText(proofText)}</td>');
         sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
@@ -10360,12 +10486,24 @@ class _HomeScreenState extends State<HomeScreen> {
     let selectedSubCategoryFilter = '전체';
     let selectedTravelDivisionFilter = '전체';
     let selectedInvoiceProductFilter = '전체';
+    let selectedMedicalClaimFilter = '전체'; // '전체' | '미청구' | '청구완료'
 
-    // ★ 병원비(카테고리 / 환자성명) & 자재송장(제품명 / 규격명) 열 제목 클릭 합산 기준 상태
+    // ★ 병원비(카테고리 / 환자성명 / 청구여부) & 자재송장(제품명 / 규격명) 열 제목 클릭 합산 기준 상태
     let medSumByCat = true;
     let medSumByPatient = false;
+    let medSumByClaim = false;
     let invSumByProduct = true;
     let invSumBySpec = false;
+
+    function isRecordMedicalClaimed(item) {
+      const f = (item && item.fields) || {};
+      const raw = String(f.isClaimed || '').trim().toUpperCase();
+      return raw === 'Y' || raw === 'TRUE' || raw === '1' || raw === '청구완료';
+    }
+
+    function getMedicalClaimLabel(item) {
+      return isRecordMedicalClaimed(item) ? '청구완료' : '미청구';
+    }
 
     function getInvoiceGroupKey(item) {
       const f = (item && item.fields) || {};
@@ -10380,9 +10518,13 @@ class _HomeScreenState extends State<HomeScreen> {
       const f = (item && item.fields) || {};
       const cat = (f.subCategory || '').trim() || '미지정';
       const pat = (f.patientName || '').trim() || '환자미상';
-      if (medSumByCat && medSumByPatient) return cat + '-' + pat;
-      if (medSumByPatient) return pat;
-      return cat;
+      const clm = getMedicalClaimLabel(item);
+      const parts = [];
+      if (medSumByCat) parts.push(cat);
+      if (medSumByPatient) parts.push(pat);
+      if (medSumByClaim) parts.push(clm);
+      if (parts.length === 0) return cat;
+      return parts.join('-');
     }
 
     function toggleInvoiceGroup(fieldType) {
@@ -10412,29 +10554,58 @@ class _HomeScreenState extends State<HomeScreen> {
 
     function toggleMedicalGroup(fieldType) {
       if (fieldType === 'cat') {
-        if (medSumByCat && medSumByPatient) {
-          medSumByPatient = false;
-          medSumByCat = true;
-        } else if (!medSumByCat && medSumByPatient) {
-          medSumByCat = true;
-        } else {
-          medSumByCat = true;
-          medSumByPatient = false;
-        }
+        medSumByCat = true;
+        medSumByPatient = false;
+        medSumByClaim = false;
       } else if (fieldType === 'patient') {
-        if (medSumByCat && !medSumByPatient) {
+        if (!medSumByPatient && !medSumByClaim) {
           medSumByCat = false;
           medSumByPatient = true;
-        } else if (!medSumByCat && medSumByPatient) {
+          medSumByClaim = false;
+        } else if (medSumByPatient && !medSumByCat && !medSumByClaim) {
           medSumByCat = true;
           medSumByPatient = true;
         } else {
           medSumByCat = false;
           medSumByPatient = true;
+          medSumByClaim = false;
+        }
+      } else if (fieldType === 'claim') {
+        if (!medSumByClaim) {
+          medSumByCat = false;
+          medSumByPatient = false;
+          medSumByClaim = true;
+        } else if (medSumByClaim && !medSumByPatient && !medSumByCat) {
+          medSumByPatient = true;
+          medSumByClaim = true;
+        } else {
+          medSumByCat = false;
+          medSumByPatient = false;
+          medSumByClaim = true;
         }
       }
-      if (!medSumByCat && !medSumByPatient) medSumByCat = true;
+      if (!medSumByCat && !medSumByPatient && !medSumByClaim) medSumByCat = true;
       selectedSubCategoryFilter = '전체';
+      render();
+    }
+
+    function toggleSingleMedicalClaimInHtml(id) {
+      const rec = archiveRecords.find(function(r) { return r.id === id; });
+      if (!rec) return;
+      if (!rec.fields) rec.fields = {};
+      rec.fields.isClaimed = isRecordMedicalClaimed(rec) ? 'N' : 'Y';
+      render();
+    }
+
+    function toggleAllFilteredMedicalClaimInHtml() {
+      const items = getFilteredRecords().filter(function(r) { return r.category === '병원비'; });
+      if (!items || items.length === 0) return;
+      const allClaimed = items.every(function(r) { return isRecordMedicalClaimed(r); });
+      const nextVal = allClaimed ? 'N' : 'Y';
+      items.forEach(function(r) {
+        if (!r.fields) r.fields = {};
+        r.fields.isClaimed = nextVal;
+      });
       render();
     }
 
@@ -10848,14 +11019,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     function getRecordsInMajorCategory() {
+      if (selectedCategoryFilter === '전체') return archiveRecords.slice();
       return archiveRecords.filter(function(r) {
-        const matchMajor = (selectedCategoryFilter === '전체') || (r.category === selectedCategoryFilter);
-        if (!matchMajor) return false;
-        return matchesPeriod(r);
+        return r.category === selectedCategoryFilter && matchesPeriod(r);
       });
     }
 
-    function extractSortableDateStr(item) {
+    function extractSortableDateKey(item) {
       const f = item.fields || {};
       let raw = '';
       if (item.category === '공문(수신)' || item.category === '공문(발신)') raw = f.sentDate || '';
@@ -10863,7 +11033,7 @@ class _HomeScreenState extends State<HomeScreen> {
       else if (item.category === '출장비') raw = f.date || '';
       else if (item.category === '병원비') raw = f.issueDate || '';
       const d = dotDate(raw);
-      if (/^\\d{4}\\.\\d{2}\\.\\d{2}\$/.test(d)) return d;
+      if (/^\d{4}\.\d{2}\.\d{2}$/.test(d)) return d;
       return dotDate((item.createdAt || '').split(' ')[0]);
     }
 
@@ -10876,7 +11046,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       render();
     }
-
     function getFilteredRecords() {
       const base = getRecordsInMajorCategory();
       const filtered = base.filter(function(r) {
@@ -10889,6 +11058,9 @@ class _HomeScreenState extends State<HomeScreen> {
         } else if (selectedCategoryFilter === '병원비') {
           if (selectedSubCategoryFilter !== '전체') {
             if (getMedicalGroupKey(r) !== selectedSubCategoryFilter) return false;
+          }
+          if (selectedMedicalClaimFilter !== '전체') {
+            if (getMedicalClaimLabel(r) !== selectedMedicalClaimFilter) return false;
           }
         }
         if (selectedCategoryFilter === '출장비' && selectedTravelDivisionFilter !== '전체') {
@@ -10924,6 +11096,10 @@ class _HomeScreenState extends State<HomeScreen> {
           const pa = (fa.patientName || '').trim() || '-';
           const pb = (fb.patientName || '').trim() || '-';
           cmp = pa.localeCompare(pb, 'ko');
+        } else if (sortColumn === 'claimed') {
+          const ca = isRecordMedicalClaimed(a) ? 1 : 0;
+          const cb = isRecordMedicalClaimed(b) ? 1 : 0;
+          cmp = ca - cb;
         } else if (sortColumn === 'merchant') {
           const ma = (fa.clinicName || fa.merchantName || fa.supplierName || '').trim();
           const mb = (fb.clinicName || fb.merchantName || fb.supplierName || '').trim();
@@ -11060,8 +11236,12 @@ class _HomeScreenState extends State<HomeScreen> {
             subSum += getNumericAmount(r);
           }
         });
+        const medModeParts = [];
+        if (medSumByCat) medModeParts.push('카테고리');
+        if (medSumByPatient) medModeParts.push('환자');
+        if (medSumByClaim) medModeParts.push('청구여부');
         const medModeStr = (cat === '병원비')
-          ? (' [' + ((medSumByCat && medSumByPatient) ? '카테고리-환자별' : (medSumByPatient ? '환자성명별' : '카테고리별')) + ']')
+          ? (' [' + (medModeParts.length > 0 ? medModeParts.join('-') : '카테고리') + '별]')
           : '';
         html += '<div class="summary-row">' +
           '<span class="summary-title">' + escapeHtml(cat) + ' 합계' + medModeStr + ' (' + majorList.length + '건): ' + formatNumber(majorSum) + '원</span>' +
@@ -11112,6 +11292,34 @@ class _HomeScreenState extends State<HomeScreen> {
             html += '<button class="amber-chip ' + cls + '" onclick="selectedTravelDivisionFilter=\\'' + escapeHtml(div) + '\\'; render();">' +
               escapeHtml(label) + '</button>';
           });
+          html += '</div>';
+        }
+
+        if (cat === '병원비') {
+          html += '<div class="chip-scroll-row">';
+          ['전체', '미청구', '청구완료'].forEach(function(st) {
+            const matched = majorList.filter(function(r) {
+              if (selectedSubCategoryFilter !== '전체' && getMedicalGroupKey(r) !== selectedSubCategoryFilter) return false;
+              return st === '전체' || getMedicalClaimLabel(r) === st;
+            });
+            let sum = 0;
+            matched.forEach(function(r) { sum += getNumericAmount(r); });
+            const isSel = (selectedMedicalClaimFilter === st);
+            const label = (st === '전체')
+              ? ('청구전체 (' + matched.length + '건)')
+              : (st + ' (' + matched.length + '건 · ' + formatNumber(sum) + '원)');
+            const bg = isSel
+              ? (st === '청구완료' ? '#bbf7d0' : (st === '미청구' ? '#fecdd3' : '#e0e7ff'))
+              : (st === '청구완료' ? '#f0fdf4' : (st === '미청구' ? '#fff1f2' : '#f1f5f9'));
+            const col = st === '청구완료' ? '#166534' : (st === '미청구' ? '#be123c' : '#1e293b');
+            html += '<button class="sub-chip" style="background:' + bg + '; color:' + col + '; font-weight:' + (isSel ? '700' : '500') + ';" onclick="selectedMedicalClaimFilter=\\'' + st + '\\'; render();">' +
+              escapeHtml(label) + '</button>';
+          });
+          const curItems = getFilteredRecords();
+          const allClaimed = curItems.length > 0 && curItems.every(function(r) { return isRecordMedicalClaimed(r); });
+          html += '<button class="sub-chip" style="background:#1e3a8a; color:#fff; font-weight:700;" onclick="toggleAllFilteredMedicalClaimInHtml()">' +
+            (allClaimed ? ('☐ 현재목록 일괄해제 (' + curItems.length + '건)') : ('☑ 현재목록 일괄체크 (' + curItems.length + '건)')) +
+            '</button>';
           html += '</div>';
         }
       }
@@ -11175,6 +11383,7 @@ class _HomeScreenState extends State<HomeScreen> {
       else if (groupKey === 'inv_spec') clickAttr = ' onclick="' + sortCall + 'toggleInvoiceGroup(\\'spec\\')"';
       else if (groupKey === 'med_cat') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\\'cat\\')"';
       else if (groupKey === 'med_patient') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\\'patient\\')"';
+      else if (groupKey === 'med_claim') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\\'claim\\')"';
       else if (isSortable) clickAttr = ' onclick="' + sortCall + '"';
       return '<th class="' + cls + '" data-col-idx="' + colIdx + '" style="width:' + w + 'px;' + extraStyle + '"' + clickAttr + '>' +
         escapeHtml(label) + groupMark + arrow +
@@ -11387,8 +11596,18 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         html += '</tbody></table>';
       } else if (cat === '병원비') {
-        const defaultWidths = [74, 64, 68, 104, 80, 98, 76, 68];
+        const defaultWidths = [74, 64, 68, 104, 80, 98, 72, 76, 68];
         const cg = buildTableColGroup(defaultWidths);
+        const allClaimed = items.length > 0 && items.every(function(r) { return isRecordMedicalClaimed(r); });
+        const w6 = getColWidth(72, 6);
+        const claimSortArrow = (sortColumn === 'claimed') ? (sortAscending ? ' ▲' : ' ▼') : ' ↕';
+        const claimGroupMark = medSumByClaim ? ' ✓' : '';
+        const claimHdrBg = medSumByClaim ? 'background:#fef3c7; color:#92400e;' : (sortColumn === 'claimed' ? 'background:#dbeafe; color:#1e3a8a;' : '');
+        const claimHeaderTh = '<th class="sortable-th" data-col-idx="6" style="width:' + w6 + 'px;' + claimHdrBg + '">' +
+          '<div onclick="toggleSort(\\'claimed\\'); toggleMedicalGroup(\\'claim\\');" style="cursor:pointer;">청구여부' + claimGroupMark + claimSortArrow + '</div>' +
+          '<button onclick="event.stopPropagation(); toggleAllFilteredMedicalClaimInHtml();" style="margin-top:2px; border:1px solid ' + (allClaimed ? '#15803d' : '#64748b') + '; background:' + (allClaimed ? '#16a34a' : '#fff') + '; color:' + (allClaimed ? '#fff' : '#334155') + '; border-radius:4px; padding:1px 4px; font-size:9px; font-weight:700; cursor:pointer;">' + (allClaimed ? '☑ 전체해제' : '☐ 일괄체크') + '</button>' +
+          '<div class="col-resizer" onmousedown="startColResize(event, 6)" onclick="event.stopPropagation()"></div>' +
+          '</th>';
         html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
           buildHeaderCell('카테고리', 74, 0, 'subCategory', 'med_cat', medSumByCat) +
           buildHeaderCell('환자성명', 64, 1, 'patientName', 'med_patient', medSumByPatient) +
@@ -11396,8 +11615,9 @@ class _HomeScreenState extends State<HomeScreen> {
           buildHeaderCell('상호', 104, 3, 'merchant') +
           buildHeaderCell('금액', 80, 4, 'amount') +
           buildHeaderCell('사업자등록번호', 98, 5, null) +
-          buildHeaderCell('증빙첨부', 76, 6, null) +
-          buildHeaderCell('수정/삭제', 68, 7, null) +
+          claimHeaderTh +
+          buildHeaderCell('증빙첨부', 76, 7, null) +
+          buildHeaderCell('수정/삭제', 68, 8, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
@@ -11406,6 +11626,10 @@ class _HomeScreenState extends State<HomeScreen> {
           const patientName = (f.patientName || '').trim() || '-';
           const dateStr = dotDate(f.issueDate || (item.createdAt || '').split(' ')[0]);
           const amt = formatNumber(getNumericAmount(item)) + '원';
+          const claimed = isRecordMedicalClaimed(item);
+          const claimBadge = claimed
+            ? '<span style="display:inline-block; background:#dcfce7; color:#166534; border:1px solid #16a34a; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">☑ 청구완료</span>'
+            : '<span style="display:inline-block; background:#fff1f2; color:#be123c; border:1px solid #fda4af; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">☐ 미청구</span>';
           const proofs = getExtraProofImages(item);
           const proofBadge = proofs.length > 0
             ? ('<span style="display:inline-block; background:#dcfce7; color:#166534; border:1px solid #16a34a; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">📎 첨부(' + proofs.length + ')</span>')
@@ -11418,6 +11642,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(f.clinicName || '-') + '</td>' +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
             '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
+            '<td onclick="event.stopPropagation(); toggleSingleMedicalClaimInHtml(\\'' + sid + '\\');" style="cursor:pointer;">' + claimBadge + '</td>' +
             '<td onclick="event.stopPropagation(); selectRow(\\'' + sid + '\\'); triggerAddProofForRecord(\\'' + sid + '\\');">' + proofBadge + '</td>' +
             '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
@@ -12457,15 +12682,17 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // ★ 4) 병원비: 카테고리 - 환자성명 - 날짜 - 상호 - 금액 - 사업자등록번호 - 증빙첨부 + 수정/삭제
+    // ★ 4) 병원비: 카테고리 - 환자성명 - 날짜 - 상호 - 금액 - 사업자등록번호 - 청구여부(일괄체크+필터) - 증빙첨부 + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.medical) {
+      final bool allItemsClaimed =
+          items.isNotEmpty && items.every((r) => r.isMedicalClaimed);
       return ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: SingleChildScrollView(
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 632,
+            width: 704,
             child: Column(
               children: [
                 Container(
@@ -12491,6 +12718,99 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell('상호', width: 104, sortKey: 'merchant'),
                         _buildFixedHeaderCell('금액', width: 80, sortKey: 'amount'),
                         _buildFixedHeaderCell('사업자등록번호', width: 98),
+                        // ★ 사업자등록번호 우측 [청구여부] 열 헤더:
+                        //   - '청구여부' 글자 터치 시 환자성명처럼 청구여부별 합산·필터 전환 + 정렬!
+                        //   - 아래 [일괄체크 / 전체해제] 버튼 터치 시 현재 조회 목록 일괄 체크/해제!
+                        Container(
+                          width: 72,
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 4, horizontal: 2),
+                          decoration: BoxDecoration(
+                            color: _medSumByClaim
+                                ? const Color(0xFFFEF3C7)
+                                : (_sortColumn == 'claimed'
+                                    ? const Color(0xFFDBEAFE)
+                                    : const Color(0xFFE2E8F0)),
+                            border: const Border(
+                              right: BorderSide(
+                                  color: Color(0xFF94A3B8), width: 1),
+                              bottom: BorderSide(
+                                  color: Color(0xFF94A3B8), width: 1),
+                            ),
+                          ),
+                          alignment: Alignment.center,
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              InkWell(
+                                onTap: () {
+                                  _toggleMedicalGroupHeader('claim');
+                                  _toggleSortColumn('claimed');
+                                },
+                                child: Text(
+                                  '청구여부${_medSumByClaim ? " ✓" : ""}${_sortColumn == "claimed" ? (_sortAscending ? " ▲" : " ▼") : " ↕"}',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 10.2,
+                                    height: 1.15,
+                                    fontWeight: FontWeight.bold,
+                                    color: _medSumByClaim
+                                        ? const Color(0xFF92400E)
+                                        : (_sortColumn == 'claimed'
+                                            ? const Color(0xFF1E3A8A)
+                                            : const Color(0xFF1E293B)),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              InkWell(
+                                onTap: () =>
+                                    _toggleAllFilteredMedicalClaimed(items),
+                                borderRadius: BorderRadius.circular(4),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4, vertical: 1.5),
+                                  decoration: BoxDecoration(
+                                    color: allItemsClaimed
+                                        ? const Color(0xFF16A34A)
+                                        : Colors.white,
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: allItemsClaimed
+                                          ? const Color(0xFF15803D)
+                                          : const Color(0xFF64748B),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        allItemsClaimed
+                                            ? Icons.check_box
+                                            : Icons.check_box_outline_blank,
+                                        size: 11,
+                                        color: allItemsClaimed
+                                            ? Colors.white
+                                            : const Color(0xFF334155),
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        allItemsClaimed ? '전체해제' : '일괄체크',
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                          color: allItemsClaimed
+                                              ? Colors.white
+                                              : const Color(0xFF334155),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                         _buildFixedHeaderCell('증빙첨부', width: 76),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
@@ -12567,6 +12887,64 @@ class _HomeScreenState extends State<HomeScreen> {
                                   f['bizRegNumber'] ?? '-',
                                   width: 98,
                                   isSelected: isSelected,
+                                ),
+                                // ★ 사업자등록번호 우측 [청구여부] 체크 셀 (터치 시 청구완료 ↔ 미청구 즉시 전환)
+                                InkWell(
+                                  onTap: () => _toggleSingleMedicalClaimed(rec),
+                                  child: Container(
+                                    width: 72,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 4, horizontal: 2),
+                                    decoration: const BoxDecoration(
+                                      border: Border(
+                                        right: BorderSide(
+                                            color: Color(0xFFCBD5E1), width: 1),
+                                      ),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 5, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: rec.isMedicalClaimed
+                                            ? const Color(0xFFDCFCE7)
+                                            : const Color(0xFFFFF1F2),
+                                        borderRadius: BorderRadius.circular(5),
+                                        border: Border.all(
+                                          color: rec.isMedicalClaimed
+                                              ? const Color(0xFF16A34A)
+                                              : const Color(0xFFFDA4AF),
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            rec.isMedicalClaimed
+                                                ? Icons.check_box
+                                                : Icons.check_box_outline_blank,
+                                            size: 13.5,
+                                            color: rec.isMedicalClaimed
+                                                ? const Color(0xFF15803D)
+                                                : const Color(0xFFE11D48),
+                                          ),
+                                          const SizedBox(width: 2),
+                                          Text(
+                                            rec.isMedicalClaimed
+                                                ? '청구완료'
+                                                : '미청구',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: rec.isMedicalClaimed
+                                                  ? const Color(0xFF166534)
+                                                  : const Color(0xFFBE123C),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ),
                                 InkWell(
                                   onTap: () {
@@ -13337,7 +13715,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                     : '$subCat ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
                                 final canDelete = (_selectedCategoryFilter !=
                                             DocCategory.medical ||
-                                        (_medSumByCat && !_medSumByPatient)) &&
+                                        (_medSumByCat &&
+                                            !_medSumByPatient &&
+                                            !_medSumByClaim)) &&
                                     subCat != '전체' &&
                                     subCat != '미지정';
                                 return InputChip(
@@ -13424,6 +13804,101 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                 );
                               }).toList(),
+                            ),
+                          ),
+                        ],
+                        if (_selectedCategoryFilter == DocCategory.medical) ...[
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            height: 32,
+                            child: ListView(
+                              scrollDirection: Axis.horizontal,
+                              children: [
+                                ...['전체', '미청구', '청구완료'].map((status) {
+                                  final isSel =
+                                      _selectedMedicalClaimFilter == status;
+                                  final cnt =
+                                      _countByMedicalClaimStatus(status);
+                                  final sum = _sumByMedicalClaimStatus(status);
+                                  final label = status == '전체'
+                                      ? '청구전체 ($cnt건)'
+                                      : '$status ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
+                                  return Padding(
+                                    padding: const EdgeInsets.only(right: 6),
+                                    child: ChoiceChip(
+                                      visualDensity: VisualDensity.compact,
+                                      backgroundColor: status == '청구완료'
+                                          ? const Color(0xFFF0FDF4)
+                                          : (status == '미청구'
+                                              ? const Color(0xFFFFF1F2)
+                                              : Colors.blueGrey.shade50),
+                                      selectedColor: status == '청구완료'
+                                          ? const Color(0xFFBBF7D0)
+                                          : (status == '미청구'
+                                              ? const Color(0xFFFECDD3)
+                                              : Colors.indigo.shade100),
+                                      label: Text(
+                                        label,
+                                        style: TextStyle(
+                                          fontSize: 11.3,
+                                          fontWeight: isSel
+                                              ? FontWeight.bold
+                                              : FontWeight.w500,
+                                          color: status == '청구완료'
+                                              ? const Color(0xFF166534)
+                                              : (status == '미청구'
+                                                  ? const Color(0xFFBE123C)
+                                                  : const Color(0xFF1E293B)),
+                                        ),
+                                      ),
+                                      selected: isSel,
+                                      onSelected: (_) {
+                                        setState(() {
+                                          _selectedMedicalClaimFilter = status;
+                                          final currentList = _filteredRecords;
+                                          if (!currentList.any((r) =>
+                                              r.id == _selectedRecord?.id)) {
+                                            _selectedRecord =
+                                                currentList.isNotEmpty
+                                                    ? currentList.first
+                                                    : null;
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  );
+                                }),
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 2),
+                                  child: ActionChip(
+                                    visualDensity: VisualDensity.compact,
+                                    backgroundColor: const Color(0xFF1E3A8A),
+                                    avatar: Icon(
+                                      items.isNotEmpty &&
+                                              items.every(
+                                                  (r) => r.isMedicalClaimed)
+                                          ? Icons.check_box_outline_blank
+                                          : Icons.done_all,
+                                      size: 14,
+                                      color: Colors.amberAccent,
+                                    ),
+                                    label: Text(
+                                      items.isNotEmpty &&
+                                              items.every(
+                                                  (r) => r.isMedicalClaimed)
+                                          ? '현재목록 일괄해제 (${items.length}건)'
+                                          : '현재목록 일괄체크 (${items.length}건)',
+                                      style: const TextStyle(
+                                        fontSize: 11.2,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    onPressed: () =>
+                                        _toggleAllFilteredMedicalClaimed(items),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
