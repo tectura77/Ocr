@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-android:
-    name: Build APK via GitHub Actions
+    name: Build APK & Play Store AAB via GitHub Actions
     runs-on: ubuntu-latest
 
     steps:
@@ -45,7 +45,7 @@ jobs:
           fi
 
       - name: Create Flutter Platform Scaffold
-        run: "rm -rf android ios && flutter create --platforms=android --org com.example --project-name doc_snap_archive ."
+        run: "rm -rf android ios && flutter create --platforms=android --org com.tectura77 --project-name doc_snap_archive ."
 
       - name: Restore Custom Files, Configure Dependencies, and Generate Android App Icon from icon.png
         run: |
@@ -64,34 +64,230 @@ jobs:
             flutter pub get
           fi
           if [ -f /tmp/AndroidManifest.xml.bak ]; then
-            sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/package="com.example.doc_snap_archive"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml
+            sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/package="com.example.doc_snap_archive"//g' -e 's/package="com.tectura77.doc_snap_archive"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml
           fi
 
-      - name: Configure Gradle, SDK 35, ProGuard Rules, and Disable R8 Minification
+      - name: Prepare Fixed Upload Keystore (Supports KEYSTORE_BASE64 or Auto-Fixed from KEYSTORE_PASSWORD)
+        env:
+          KEY_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
+          PASS="${KEY_PASS:-tectura77_doc_snap_fixed_key_2026}"
+          if [ -n "$KEY_B64" ]; then
+            echo "Using KEYSTORE_BASE64 from GitHub Secrets..."
+            echo "$KEY_B64" | tr -d ' \n\r\t' | base64 -d > android/app/upload-keystore.jks
+          else
+            echo "KEYSTORE_BASE64 not set; generating 100% deterministic fixed upload-keystore.jks from KEYSTORE_PASSWORD..."
+            python3 - "$PASS" << 'PYEOF'
+          import sys, hashlib, subprocess, base64
+
+          seed = sys.argv[1].encode('utf-8')
+          prng_state = seed
+          def get_rand_bytes(n):
+              global prng_state
+              out = bytearray()
+              counter = 0
+              while len(out) < n:
+                  prng_state = hashlib.sha512(prng_state + counter.to_bytes(4, 'big')).digest()
+                  out.extend(prng_state)
+                  counter += 1
+              return bytes(out[:n])
+
+          def is_probable_prime(n):
+              if n < 2 or n % 2 == 0:
+                  return n == 2
+              small_primes = [3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97]
+              for sp in small_primes:
+                  if n % sp == 0:
+                      return n == sp
+              d = n - 1
+              r = 0
+              while d % 2 == 0:
+                  d //= 2
+                  r += 1
+              for a in [2, 3, 5, 7, 11, 13, 17, 19, 23]:
+                  x = pow(a, d, n)
+                  if x == 1 or x == n - 1:
+                      continue
+                  for _ in range(r - 1):
+                      x = pow(x, 2, n)
+                      if x == n - 1:
+                          break
+                  else:
+                      return False
+              return True
+
+          def gen_prime(bits):
+              while True:
+                  b = bytearray(get_rand_bytes(bits // 8))
+                  b[0] |= 0xC0
+                  b[-1] |= 0x01
+                  cand = int.from_bytes(b, 'big')
+                  while not is_probable_prime(cand):
+                      cand += 2
+                  if cand.bit_length() == bits:
+                      return cand
+
+          e = 65537
+          while True:
+              p = gen_prime(1024)
+              q = gen_prime(1024)
+              if p != q and (p - 1) % e != 0 and (q - 1) % e != 0:
+                  n = p * q
+                  if n.bit_length() == 2048:
+                      break
+          phi = (p - 1) * (q - 1)
+          d = pow(e, -1, phi)
+          dp = d % (p - 1)
+          dq = d % (q - 1)
+          qi = pow(q, -1, p)
+
+          def asn1_len(L):
+              if L < 0x80:
+                  return bytes([L])
+              s = L.to_bytes((L.bit_length() + 7) // 8, 'big')
+              return bytes([0x80 | len(s)]) + s
+
+          def asn1_int(val):
+              if val == 0:
+                  b = b'\x00'
+              else:
+                  b = val.to_bytes((val.bit_length() + 7) // 8, 'big')
+                  if b[0] & 0x80:
+                      b = b'\x00' + b
+              return b'\x02' + asn1_len(len(b)) + b
+
+          def asn1_seq(items):
+              body = b''.join(items)
+              return b'\x30' + asn1_len(len(body)) + body
+
+          rsa_priv = asn1_seq([
+              asn1_int(0), asn1_int(n), asn1_int(e), asn1_int(d),
+              asn1_int(p), asn1_int(q), asn1_int(dp), asn1_int(dq), asn1_int(qi)
+          ])
+          pem = "-----BEGIN RSA PRIVATE KEY-----\n" + "\n".join(
+              base64.b64encode(rsa_priv).decode()[i:i+64] for i in range(0, len(base64.b64encode(rsa_priv)), 64)
+          ) + "\n-----END RSA PRIVATE KEY-----\n"
+          open('/tmp/fixed_key.pem', 'w').write(pem)
+
+          subprocess.run([
+              'openssl', 'req', '-new', '-x509', '-key', '/tmp/fixed_key.pem',
+              '-out', '/tmp/fixed_cert.pem', '-days', '10000',
+              '-subj', '/CN=DocSnapArchive/OU=FieldTeam/O=Tectura77/L=Seoul/ST=Seoul/C=KR',
+              '-set_serial', '1730000001'
+          ], check=True)
+          subprocess.run([
+              'openssl', 'pkcs12', '-export',
+              '-in', '/tmp/fixed_cert.pem', '-inkey', '/tmp/fixed_key.pem',
+              '-out', '/tmp/upload-keystore.p12', '-name', 'upload',
+              '-passout', f'pass:{sys.argv[1]}'
+          ], check=True)
+          subprocess.run([
+              'keytool', '-importkeystore',
+              '-srckeystore', '/tmp/upload-keystore.p12', '-srcstoretype', 'PKCS12', '-srcstorepass', sys.argv[1],
+              '-destkeystore', 'android/app/upload-keystore.jks', '-deststoretype', 'JKS', '-deststorepass', sys.argv[1],
+              '-noprompt'
+          ], check=True)
+          PYEOF
+          fi
+          echo "Fixed upload-keystore.jks ready!"
+
+      - name: Configure Gradle, SDK 35, Fixed Release Signing, and Play Store Package ID
+        env:
+          KEY_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_SECRET: ${{ secrets.KEY_ALIAS }}
+        run: |
+          PASS="${KEY_PASS:-tectura77_doc_snap_fixed_key_2026}"
+          DETECTED_ALIAS=$(keytool -list -v -keystore android/app/upload-keystore.jks -storepass "$PASS" 2>/dev/null | awk '/Alias name:/ {print $3; exit}')
+          ALIAS_NAME="${KEY_ALIAS_SECRET:-${DETECTED_ALIAS:-upload}}"
+          echo "Using Keystore Alias: $ALIAS_NAME"
+
           printf '\n-dontwarn com.google.mlkit.**\n-keep class com.google.mlkit.** { *; }\n-keep class com.google.android.gms.** { *; }\n-dontwarn javax.annotation.**\n-dontwarn org.codehaus.mojo.animal_sniffer.**\n-dontoptimize\n-dontshrink\n' > android/app/proguard-rules.pro
           find android -maxdepth 2 -name '*gradle*' -type f -exec sed -i -E 's/8\.[0-6]\.[0-9]+/8.7.0/g; s/7\.[0-9]+\.[0-9]+/8.7.0/g; s/1\.[789]\.[0-9]+/2.0.21/g' {} +
           sed -i -E 's/gradle-[0-9.]+-(all|bin)\.zip/gradle-8.10.2-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
+
           if [ -f android/app/build.gradle.kts ]; then
+            sed -i -E 's/com\.example\.doc_snap_archive/com.tectura77.doc_snap_archive/g' android/app/build.gradle.kts
             sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts
-            printf '\nandroid {\n    buildTypes {\n        getByName("release") {\n            isMinifyEnabled = false\n            isShrinkResources = false\n            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")\n        }\n    }\n}\ndependencies {\n    implementation("com.google.mlkit:text-recognition-korean:16.0.1")\n}\n' >> android/app/build.gradle.kts
+            sed -i -E 's/signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)//g' android/app/build.gradle.kts
+            cat << EOF >> android/app/build.gradle.kts
+
+          android {
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("upload-keystore.jks")
+                      storePassword = "$PASS"
+                      keyAlias = "$ALIAS_NAME"
+                      keyPassword = "$PASS"
+                  }
+              }
+              buildTypes {
+                  getByName("release") {
+                      signingConfig = signingConfigs.getByName("release")
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                  }
+              }
+          }
+          dependencies {
+              implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+          }
+          EOF
           fi
+
           if [ -f android/app/build.gradle ]; then
+            sed -i -E 's/com\.example\.doc_snap_archive/com.tectura77.doc_snap_archive/g' android/app/build.gradle
             sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/compileSdkVersion\s+flutter\.compileSdkVersion/compileSdkVersion 35/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/targetSdkVersion\s+flutter\.targetSdkVersion/targetSdkVersion 35/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 21/g; s/minSdkVersion\s+flutter\.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
-            printf '\nandroid {\n    buildTypes {\n        release {\n            minifyEnabled false\n            shrinkResources false\n            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"\n        }\n    }\n}\ndependencies {\n    implementation "com.google.mlkit:text-recognition-korean:16.0.1"\n}\n' >> android/app/build.gradle
+            sed -i -E 's/signingConfig\s+signingConfigs\.debug//g' android/app/build.gradle
+            cat << EOF >> android/app/build.gradle
+
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file("upload-keystore.jks")
+                      storePassword "$PASS"
+                      keyAlias "$ALIAS_NAME"
+                      keyPassword "$PASS"
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                      shrinkResources false
+                      proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+                  }
+              }
+          }
+          dependencies {
+              implementation "com.google.mlkit:text-recognition-korean:16.0.1"
+          }
+          EOF
           fi
 
       - name: Install Dependencies and Analyze Dart Code
         run: "flutter pub get && dart analyze --no-fatal-warnings lib/main.dart"
 
-      - name: Build Release APK (R8 Disabled)
-        run: "flutter build apk --release --no-tree-shake-icons -Pshrink=false"
+      - name: Build Signed Release APK & Play Store App Bundle (AAB) with Auto-Incremented Build Number
+        run: |
+          BUILD_NUM=$((100 + ${{ github.run_number }}))
+          echo "Building version 1.0.${{ github.run_number }}+$BUILD_NUM ..."
+          flutter build apk --release --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --no-tree-shake-icons -Pshrink=false
+          flutter build appbundle --release --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --no-tree-shake-icons -Pshrink=false
 
-      - name: Upload Release APK to Artifacts
+      - name: Upload Signed Release APK to Artifacts (스마트폰 바로 설치 및 덮어쓰기 업데이트용)
         uses: actions/upload-artifact@v4
         with:
           name: doc-snap-archive-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload Signed Play Store AAB to Artifacts (구글 플레이스토어 정식 등록용)
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-snap-archive-playstore-aab
+          path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
   build-ios:
@@ -120,7 +316,7 @@ jobs:
           fi
 
       - name: Create Flutter iOS Scaffold
-        run: "rm -rf ios && flutter create --platforms=ios --org com.example --project-name doc_snap_archive ."
+        run: "rm -rf ios && flutter create --platforms=ios --org com.tectura77 --project-name doc_snap_archive ."
 
       - name: Restore Custom Files, Generate iOS App Icon, and Configure iOS Podfile (iOS 15.5)
         run: |
@@ -143,7 +339,8 @@ jobs:
 
       - name: Build iOS App (No Codesign) and Package Unsigned IPA
         run: |
-          flutter build ios --release --no-codesign --no-tree-shake-icons
+          BUILD_NUM=$((100 + ${{ github.run_number }}))
+          flutter build ios --release --no-codesign --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --no-tree-shake-icons
           mkdir -p build/ios/ipa/Payload
           APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
           echo "Found Runner.app at: $APP_PATH"
