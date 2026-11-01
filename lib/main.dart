@@ -11033,7 +11033,7 @@ class _HomeScreenState extends State<HomeScreen> {
       else if (item.category === '출장비') raw = f.date || '';
       else if (item.category === '병원비') raw = f.issueDate || '';
       const d = dotDate(raw);
-      if (/^\d{4}\.\d{2}\.\d{2}$/.test(d)) return d;
+      if (/^\\d{4}\\.\\d{2}\\.\\d{2}\$/.test(d)) return d;
       return dotDate((item.createdAt || '').split(' ')[0]);
     }
 
