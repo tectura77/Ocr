@@ -910,8 +910,10 @@ class DocRecord {
         return '[$div] ${merchant.isNotEmpty ? "$merchant " : ""}($total원)';
       case DocCategory.medical:
         final clinic = fields['clinicName'] ?? '';
+        final patient = fields['patientName']?.trim() ?? '';
         final paid = fields['totalPaid'] ?? '0';
-        return '${clinic.isNotEmpty ? clinic : "병원비"} (${_formatCurrency(paid)}원)';
+        final patientPrefix = patient.isNotEmpty ? '[$patient] ' : '';
+        return '$patientPrefix${clinic.isNotEmpty ? clinic : "병원비"} (${_formatCurrency(paid)}원)';
       default:
         return category;
     }
@@ -942,7 +944,10 @@ class DocRecord {
         }
         return '구분: $div | 상호/내역: ${fields['merchantName'] ?? '-'} | 금액: ${_formatCurrency(fields['totalAmount'])}원';
       case DocCategory.medical:
-        return '사업자번호: ${fields['bizRegNumber'] ?? '-'} | 발행일: ${fields['issueDate'] ?? '-'} | 수납액: ${_formatCurrency(fields['totalPaid'])}원';
+        final patient = fields['patientName']?.trim().isNotEmpty == true
+            ? fields['patientName']!
+            : '-';
+        return '환자성명: $patient | 사업자번호: ${fields['bizRegNumber'] ?? '-'} | 발행일: ${fields['issueDate'] ?? '-'} | 수납액: ${_formatCurrency(fields['totalPaid'])}원';
       default:
         return createdAt;
     }
@@ -1018,6 +1023,20 @@ class _HomeScreenState extends State<HomeScreen> {
   String _selectedSubCategoryFilter = '전체';
   String _selectedTravelDivisionFilter = '전체';
   String _selectedInvoiceProductFilter = '전체';
+
+  // ★ 병원비 열 제목('카테고리' / '환자성명') 클릭에 따른 상단 합산 모드 토글 상태
+  //   - _medSumByCat만 true: 카테고리별 합산 (기본값)
+  //   - _medSumByPatient만 true: 환자성명별 합산
+  //   - 둘 다 true: 카테고리-환자성명별 합산
+  bool _medSumByCat = true;
+  bool _medSumByPatient = false;
+
+  // ★ 자재송장 열 제목('제품명' / '규격명') 클릭에 따른 상단 합산 모드 토글 상태
+  //   - _invSumByProduct만 true: 제품명별 합산 (기본값)
+  //   - _invSumBySpec만 true: 규격명별 합산
+  //   - 둘 다 true: 제품명-규격명별 합산
+  bool _invSumByProduct = true;
+  bool _invSumBySpec = false;
 
   // ★ 자재송장 & 병원비 전용 기간별 필터 상태 ('전체' 또는 '○월')
   // 처음에 기준 기간(시작일~종료일)을 한 번 셋팅하면 다음부터는 [<] [>] 버튼으로 그 기간과 똑같은 한 달 단위로 넘길 수 있음!
@@ -1896,31 +1915,159 @@ class _HomeScreenState extends State<HomeScreen> {
         .replaceAll(RegExp(r'\.$'), '');
   }
 
-  /// 자재송장 탭에서 기간 필터가 적용된 목록 내의 제품명 목록
+  /// 자재송장 레코드의 현재 합산 모드('제품명' / '규격명' / '제품명-규격명') 키 반환
+  String _invoiceGroupKeyOf(DocRecord r) {
+    final prod = (r.fields['productName'] ?? '').trim().isNotEmpty
+        ? (r.fields['productName'] ?? '').trim()
+        : '미지정';
+    final spec = (r.fields['specName'] ?? '').trim().isNotEmpty
+        ? (r.fields['specName'] ?? '').trim()
+        : '규격미상';
+    if (_invSumByProduct && _invSumBySpec) {
+      return '$prod-$spec';
+    } else if (_invSumBySpec) {
+      return spec;
+    } else {
+      return prod;
+    }
+  }
+
+  String get _invoiceSummaryModeLabel {
+    if (_invSumByProduct && _invSumBySpec) return '제품명-규격별';
+    if (_invSumBySpec) return '규격명별';
+    return '제품명별';
+  }
+
+  void _toggleInvoiceGroupHeader(String fieldType) {
+    setState(() {
+      if (fieldType == 'product') {
+        if (_invSumByProduct && _invSumBySpec) {
+          // 둘 다 켜진 상태에서 '제품명'만 다시 누르거나 해제 시 -> 제품명만 또는 규격명만
+          _invSumByProduct = false;
+        } else if (_invSumByProduct && !_invSumBySpec) {
+          // 이미 제품명만 켜진 상태에서 제품명을 누르면 제품명별 유지
+          _invSumByProduct = true;
+        } else {
+          // 규격명만 켜진 상태에서 제품명을 누르면 -> 둘 다 켜짐(제품명-규격별)
+          _invSumByProduct = true;
+        }
+      } else if (fieldType == 'spec') {
+        if (_invSumByProduct && _invSumBySpec) {
+          _invSumBySpec = false;
+        } else if (!_invSumByProduct && _invSumBySpec) {
+          // 이미 규격명만 켜진 상태에서 규격명을 다시 누르면 기본(제품명별)로 복귀
+          _invSumByProduct = true;
+          _invSumBySpec = false;
+        } else {
+          // 제품명만 켜진 상태에서 규격명을 누르면 -> 규격명별 (여기서 제품명까지 누르면 둘 다!)
+          _invSumByProduct = false;
+          _invSumBySpec = true;
+        }
+      }
+      if (!_invSumByProduct && !_invSumBySpec) {
+        _invSumByProduct = true;
+      }
+      _selectedInvoiceProductFilter = '전체';
+      final currentList = _filteredRecords;
+      if (!currentList.any((r) => r.id == _selectedRecord?.id)) {
+        _selectedRecord = currentList.isNotEmpty ? currentList.first : null;
+      }
+    });
+  }
+
+  /// 병원비 레코드의 현재 합산 모드('카테고리' / '환자성명' / '카테고리-환자별') 키 반환
+  String _medicalGroupKeyOf(DocRecord r) {
+    final cat = r.subCategory.isNotEmpty ? r.subCategory : '미지정';
+    final pat = (r.fields['patientName'] ?? '').trim().isNotEmpty
+        ? (r.fields['patientName'] ?? '').trim()
+        : '환자미상';
+    if (_medSumByCat && _medSumByPatient) {
+      return '$cat-$pat';
+    } else if (_medSumByPatient) {
+      return pat;
+    } else {
+      return cat;
+    }
+  }
+
+  String get _medicalSummaryModeLabel {
+    if (_medSumByCat && _medSumByPatient) return '카테고리-환자별';
+    if (_medSumByPatient) return '환자성명별';
+    return '카테고리별';
+  }
+
+  void _toggleMedicalGroupHeader(String fieldType) {
+    setState(() {
+      if (fieldType == 'cat') {
+        if (_medSumByCat && _medSumByPatient) {
+          // 둘 다 선택된 상태에서 '카테고리'를 누르면 카테고리만 또는 환자성명만 토글
+          _medSumByPatient = false;
+          _medSumByCat = true;
+        } else if (!_medSumByCat && _medSumByPatient) {
+          // 환자성명만 선택된 상태에서 '카테고리'를 누르면 -> 둘 다 선택(카테고리-환자별)!
+          _medSumByCat = true;
+        } else {
+          _medSumByCat = true;
+          _medSumByPatient = false;
+        }
+      } else if (fieldType == 'patient') {
+        if (_medSumByCat && !_medSumByPatient) {
+          // 기본(카테고리별) 상태에서 '환자성명' 열 제목을 누르면 -> 환자성명별로 전환!
+          _medSumByCat = false;
+          _medSumByPatient = true;
+        } else if (!_medSumByCat && _medSumByPatient) {
+          // 환자성명별 상태에서 '환자성명'을 한 번 더 누르면 -> 카테고리-환자별(둘 다) 전환!
+          _medSumByCat = true;
+          _medSumByPatient = true;
+        } else {
+          // 둘 다 켜진 상태에서 '환자성명'을 누르면 -> 환자성명만!
+          _medSumByCat = false;
+          _medSumByPatient = true;
+        }
+      }
+      if (!_medSumByCat && !_medSumByPatient) {
+        _medSumByCat = true;
+      }
+      _selectedSubCategoryFilter = '전체';
+      final currentList = _filteredRecords;
+      if (!currentList.any((r) => r.id == _selectedRecord?.id)) {
+        _selectedRecord = currentList.isNotEmpty ? currentList.first : null;
+      }
+    });
+  }
+
+  /// 자재송장 탭에서 기간 필터가 적용된 목록 내의 그룹(제품명 / 규격명 / 제품명-규격명) 목록
   List<String> get _invoiceProductNamesInCurrentPeriod {
     final periodInvoices = _records
         .where((r) =>
             r.category == DocCategory.invoice && _matchesCurrentPeriodFilter(r))
         .toList();
-    final Set<String> prods = {};
+    final Set<String> groups = {};
     for (final r in periodInvoices) {
-      final p = (r.fields['productName'] ?? '').trim();
-      if (p.isNotEmpty) prods.add(p);
+      final g = _invoiceGroupKeyOf(r);
+      if (g.isNotEmpty) groups.add(g);
     }
-    return ['전체', ...prods];
+    return ['전체', ...groups];
   }
 
-  /// 자재송장 제품명별 합계수량 표기: 예) 고장력철근(19.6ton)
-  String _invoiceProductChipLabel(String prodName) {
+  /// 자재송장 그룹별 합계수량 표기: 예) 고장력철근(19.6ton), D16MM(15.952ton), 고장력철근-D16MM(15.952ton)
+  String _invoiceProductChipLabel(String groupKey) {
     final periodInvoices = _records
         .where((r) =>
             r.category == DocCategory.invoice && _matchesCurrentPeriodFilter(r))
         .toList();
-    if (prodName == '전체') {
-      return '구분전체 (${periodInvoices.length}건)';
+    if (groupKey == '전체') {
+      double totalQty = 0.0;
+      String unit = 'ton';
+      for (final r in periodInvoices) {
+        totalQty += r.numericInvoiceQuantity;
+        final u = (r.fields['unit'] ?? '').trim();
+        if (u.isNotEmpty) unit = u;
+      }
+      return '전체 (${periodInvoices.length}건 · ${_formatQtyClean(totalQty)}$unit)';
     }
     final matching = periodInvoices
-        .where((r) => (r.fields['productName'] ?? '').trim() == prodName)
+        .where((r) => _invoiceGroupKeyOf(r) == groupKey)
         .toList();
     double sumQty = 0.0;
     String unit = 'ton';
@@ -1929,7 +2076,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final u = (r.fields['unit'] ?? '').trim();
       if (u.isNotEmpty) unit = u;
     }
-    return '$prodName(${_formatQtyClean(sumQty)}$unit)';
+    return '$groupKey(${_formatQtyClean(sumQty)}$unit)';
   }
 
   List<DocRecord> get _recordsInSelectedMajorCategory {
@@ -1945,6 +2092,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final majorList = _recordsInSelectedMajorCategory;
     if (!_usesSubCategory(_selectedCategoryFilter)) return majorList;
     if (_selectedSubCategoryFilter == '전체') return majorList;
+    if (_selectedCategoryFilter == DocCategory.medical) {
+      return majorList
+          .where((r) => _medicalGroupKeyOf(r) == _selectedSubCategoryFilter)
+          .toList();
+    }
     if (_selectedSubCategoryFilter == '미지정') {
       return majorList.where((r) => r.subCategory.isEmpty).toList();
     }
@@ -2030,9 +2182,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (_selectedCategoryFilter == DocCategory.invoice &&
         _selectedInvoiceProductFilter != '전체') {
       base = subFiltered
-          .where((r) =>
-              (r.fields['productName'] ?? '').trim() ==
-              _selectedInvoiceProductFilter)
+          .where((r) => _invoiceGroupKeyOf(r) == _selectedInvoiceProductFilter)
           .toList();
     }
     final repliedKeys = _computeRepliedDocNumKeys(_records);
@@ -2087,6 +2237,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<String> get _userRegisteredSubCategoriesForCurrentTab {
     if (!_usesSubCategory(_selectedCategoryFilter)) return ['전체'];
+    if (_selectedCategoryFilter == DocCategory.medical) {
+      if (_medSumByCat && !_medSumByPatient) {
+        final Set<String> subs = {};
+        subs.addAll(_userSubCategoriesMap[DocCategory.medical] ?? []);
+        for (final r in _recordsInSelectedMajorCategory) {
+          final k = _medicalGroupKeyOf(r);
+          if (k.isNotEmpty && k != '미지정') subs.add(k);
+        }
+        final result = ['전체', ...subs];
+        if (_recordsInSelectedMajorCategory.any((r) => r.subCategory.isEmpty)) {
+          result.add('미지정');
+        }
+        return result;
+      } else {
+        final Set<String> groups = {};
+        for (final r in _recordsInSelectedMajorCategory) {
+          groups.add(_medicalGroupKeyOf(r));
+        }
+        return ['전체', ...groups];
+      }
+    }
     final Set<String> subs = {};
     subs.addAll(_userSubCategoriesMap[_selectedCategoryFilter] ?? []);
     for (final r in _recordsInSelectedMajorCategory) {
@@ -2105,6 +2276,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (subCat == '전체') {
       return baseList.fold(0, (sum, r) => sum + r.numericAmount);
     }
+    if (_selectedCategoryFilter == DocCategory.medical) {
+      return baseList
+          .where((r) => _medicalGroupKeyOf(r) == subCat)
+          .fold(0, (sum, r) => sum + r.numericAmount);
+    }
     if (subCat == '미지정') {
       return baseList
           .where((r) => r.subCategory.isEmpty)
@@ -2118,6 +2294,9 @@ class _HomeScreenState extends State<HomeScreen> {
   int _countBySubCategory(String subCat) {
     final baseList = _recordsInSelectedMajorCategory;
     if (subCat == '전체') return baseList.length;
+    if (_selectedCategoryFilter == DocCategory.medical) {
+      return baseList.where((r) => _medicalGroupKeyOf(r) == subCat).length;
+    }
     if (subCat == '미지정') {
       return baseList.where((r) => r.subCategory.isEmpty).length;
     }
@@ -3516,11 +3695,92 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // ★ 병원비/약국 영수증 실제 납부금액(합계 / 총수납금액 / 본인부담금) 초정밀 추출!
     final allLines = <TextLine>[];
     for (final b in recognized.blocks) {
       allLines.addAll(b.lines);
     }
+
+    // ★ 환자성명 (예: '환 자 성 명  이경훈', '환자명: 홍길동', '수진자명: 김철수') 초정밀 추출!
+    // (주의: 하단 약사/대표자 '성 명 권은정'과 혼동하지 않도록 '환자성명/환자명/수진자' 라벨 우선 탐색)
+    const Set<String> patientStopWords = {
+      '조제일자', '투약일수', '영수증번호', '진료일자', '발행일', '납부자', '약제비총액',
+      '본인부담금', '보험자부담금', '사업자등록번호', '상호', '성명', '야간', '공휴',
+      '외래', '입원', '합계', '진료과', '병실', '주민등록번호', '환자구분', '급여', '비급여'
+    };
+
+    String? extractedPatient;
+    // 1단계: 병합된 줄(lines)이나 전체 텍스트에서 '환자성명' / '환자명' / '수진자(성명)' 정규식 매칭
+    for (final line in lines) {
+      final pm = RegExp(
+        r'(?:환\s*자\s*성\s*명|환\s*자\s*명|수\s*진\s*자\s*성?\s*명|진\s*료\s*환\s*자)\s*[:：|]?\s*([가-힣]{2,5})',
+      ).firstMatch(line);
+      if (pm != null) {
+        final cand = pm.group(1)!.trim();
+        if (!patientStopWords.contains(cand)) {
+          extractedPatient = cand;
+          break;
+        }
+      }
+    }
+
+    if (extractedPatient == null) {
+      final pmFull = RegExp(
+        r'(?:환\s*자\s*성\s*명|환\s*자\s*명|수\s*진\s*자\s*성?\s*명)\s*[:：|\s]+\s*([가-힣]{2,5})',
+      ).firstMatch(fullText);
+        final cand = pmFull.group(1)!.trim();
+        if (!patientStopWords.contains(cand)) {
+          extractedPatient = cand;
+        }
+      }
+    }
+
+    // 2단계: 표 칸이 나뉘어 인식된 경우 '환자성명' 라벨 박스와 같은 가로줄(Y좌표 인접) 우측에 있는 2~4글자 한글 이름 탐색
+    if (extractedPatient == null) {
+      Rect? patientLabelBox;
+      for (final tl in allLines) {
+        final clean = tl.text.replaceAll(RegExp(r'\s+'), '');
+        if (clean.contains('환자성명') ||
+            clean.contains('환자명') ||
+            clean.contains('수진자')) {
+          patientLabelBox = tl.boundingBox;
+          final afterLabel = clean
+              .replaceFirst(RegExp(r'^.*?(?:환자성명|환자명|수진자성명|수진자)'), '')
+              .replaceAll(RegExp(r'[^가-힣]'), '');
+          if (afterLabel.length >= 2 &&
+              afterLabel.length <= 5 &&
+              !patientStopWords.contains(afterLabel)) {
+            extractedPatient = afterLabel;
+          }
+          break;
+        }
+      }
+
+      if (extractedPatient == null && patientLabelBox != null) {
+        double bestDy = double.infinity;
+        for (final tl in allLines) {
+          if (tl.boundingBox == patientLabelBox) continue;
+          if (tl.boundingBox.left < patientLabelBox.left + 10) continue;
+          final dy = (tl.boundingBox.center.dy - patientLabelBox.center.dy).abs();
+          if (dy <= patientLabelBox.height * 1.35 && dy < bestDy) {
+            final nameMatchInCell =
+                RegExp(r'([가-힣]{2,5})').firstMatch(tl.text.trim());
+            if (nameMatchInCell != null) {
+              final cand = nameMatchInCell.group(1)!;
+              if (!patientStopWords.contains(cand)) {
+                bestDy = dy;
+                extractedPatient = cand;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (extractedPatient != null && extractedPatient.isNotEmpty) {
+      result['patientName'] = extractedPatient;
+    }
+
+    // ★ 병원비/약국 영수증 실제 납부금액(합계 / 총수납금액 / 본인부담금) 초정밀 추출!
 
     final List<Map<String, dynamic>> amountNodes = [];
     for (final tl in allLines) {
@@ -3823,11 +4083,14 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       prompt = '''
 이 병원비/약국 영수증 이미지를 읽고 순수 JSON 객체로 응답해줘.
-주의: totalPaid에는 절대 '약제비총액'이나 '보험자부담금'을 넣지 말고, 환자가 실제로 계산한 맨 아래 '합계' 또는 '총수납금액(①+③)' / '본인부담금' 금액(예: 3000)만 넣을 것!
+주의:
+1) patientName에는 상단 '환자성명' 또는 '환자명'/'수진자명' 칸에 적힌 환자 이름(예: "이경훈")을 넣을 것! 하단 사업장 정보의 대표자/약사 '성명'(예: 권은정)과 절대 혼동하지 말 것!
+2) totalPaid에는 절대 '약제비총액'이나 '보험자부담금'을 넣지 말고, 환자가 실제로 계산한 맨 아래 '합계' 또는 '총수납금액(①+③)' / '본인부담금' 금액(예: 3000)만 넣을 것!
 {
-  "clinicName": "상호명",
+  "patientName": "환자성명 (예: 이경훈)",
+  "clinicName": "상호명 (예: 타워약국)",
   "bizRegNumber": "사업자등록번호",
-  "issueDate": "YYYY-MM-DD",
+  "issueDate": "YYYY-MM-DD (조제일자 또는 발행일)",
   "totalPaid": "실제 계산한 합계(본인부담 수납액) 숫자만"
 }''';
     }
@@ -4043,6 +4306,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       // 4. 병원비 컨트롤러
+      final patientNameCtrl = TextEditingController();
       final clinicNameCtrl = TextEditingController();
       final bizRegNumberCtrl = TextEditingController();
       final issueDateCtrl = TextEditingController(text: todayDotStr);
@@ -4144,6 +4408,9 @@ class _HomeScreenState extends State<HomeScreen> {
             travelDateCtrl.text = DocRecord.formatDotDate(extracted['date']);
           }
         } else if (chosenCategory == DocCategory.medical) {
+          if (extracted['patientName']?.isNotEmpty == true) {
+            patientNameCtrl.text = extracted['patientName']!;
+          }
           if (extracted['clinicName']?.isNotEmpty == true) {
             clinicNameCtrl.text = extracted['clinicName']!;
           }
@@ -4816,16 +5083,18 @@ class _HomeScreenState extends State<HomeScreen> {
                         // 4. 병원비 입력 폼
                         if (chosenCategory == DocCategory.medical) ...[
                           _buildField(
-                              clinicNameCtrl, '상호 (병원/약국명)', '예: 맘온누리약국'),
+                              patientNameCtrl, '환자성명', '예: 이경훈'),
+                          _buildField(issueDateCtrl, '날짜 (조제/발행일)', '예: 2026.04.02'),
                           _buildField(
-                              bizRegNumberCtrl, '사업자등록번호', '예: 276-63-00432'),
-                          _buildField(issueDateCtrl, '발행일', '예: 2026.10.01'),
+                              clinicNameCtrl, '상호 (병원/약국명)', '예: 타워약국'),
                           _buildField(
                             totalPaidCtrl,
                             '총수납금액 (원)',
-                            '예: 4600',
+                            '예: 3000',
                             keyboardType: TextInputType.number,
                           ),
+                          _buildField(
+                              bizRegNumberCtrl, '사업자등록번호', '예: 840-78-00407'),
                         ],
                       ],
                     ),
@@ -4941,9 +5210,11 @@ class _HomeScreenState extends State<HomeScreen> {
           collectedFields['merchantName'] = travelMerchantCtrl.text.trim();
           collectedFields['date'] = travelDateCtrl.text.trim();
         } else if (chosenCategory == DocCategory.medical) {
+          collectedFields['patientName'] = patientNameCtrl.text.trim();
           collectedFields['clinicName'] = clinicNameCtrl.text.trim();
           collectedFields['bizRegNumber'] = bizRegNumberCtrl.text.trim();
-          collectedFields['issueDate'] = issueDateCtrl.text.trim();
+          collectedFields['issueDate'] =
+              DocRecord.formatDotDate(issueDateCtrl.text.trim());
           collectedFields['totalPaid'] = totalPaidCtrl.text.trim();
         }
 
@@ -5096,6 +5367,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // 4. 병원비 컨트롤러
+    final patientNameCtrl =
+        TextEditingController(text: f['patientName'] ?? '');
     final issueDateCtrl =
         TextEditingController(text: DocRecord.formatDotDate(f['issueDate']));
     final clinicNameCtrl = TextEditingController(text: f['clinicName'] ?? '');
@@ -5406,16 +5679,17 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ],
                       if (chosenCategory == DocCategory.medical) ...[
-                        _buildField(issueDateCtrl, '날짜 (발행일)', '예: 2026.10.01'),
-                        _buildField(clinicNameCtrl, '상호', '예: 맘온누리약국'),
+                        _buildField(patientNameCtrl, '환자성명', '예: 이경훈'),
+                        _buildField(issueDateCtrl, '날짜 (발행일)', '예: 2026.04.02'),
+                        _buildField(clinicNameCtrl, '상호', '예: 타워약국'),
                         _buildField(
                           totalPaidCtrl,
                           '금액 (원)',
-                          '예: 4600',
+                          '예: 3000',
                           keyboardType: TextInputType.number,
                         ),
                         _buildField(
-                            bizRegNumberCtrl, '사업자등록번호', '예: 276-63-00432'),
+                            bizRegNumberCtrl, '사업자등록번호', '예: 840-78-00407'),
                       ],
                     ],
                   ),
@@ -5495,6 +5769,7 @@ class _HomeScreenState extends State<HomeScreen> {
       updatedFields['merchantName'] = travelMerchantCtrl.text.trim();
       updatedFields['totalAmount'] = travelAmountCtrl.text.trim();
     } else if (chosenCategory == DocCategory.medical) {
+      updatedFields['patientName'] = patientNameCtrl.text.trim();
       updatedFields['issueDate'] =
           DocRecord.formatDotDate(issueDateCtrl.text.trim());
       updatedFields['clinicName'] = clinicNameCtrl.text.trim();
@@ -5618,16 +5893,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ---------------------------------------------------------------------------
   // 방식 A: GitHub 저장소 API 연동 (현장 주력 방식)
+  // ★ 현장이 많아져도 루트(최상위) 폴더가 지저분해지지 않도록
+  //   무조건 [현장공유방/{현장명}/파일명] 구조로 자동 정리하여 저장합니다!
   // ---------------------------------------------------------------------------
-  Future<Map<String, String>?> _fetchGithubFileContentAndSha(
-    String fileName,
-  ) async {
-    final repo = _normalizeGithubRepo(_githubRepo);
-    final token = _githubToken.trim();
-    if (repo.isEmpty || token.isEmpty) return null;
+  static const String _shareRootParentFolder = '현장공유방';
 
-    final folder = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+\$'), '');
-    final relPath = folder.isEmpty ? fileName : '$folder/$fileName';
+  String get _resolvedShareRoomFolder {
+    String raw = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+$'), '');
+    if (raw.isEmpty) return _shareRootParentFolder;
+    if (raw == _shareRootParentFolder ||
+        raw.startsWith('$_shareRootParentFolder/')) {
+      return raw;
+    }
+    return '$_shareRootParentFolder/$raw';
+  }
+
+  Future<Map<String, String>?> _fetchGithubFileContentAtRelPath(
+    String repo,
+    String token,
+    String relPath,
+  ) async {
     final encodedPath = relPath.split('/').map(Uri.encodeComponent).join('/');
     final uri = Uri.parse(
       'https://api.github.com/repos/$repo/contents/$encodedPath',
@@ -5685,6 +5970,36 @@ class _HomeScreenState extends State<HomeScreen> {
             return {'sha': sha, 'html': utf8.decode(base64Decode(b64))};
           }
         }
+      }
+    }
+    return null;
+  }
+
+  Future<Map<String, String>?> _fetchGithubFileContentAndSha(
+    String fileName,
+  ) async {
+    final repo = _normalizeGithubRepo(_githubRepo);
+    final token = _githubToken.trim();
+    if (repo.isEmpty || token.isEmpty) return null;
+
+    // 1순위: [현장공유방/{현장명}/파일명] 정식 경로 조회
+    final folder = _resolvedShareRoomFolder;
+    final primaryRelPath = '$folder/$fileName';
+    final primaryData =
+        await _fetchGithubFileContentAtRelPath(repo, token, primaryRelPath);
+    if (primaryData != null) {
+      return primaryData;
+    }
+
+    // 2순위(기존 루트 폴더 자동 호환): 예전에 루트에 만들어진 [{현장명}/파일명]이 있으면 읽어와서
+    // 새 경로([현장공유방/{현장명}/파일명])로 자연스럽게 합쳐지도록 지원 (sha는 새 경로 기준이므로 비움)
+    final rawSite = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+$'), '');
+    if (rawSite.isNotEmpty && !rawSite.startsWith('$_shareRootParentFolder/')) {
+      final legacyRelPath = '$rawSite/$fileName';
+      final legacyData =
+          await _fetchGithubFileContentAtRelPath(repo, token, legacyRelPath);
+      if (legacyData != null) {
+        return {'sha': '', 'html': legacyData['html'] ?? ''};
       }
     }
     return null;
@@ -5756,8 +6071,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final token = _githubToken.trim();
     if (repo.isEmpty || token.isEmpty) return false;
 
-    final folder = _githubFolder.trim().replaceAll(RegExp(r'^/+|/+\$'), '');
-    final relPath = folder.isEmpty ? fileName : '$folder/$fileName';
+    final folder = _resolvedShareRoomFolder;
+    final relPath = '$folder/$fileName';
     final encodedPath = relPath.split('/').map(Uri.encodeComponent).join('/');
     final uri = Uri.parse(
       'https://api.github.com/repos/$repo/contents/$encodedPath',
@@ -5944,9 +6259,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final String targetFileName =
         isOfficialRoom ? _shareOfficialFileName : _shareInvoiceFileName;
-    final String siteFolder = _githubFolder.trim().isEmpty
-        ? '현장공유방'
-        : _githubFolder.trim();
+    final String siteFolder = _resolvedShareRoomFolder;
     final String scopeTitle = isOfficialRoom
         ? '[$siteFolder] 공문(수신·발신)'
         : '[$siteFolder] 자재송장';
@@ -6197,8 +6510,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final repliedKeys = _computeRepliedDocNumKeys(_records);
       if (!mounted) return;
-      final siteFolder =
-          _githubFolder.trim().isEmpty ? '현장공유방' : _githubFolder.trim();
+      final siteFolder = _resolvedShareRoomFolder;
       await _openShareRoomViewerDialog(
         title: '☁️ [$siteFolder] $targetFileName (${remoteRecords.length}건)',
         records: remoteRecords,
@@ -6671,7 +6983,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 totalW > totalH;
 
                         if (isLandscape) {
-                          const double dividerW = 22.0;
+                          const double dividerW = 28.0;
                           final double usableW = math.max(120.0, totalW - dividerW);
                           final double listW =
                               (usableW * horizRatio).clamp(120.0, usableW - 120.0);
@@ -6804,8 +7116,8 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (ctx, setHubState) {
           final isGithub = _shareRoomMode == 'github';
           final currentSiteName = _githubFolder.trim().isEmpty
-              ? '○○현장'
-              : _githubFolder.trim();
+              ? '현장공유방/○○현장'
+              : _resolvedShareRoomFolder;
 
           return AlertDialog(
             title: Row(
@@ -7148,8 +7460,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         const SizedBox(height: 6),
                         const Text(
-                          '· [현장명(공유방 폴더 이름)]을 입력하면 동일 GitHub 저장소·토큰 안에 해당 현장명 폴더가 자동 생성됩니다.\n'
-                          '· 저장소의 [{현장명}/공문_통합.html] 및 [{현장명}/자재송장_통합.html] 파일로 현장별 서류가 계속 합쳐집니다.',
+                          '· [현장명]을 입력하면 루트가 지저분해지지 않도록 [현장공유방] 폴더 안에 현장별 하위 폴더가 자동 생성됩니다.\n'
+                          '· 저장소의 [현장공유방/{현장명}/공문_통합.html] 및 [현장공유방/{현장명}/자재송장_통합.html]로 깔끔하게 모아집니다.',
                           style: TextStyle(fontSize: 11.5, height: 1.45),
                         ),
                         const SizedBox(height: 8),
@@ -7224,8 +7536,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           TextField(
                             controller: githubFolderCtrl,
                             decoration: const InputDecoration(
-                              hintText: '○○현장',
+                              labelText: '현장명 (자동으로 [현장공유방/현장명] 폴더 안에 생성)',
+                              hintText: '○○현장 (예: PL현장)',
                               hintStyle: TextStyle(color: Colors.black54),
+                              prefixText: '현장공유방 / ',
                               filled: true,
                               fillColor: Colors.white,
                               border: OutlineInputBorder(),
@@ -7359,7 +7673,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   final enteredName = userNameCtrl.text.trim();
                   final enteredRepo = _normalizeGithubRepo(githubRepoCtrl.text);
                   final enteredToken = githubTokenCtrl.text.trim();
-                  final enteredFolder = githubFolderCtrl.text.trim();
+                  final enteredFolder = githubFolderCtrl.text
+                      .trim()
+                      .replaceAll(RegExp(r'^/+|/+$'), '')
+                      .replaceFirst(RegExp(r'^현장공유방/+'), '')
+                      .trim();
                   final enteredOneDriveUrl = oneDriveUrlCtrl.text.trim();
 
                   bool verified = false;
@@ -7895,8 +8213,9 @@ class _HomeScreenState extends State<HomeScreen> {
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.medical || allMedical) {
-      sb.write('<table class="app-fixed-table" style="width:492px;"><thead><tr>');
+      sb.write('<table class="app-fixed-table" style="width:556px;"><thead><tr>');
       sb.write('<th style="width:74px;">카테고리</th>');
+      sb.write('<th style="width:64px;">환자성명</th>');
       sb.write('<th style="width:68px;">날짜</th>');
       sb.write('<th style="width:104px;">상호</th>');
       sb.write('<th style="width:80px;">금액</th>');
@@ -7909,6 +8228,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final sub = (f['subCategory'] ?? '미지정').trim().isEmpty
             ? '미지정'
             : f['subCategory']!;
+        final patientName = (f['patientName'] ?? '').trim().isNotEmpty
+            ? f['patientName']!.trim()
+            : '-';
         final dateStr = DocRecord.formatDotDate(
             f['issueDate'] ?? item.createdAt.split(' ').first);
         final amt =
@@ -7916,6 +8238,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final safeId = _escapeHtmlText(item.id);
         sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
         sb.write('<td style="width:74px;">${_escapeHtmlText(sub)}</td>');
+        sb.write('<td style="width:64px; font-weight:600;">${_escapeHtmlText(patientName)}</td>');
         sb.write('<td style="width:68px;">${_escapeHtmlText(dateStr)}</td>');
         sb.write('<td style="width:104px;">${_escapeHtmlText(f['clinicName'] ?? '-')}</td>');
         sb.write('<td style="width:80px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(amt)}</td>');
@@ -8229,7 +8552,9 @@ class _HomeScreenState extends State<HomeScreen> {
       -webkit-overflow-scrolling: touch;
     }
     #resizer-bar {
-      width: 22px;
+      position: relative;
+      z-index: 30;
+      width: 26px;
       height: 100%;
       background: #cfd8dc;
       cursor: ew-resize;
@@ -8237,10 +8562,21 @@ class _HomeScreenState extends State<HomeScreen> {
       align-items: center;
       justify-content: center;
       user-select: none;
+      -webkit-user-select: none;
       touch-action: none;
       border-left: 1px solid #90a4ae;
       border-right: 1px solid #90a4ae;
       flex-shrink: 0;
+    }
+    /* 모바일 가로보기에서도 손가락으로 쉽게 잡히도록 좌우/상하 투명 터치 영역 확장 */
+    #resizer-bar::before {
+      content: '';
+      position: absolute;
+      top: -10px;
+      bottom: -10px;
+      left: -14px;
+      right: -14px;
+      z-index: 31;
     }
     #resizer-handle-content {
       display: flex;
@@ -8568,6 +8904,83 @@ class _HomeScreenState extends State<HomeScreen> {
     let selectedTravelDivisionFilter = '전체';
     let selectedInvoiceProductFilter = '전체';
 
+    // ★ 병원비(카테고리 / 환자성명) & 자재송장(제품명 / 규격명) 열 제목 클릭 합산 기준 상태
+    let medSumByCat = true;
+    let medSumByPatient = false;
+    let invSumByProduct = true;
+    let invSumBySpec = false;
+
+    function getInvoiceGroupKey(item) {
+      const f = (item && item.fields) || {};
+      const prod = (f.productName || '').trim() || '미지정';
+      const spec = (f.specName || '').trim() || '규격미상';
+      if (invSumByProduct && invSumBySpec) return prod + '-' + spec;
+      if (invSumBySpec) return spec;
+      return prod;
+    }
+
+    function getMedicalGroupKey(item) {
+      const f = (item && item.fields) || {};
+      const cat = (f.subCategory || '').trim() || '미지정';
+      const pat = (f.patientName || '').trim() || '환자미상';
+      if (medSumByCat && medSumByPatient) return cat + '-' + pat;
+      if (medSumByPatient) return pat;
+      return cat;
+    }
+
+    function toggleInvoiceGroup(fieldType) {
+      if (fieldType === 'product') {
+        if (invSumByProduct && invSumBySpec) {
+          invSumByProduct = false;
+        } else if (invSumByProduct && !invSumBySpec) {
+          invSumByProduct = true;
+        } else {
+          invSumByProduct = true;
+        }
+      } else if (fieldType === 'spec') {
+        if (invSumByProduct && invSumBySpec) {
+          invSumBySpec = false;
+        } else if (!invSumByProduct && invSumBySpec) {
+          invSumByProduct = true;
+          invSumBySpec = false;
+        } else {
+          invSumByProduct = false;
+          invSumBySpec = true;
+        }
+      }
+      if (!invSumByProduct && !invSumBySpec) invSumByProduct = true;
+      selectedInvoiceProductFilter = '전체';
+      render();
+    }
+
+    function toggleMedicalGroup(fieldType) {
+      if (fieldType === 'cat') {
+        if (medSumByCat && medSumByPatient) {
+          medSumByPatient = false;
+          medSumByCat = true;
+        } else if (!medSumByCat && medSumByPatient) {
+          medSumByCat = true;
+        } else {
+          medSumByCat = true;
+          medSumByPatient = false;
+        }
+      } else if (fieldType === 'patient') {
+        if (medSumByCat && !medSumByPatient) {
+          medSumByCat = false;
+          medSumByPatient = true;
+        } else if (!medSumByCat && medSumByPatient) {
+          medSumByCat = true;
+          medSumByPatient = true;
+        } else {
+          medSumByCat = false;
+          medSumByPatient = true;
+        }
+      }
+      if (!medSumByCat && !medSumByPatient) medSumByCat = true;
+      selectedSubCategoryFilter = '전체';
+      render();
+    }
+
     // 기간 필터 상태 (자재송장 월 단위 이동 / 병원비 시작일~종료일 지정)
     let periodAllMap = { '자재송장': true, '병원비': true };
     let invoiceAnchorYear = new Date().getFullYear();
@@ -8617,24 +9030,61 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     applyOrientationLayout();
 
-    resizerBar.addEventListener('pointerdown', function(e) {
-      isResizing = true;
-      if (resizerBar.setPointerCapture) resizerBar.setPointerCapture(e.pointerId);
-    });
-    resizerBar.addEventListener('pointermove', function(e) {
-      if (!isResizing) return;
+    function updateSplitByCoord(clientX, clientY) {
       const rect = mainSplit.getBoundingClientRect();
       if (isPortraitMode()) {
-        const newH = Math.max(18, Math.min(82, ((e.clientY - rect.top) / rect.height) * 100));
+        if (rect.height <= 0) return;
+        const newH = Math.max(18, Math.min(82, ((clientY - rect.top) / rect.height) * 100));
         savedPortraitHeightPct = newH;
+        leftPane.style.width = '100%';
         leftPane.style.height = newH + '%';
       } else {
-        const newW = Math.max(20, Math.min(82, ((e.clientX - rect.left) / rect.width) * 100));
+        if (rect.width <= 0) return;
+        const newW = Math.max(18, Math.min(82, ((clientX - rect.left) / rect.width) * 100));
         savedLandscapeWidthPct = newW;
+        leftPane.style.height = '100%';
         leftPane.style.width = newW + '%';
       }
+    }
+
+    // 1) 모바일 터치 (세로·가로 보기 모두 손가락 드래그 완벽 작동)
+    resizerBar.addEventListener('touchstart', function(e) {
+      if (e.touches.length === 1) {
+        isResizing = true;
+        if (e.cancelable) e.preventDefault();
+        e.stopPropagation();
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchmove', function(e) {
+      if (!isResizing || e.touches.length < 1) return;
+      if (e.cancelable) e.preventDefault();
+      updateSplitByCoord(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+
+    window.addEventListener('touchend', function() {
+      if (isResizing) isResizing = false;
     });
-    resizerBar.addEventListener('pointerup', function() { isResizing = false; });
+    window.addEventListener('touchcancel', function() {
+      if (isResizing) isResizing = false;
+    });
+
+    // 2) PC 마우스 & 포인터 드래그 (화면 밖으로 빠르게 움직여도 끊기지 않도록 window에서 수신)
+    resizerBar.addEventListener('pointerdown', function(e) {
+      if (e.pointerType === 'touch') return; // 터치는 위 touch 이벤트에서 전담 처리
+      isResizing = true;
+      e.preventDefault();
+      if (resizerBar.setPointerCapture) {
+        try { resizerBar.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+    });
+    window.addEventListener('pointermove', function(e) {
+      if (!isResizing || e.pointerType === 'touch') return;
+      updateSplitByCoord(e.clientX, e.clientY);
+    });
+    window.addEventListener('pointerup', function() {
+      if (isResizing) isResizing = false;
+    });
 
     // ★ 리스트가 길어져서 화면을 넘어갈 때 마우스로 잡고 위아래/좌우로 끌어 스크롤 (상단 제목행은 고정!)
     let isListDragScrolling = false;
@@ -8974,10 +9424,14 @@ class _HomeScreenState extends State<HomeScreen> {
       const base = getRecordsInMajorCategory();
       const filtered = base.filter(function(r) {
         const f = r.fields || {};
-        if (selectedCategoryFilter === '출장비' || selectedCategoryFilter === '병원비') {
+        if (selectedCategoryFilter === '출장비') {
           if (selectedSubCategoryFilter !== '전체') {
             const sub = (f.subCategory || '').trim() || '미지정';
             if (sub !== selectedSubCategoryFilter) return false;
+          }
+        } else if (selectedCategoryFilter === '병원비') {
+          if (selectedSubCategoryFilter !== '전체') {
+            if (getMedicalGroupKey(r) !== selectedSubCategoryFilter) return false;
           }
         }
         if (selectedCategoryFilter === '출장비' && selectedTravelDivisionFilter !== '전체') {
@@ -8985,8 +9439,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (div !== selectedTravelDivisionFilter) return false;
         }
         if (selectedCategoryFilter === '자재송장' && selectedInvoiceProductFilter !== '전체') {
-          const prod = (f.productName || '미지정').trim() || '미지정';
-          if (prod !== selectedInvoiceProductFilter) return false;
+          if (getInvoiceGroupKey(r) !== selectedInvoiceProductFilter) return false;
         }
         return true;
       });
@@ -9089,19 +9542,19 @@ class _HomeScreenState extends State<HomeScreen> {
           '</div>';
       }
 
-      // 2) 자재송장: 제품명별 합계수량 칩
+      // 2) 자재송장: 제품명 / 규격명 / 제품명-규격별 합계수량 칩
       if (cat === '자재송장') {
+        const modeLabel = (invSumByProduct && invSumBySpec) ? '제품명-규격별' : (invSumBySpec ? '규격명별' : '제품명별');
+        html += '<div style="font-size:11px; color:#475569; margin-bottom:2px;"><strong style="color:#92400e; background:#fef3c7; padding:1px 6px; border-radius:4px;">📊 합산기준: ' + modeLabel + '</strong> (표의 [제품명]·[규격명] 제목을 누르면 합산 기준이 바뀝니다)</div>';
         const prodSet = new Set();
         majorList.forEach(function(r) {
-          const p = ((r.fields || {}).productName || '미지정').trim() || '미지정';
-          prodSet.add(p);
+          prodSet.add(getInvoiceGroupKey(r));
         });
         const prods = ['전체'].concat(Array.from(prodSet));
         html += '<div class="chip-scroll-row">';
         prods.forEach(function(p) {
           const matched = majorList.filter(function(r) {
-            const rp = ((r.fields || {}).productName || '미지정').trim() || '미지정';
-            return p === '전체' || rp === p;
+            return p === '전체' || getInvoiceGroupKey(r) === p;
           });
           let sumQty = 0;
           let unit = 'ton';
@@ -9110,7 +9563,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (r.fields && r.fields.unit) unit = r.fields.unit;
           });
           const label = p === '전체'
-            ? ('품목전체 (' + matched.length + '건 · ' + formatQtyNum(sumQty) + unit + ')')
+            ? ('전체 (' + matched.length + '건 · ' + formatQtyNum(sumQty) + unit + ')')
             : (p + '(' + formatQtyNum(sumQty) + unit + ')');
           const cls = (selectedInvoiceProductFilter === p) ? 'active' : '';
           html += '<button class="amber-chip ' + cls + '" onclick="selectedInvoiceProductFilter=\\'' + escapeHtml(p) + '\\'; render();">' + escapeHtml(label) + '</button>';
@@ -9118,19 +9571,22 @@ class _HomeScreenState extends State<HomeScreen> {
         html += '</div>';
       }
 
-      // 3) 출장비 / 병원비 / 전체: 금액 합계 및 서브카테고리 칩
+      // 3) 출장비 / 병원비 / 전체: 금액 합계 및 서브카테고리/환자성명 칩
       if (cat === '출장비' || cat === '병원비' || cat === '전체') {
         let majorSum = 0;
         majorList.forEach(function(r) { majorSum += getNumericAmount(r); });
         let subSum = 0;
         majorList.forEach(function(r) {
-          const sub = ((r.fields || {}).subCategory || '').trim() || '미지정';
-          if (selectedSubCategoryFilter === '전체' || sub === selectedSubCategoryFilter) {
+          const gk = (cat === '병원비') ? getMedicalGroupKey(r) : (((r.fields || {}).subCategory || '').trim() || '미지정');
+          if (selectedSubCategoryFilter === '전체' || gk === selectedSubCategoryFilter) {
             subSum += getNumericAmount(r);
           }
         });
+        const medModeStr = (cat === '병원비')
+          ? (' [' + ((medSumByCat && medSumByPatient) ? '카테고리-환자별' : (medSumByPatient ? '환자성명별' : '카테고리별')) + ']')
+          : '';
         html += '<div class="summary-row">' +
-          '<span class="summary-title">' + escapeHtml(cat) + ' 합계 (' + majorList.length + '건): ' + formatNumber(majorSum) + '원</span>' +
+          '<span class="summary-title">' + escapeHtml(cat) + ' 합계' + medModeStr + ' (' + majorList.length + '건): ' + formatNumber(majorSum) + '원</span>' +
           ((cat !== '전체' && selectedSubCategoryFilter !== '전체')
             ? '<span class="summary-sub">[' + escapeHtml(selectedSubCategoryFilter) + ' 합계: ' + formatNumber(subSum) + '원]</span>'
             : '') +
@@ -9139,15 +9595,15 @@ class _HomeScreenState extends State<HomeScreen> {
         if (cat === '출장비' || cat === '병원비') {
           const subSet = new Set();
           majorList.forEach(function(r) {
-            const s = ((r.fields || {}).subCategory || '').trim() || '미지정';
+            const s = (cat === '병원비') ? getMedicalGroupKey(r) : (((r.fields || {}).subCategory || '').trim() || '미지정');
             subSet.add(s);
           });
           const subs = ['전체'].concat(Array.from(subSet));
-          if (subs.length > 1) {
+          if (subs.length > 1 || cat === '병원비') {
             html += '<div class="chip-scroll-row">';
             subs.forEach(function(s) {
               const matched = majorList.filter(function(r) {
-                const rs = ((r.fields || {}).subCategory || '').trim() || '미지정';
+                const rs = (cat === '병원비') ? getMedicalGroupKey(r) : (((r.fields || {}).subCategory || '').trim() || '미지정');
                 return s === '전체' || rs === s;
               });
               let sum = 0;
@@ -9226,16 +9682,23 @@ class _HomeScreenState extends State<HomeScreen> {
       return '';
     }
 
-    function buildHeaderCell(label, defaultWidth, colIdx, sortKey) {
+    function buildHeaderCell(label, defaultWidth, colIdx, sortKey, groupKey, isGroupActive) {
       const wKey = selectedCategoryFilter + '_' + colIdx;
       const w = customColWidths[wKey] || defaultWidth;
       const isSortable = Boolean(sortKey);
       const isActive = isSortable && (sortColumn === sortKey);
       const arrow = isActive ? (sortAscending ? ' ▲' : ' ▼') : (isSortable ? ' ↕' : '');
-      const cls = (isSortable ? 'sortable-th' : '') + (isActive ? ' sorted-active' : '');
-      const clickAttr = isSortable ? (' onclick="toggleSort(\\'' + sortKey + '\\')"') : '';
-      return '<th class="' + cls + '" data-col-idx="' + colIdx + '" style="width:' + w + 'px;"' + clickAttr + '>' +
-        escapeHtml(label) + arrow +
+      const groupMark = groupKey ? (isGroupActive ? ' ✓' : '') : '';
+      const cls = ((isSortable || groupKey) ? 'sortable-th' : '') + (isActive ? ' sorted-active' : '');
+      const extraStyle = isGroupActive ? ' background:#fef3c7; color:#92400e;' : '';
+      let clickAttr = '';
+      if (groupKey === 'inv_product') clickAttr = ' onclick="toggleInvoiceGroup(\\'product\\')"';
+      else if (groupKey === 'inv_spec') clickAttr = ' onclick="toggleInvoiceGroup(\\'spec\\')"';
+      else if (groupKey === 'med_cat') clickAttr = ' onclick="toggleMedicalGroup(\\'cat\\')"';
+      else if (groupKey === 'med_patient') clickAttr = ' onclick="toggleMedicalGroup(\\'patient\\')"';
+      else if (isSortable) clickAttr = ' onclick="toggleSort(\\'' + sortKey + '\\')"';
+      return '<th class="' + cls + '" data-col-idx="' + colIdx + '" style="width:' + w + 'px;' + extraStyle + '"' + clickAttr + '>' +
+        escapeHtml(label) + groupMark + arrow +
         '<div class="col-resizer" onmousedown="startColResize(event, ' + colIdx + ')" onclick="event.stopPropagation()"></div>' +
         '</th>';
     }
@@ -9382,8 +9845,8 @@ class _HomeScreenState extends State<HomeScreen> {
         const cg = buildTableColGroup(defaultWidths);
         html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
           buildHeaderCell('날짜', 64, 0, 'date') +
-          buildHeaderCell('제품명', 72, 1, null) +
-          buildHeaderCell('규격명', 62, 2, null) +
+          buildHeaderCell('제품명', 72, 1, null, 'inv_product', invSumByProduct) +
+          buildHeaderCell('규격명', 62, 2, null, 'inv_spec', invSumBySpec) +
           buildHeaderCell('단위', 44, 3, null) +
           buildHeaderCell('수량', 64, 4, null) +
           buildHeaderCell('누적수량', 68, 5, null) +
@@ -9445,25 +9908,28 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         html += '</tbody></table>';
       } else if (cat === '병원비') {
-        const defaultWidths = [74, 68, 104, 80, 98, 68];
+        const defaultWidths = [74, 64, 68, 104, 80, 98, 68];
         const cg = buildTableColGroup(defaultWidths);
         html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('카테고리', 74, 0, null) +
-          buildHeaderCell('날짜', 68, 1, 'date') +
-          buildHeaderCell('상호', 104, 2, null) +
-          buildHeaderCell('금액', 80, 3, null) +
-          buildHeaderCell('사업자등록번호', 98, 4, null) +
-          buildHeaderCell('수정/삭제', 68, 5, null) +
+          buildHeaderCell('카테고리', 74, 0, null, 'med_cat', medSumByCat) +
+          buildHeaderCell('환자성명', 64, 1, null, 'med_patient', medSumByPatient) +
+          buildHeaderCell('날짜', 68, 2, 'date') +
+          buildHeaderCell('상호', 104, 3, null) +
+          buildHeaderCell('금액', 80, 4, null) +
+          buildHeaderCell('사업자등록번호', 98, 5, null) +
+          buildHeaderCell('수정/삭제', 68, 6, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
           const cls = item.id === selectedId ? 'active' : '';
           const sub = (f.subCategory || '').trim() || '미지정';
+          const patientName = (f.patientName || '').trim() || '-';
           const dateStr = dotDate(f.issueDate || (item.createdAt || '').split(' ')[0]);
           const amt = formatNumber(getNumericAmount(item)) + '원';
           const sid = escapeHtml(item.id);
           html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(sub) + '</td>' +
+            '<td style="font-weight:600;">' + escapeHtml(patientName) + '</td>' +
             '<td>' + escapeHtml(dateStr) + '</td>' +
             '<td>' + escapeHtml(f.clinicName || '-') + '</td>' +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
@@ -9584,6 +10050,7 @@ class _HomeScreenState extends State<HomeScreen> {
         html += fieldInput('totalAmount', '금액 (숫자만)', f.totalAmount);
       } else if (rec.category === '병원비') {
         html += fieldInput('subCategory', '카테고리 (예: 감기, 치과)', f.subCategory);
+        html += fieldInput('patientName', '환자성명', f.patientName);
         html += fieldInput('issueDate', '날짜 (YYYY.MM.DD)', dotDate(f.issueDate));
         html += fieldInput('clinicName', '병원/약국 상호', f.clinicName);
         html += fieldInput('totalPaid', '수납 금액 (숫자만)', f.totalPaid);
@@ -9854,10 +10321,15 @@ class _HomeScreenState extends State<HomeScreen> {
       case DocCategory.medical:
         return [
           MapEntry('카테고리', subLabel),
-          MapEntry('상호', f['clinicName'] ?? '-'),
-          MapEntry('사업자등록번호', f['bizRegNumber'] ?? '-'),
+          MapEntry(
+              '환자성명',
+              (f['patientName'] ?? '').trim().isNotEmpty
+                  ? f['patientName']!
+                  : '-'),
           MapEntry('발행일', DocRecord.formatDotDate(f['issueDate'])),
+          MapEntry('상호', f['clinicName'] ?? '-'),
           MapEntry('총수납금액', '${DocRecord._formatCurrency(f['totalPaid'])}원'),
+          MapEntry('사업자등록번호', f['bizRegNumber'] ?? '-'),
         ];
       default:
         return [];
@@ -9929,8 +10401,18 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       children: [
                         _buildFixedHeaderCell('날짜', width: 64, sortKey: 'date'),
-                        _buildFixedHeaderCell('제품명', width: 72),
-                        _buildFixedHeaderCell('규격명', width: 62),
+                        _buildFixedHeaderCell(
+                          '제품명',
+                          width: 72,
+                          isGroupActive: _invSumByProduct,
+                          onGroupTap: () => _toggleInvoiceGroupHeader('product'),
+                        ),
+                        _buildFixedHeaderCell(
+                          '규격명',
+                          width: 62,
+                          isGroupActive: _invSumBySpec,
+                          onGroupTap: () => _toggleInvoiceGroupHeader('spec'),
+                        ),
                         _buildFixedHeaderCell('단위', width: 44),
                         _buildFixedHeaderCell('수량', width: 64),
                         _buildFixedHeaderCell('누적수량', width: 68),
@@ -10277,7 +10759,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // ★ 4) 병원비: 카테고리 - 날짜 - 상호 - 금액 - 사업자등록번호 + 수정/삭제
+    // ★ 4) 병원비: 카테고리 - 환자성명 - 날짜 - 상호 - 금액 - 사업자등록번호 + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.medical) {
       return ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
@@ -10285,7 +10767,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 492,
+            width: 556,
             child: Column(
               children: [
                 Container(
@@ -10293,7 +10775,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: IntrinsicHeight(
                     child: Row(
                       children: [
-                        _buildFixedHeaderCell('카테고리', width: 74),
+                        _buildFixedHeaderCell(
+                          '카테고리',
+                          width: 74,
+                          isGroupActive: _medSumByCat,
+                          onGroupTap: () => _toggleMedicalGroupHeader('cat'),
+                        ),
+                        _buildFixedHeaderCell(
+                          '환자성명',
+                          width: 64,
+                          isGroupActive: _medSumByPatient,
+                          onGroupTap: () => _toggleMedicalGroupHeader('patient'),
+                        ),
                         _buildFixedHeaderCell('날짜', width: 68, sortKey: 'date'),
                         _buildFixedHeaderCell('상호', width: 104),
                         _buildFixedHeaderCell('금액', width: 80),
@@ -10312,6 +10805,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       final isSelected = _selectedRecord?.id == rec.id;
                       final catName =
                           rec.subCategory.isNotEmpty ? rec.subCategory : '미지정';
+                      final patientName =
+                          (f['patientName'] ?? '').trim().isNotEmpty
+                              ? f['patientName']!.trim()
+                              : '-';
                       final dateStr = DocRecord.formatDotDate(
                           f['issueDate'] ?? rec.createdAt.split(' ').first);
                       final amtStr =
@@ -10337,6 +10834,12 @@ class _HomeScreenState extends State<HomeScreen> {
                                   catName,
                                   width: 74,
                                   isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  patientName,
+                                  width: 64,
+                                  isSelected: isSelected,
+                                  forceBold: true,
                                 ),
                                 _buildFixedDataCell(
                                   dateStr,
@@ -10477,6 +10980,8 @@ class _HomeScreenState extends State<HomeScreen> {
     String? currentSortCol,
     bool? currentSortAsc,
     VoidCallback? onSortTap,
+    bool isGroupActive = false,
+    VoidCallback? onGroupTap,
   }) {
     final effectiveSortCol = currentSortCol ?? _sortColumn;
     final effectiveSortAsc = currentSortAsc ?? _sortAscending;
@@ -10485,12 +10990,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final String arrow = isActive
         ? (effectiveSortAsc ? ' ▲' : ' ▼')
         : (isSortable ? ' ↕' : '');
+    final String groupMark = onGroupTap != null
+        ? (isGroupActive ? ' ✓' : '')
+        : '';
 
     final cell = Container(
       width: width,
       padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 3),
       decoration: BoxDecoration(
-        color: isActive ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0),
+        color: isGroupActive
+            ? const Color(0xFFFEF3C7)
+            : (isActive ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0)),
         border: const Border(
           right: BorderSide(color: Color(0xFF94A3B8), width: 1),
           bottom: BorderSide(color: Color(0xFF94A3B8), width: 1),
@@ -10498,18 +11008,26 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       alignment: Alignment.center,
       child: Text(
-        '$label$arrow',
+        '$label$groupMark$arrow',
         textAlign: TextAlign.center,
         softWrap: true,
         style: TextStyle(
           fontSize: 10.8,
           height: 1.2,
           fontWeight: FontWeight.bold,
-          color: isActive ? const Color(0xFF1E3A8A) : const Color(0xFF1E293B),
+          color: isGroupActive
+              ? const Color(0xFF92400E)
+              : (isActive ? const Color(0xFF1E3A8A) : const Color(0xFF1E293B)),
         ),
       ),
     );
 
+    if (onGroupTap != null) {
+      return InkWell(
+        onTap: onGroupTap,
+        child: cell,
+      );
+    }
     if (!isSortable) return cell;
     return InkWell(
       onTap: onSortTap ?? () => _toggleSortColumn(sortKey),
@@ -10566,99 +11084,157 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
-        titleSpacing: 12,
-        title: const Text(
-          '증빙서류',
-          style: TextStyle(
-            fontSize: 15.5,
-            fontWeight: FontWeight.bold,
-            letterSpacing: -0.3,
+        automaticallyImplyLeading: false,
+        titleSpacing: 4,
+        toolbarHeight: 48,
+        title: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 1) 설정 아이콘 버튼
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                constraints: const BoxConstraints(),
+                tooltip: _geminiApiKey.trim().isEmpty
+                    ? '현장공유 & AI 설정 (현재: 내장 OCR 모드)'
+                    : (_geminiKeyVerified
+                        ? 'Gemini AI 정상 작동 중'
+                        : '⚠️ Gemini API 키 확인 필요'),
+                icon: Icon(
+                  _geminiApiKey.trim().isEmpty
+                      ? Icons.settings
+                      : (_geminiKeyVerified
+                          ? Icons.auto_awesome
+                          : Icons.error_outline),
+                  color: _geminiApiKey.trim().isEmpty
+                      ? Colors.white
+                      : (_geminiKeyVerified
+                          ? Colors.amberAccent
+                          : Colors.redAccent),
+                  size: 20,
+                ),
+                onPressed: _openSettingsDialog,
+              ),
+              const SizedBox(width: 4),
+
+              // 2) 현장공유 버튼
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  backgroundColor: Colors.white.withOpacity(0.13),
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                ),
+                onPressed: _isBusy ? null : _openFieldShareRoomDialog,
+                icon: Icon(
+                  Icons.cloud_done_outlined,
+                  color: _isShareRoomConfigured
+                      ? Colors.greenAccent
+                      : Colors.lightBlueAccent,
+                  size: 15,
+                ),
+                label: const Text(
+                  '현장공유',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+
+              // 3) HTML내보내기 버튼 (선택창 없이 즉시 실행)
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  backgroundColor: Colors.white.withOpacity(0.13),
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                ),
+                onPressed: _isBusy ? null : _exportCumulativeFilteredHtml,
+                icon: const Icon(
+                  Icons.file_upload_outlined,
+                  color: Colors.white,
+                  size: 15,
+                ),
+                label: const Text(
+                  'HTML내보내기',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+
+              // 4) HTML업로드 버튼 (선택창 없이 즉시 파일 선택 및 병합)
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  backgroundColor: Colors.white.withOpacity(0.13),
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                ),
+                onPressed: _isBusy ? null : _importExistingHtmlToMerge,
+                icon: const Icon(
+                  Icons.file_download_outlined,
+                  color: Colors.cyanAccent,
+                  size: 15,
+                ),
+                label: const Text(
+                  'HTML업로드',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+
+              // 5) PDF내보내기 버튼
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  backgroundColor: Colors.white.withOpacity(0.13),
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                ),
+                onPressed: _isBusy ? null : _exportIndividualPdfs,
+                icon: const Icon(
+                  Icons.picture_as_pdf,
+                  color: Colors.amberAccent,
+                  size: 15,
+                ),
+                label: const Text(
+                  'PDF내보내기',
+                  style: TextStyle(
+                    color: Colors.amberAccent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-        actions: [
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            tooltip: _geminiApiKey.trim().isEmpty
-                ? '현장 공유방 & AI 설정 (현재: 내장 OCR 모드)'
-                : (_geminiKeyVerified
-                    ? 'Gemini AI 정상 작동 중'
-                    : '⚠️ Gemini API 키 확인 필요'),
-            icon: Icon(
-              _geminiApiKey.trim().isEmpty
-                  ? Icons.settings
-                  : (_geminiKeyVerified
-                      ? Icons.auto_awesome
-                      : Icons.error_outline),
-              color: _geminiApiKey.trim().isEmpty
-                  ? Colors.white
-                  : (_geminiKeyVerified
-                      ? Colors.amberAccent
-                      : Colors.redAccent),
-              size: 20,
-            ),
-            onPressed: _openSettingsDialog,
-          ),
-          TextButton.icon(
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            onPressed: _isBusy ? null : _openFieldShareRoomDialog,
-            icon: Icon(
-              Icons.cloud_done_outlined,
-              color: _isShareRoomConfigured
-                  ? Colors.greenAccent
-                  : Colors.lightBlueAccent,
-              size: 17,
-            ),
-            label: const Text(
-              '현장 공유방',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          TextButton(
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            onPressed: _isBusy ? null : _openHtmlActionMenuDialog,
-            child: const Text(
-              'HTML',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 12.5,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          TextButton.icon(
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.only(left: 6, right: 10),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            onPressed: _isBusy ? null : _exportIndividualPdfs,
-            icon: const Icon(
-              Icons.picture_as_pdf,
-              color: Colors.amberAccent,
-              size: 16,
-            ),
-            label: const Text(
-              'PDF',
-              style: TextStyle(
-                color: Colors.amberAccent,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
       ),
       body: Stack(
         children: [
@@ -10849,8 +11425,42 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(height: 6),
                       ],
 
-                      // ★ 자재송장: 출장비와 동일한 박스 형태로 제품명별 합계수량 표시 (예: 고장력철근(19.6ton))
+                      // ★ 자재송장: 제품명 / 규격명 열 제목 클릭에 따라 제품명별·규격명별·제품명-규격별 합계수량 칩 표시
                       if (_selectedCategoryFilter == DocCategory.invoice) ...[
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.amber.shade200,
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                                child: Text(
+                                  '📊 합산기준: $_invoiceSummaryModeLabel',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.brown.shade900,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const Expanded(
+                                child: Text(
+                                  '(표의 [제품명]·[규격명] 제목을 누르면 합산 기준이 바뀝니다)',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    color: Color(0xFF475569),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                         SizedBox(
                           height: 32,
                           child: ListView(
@@ -10897,18 +11507,23 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ],
 
-                      // ★ 출장비 / 병원비 / 전체: 금액 합계 및 내 카테고리 칩
+                      // ★ 출장비 / 병원비 / 전체: 금액 합계 및 카테고리/환자성명 칩
                       if (_usesSubCategory(_selectedCategoryFilter) ||
                           _selectedCategoryFilter == DocCategory.all) ...[
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              '$_selectedCategoryFilter 합계 (${_recordsInSelectedMajorCategory.length}건): ${NumberFormat('#,###').format(majorTotalSum)}원',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13.5,
-                                color: Color(0xFF1E3A8A),
+                            Expanded(
+                              child: Text(
+                                _selectedCategoryFilter == DocCategory.medical
+                                    ? '$_selectedCategoryFilter 합계 [$_medicalSummaryModeLabel] (${_recordsInSelectedMajorCategory.length}건): ${NumberFormat('#,###').format(majorTotalSum)}원'
+                                    : '$_selectedCategoryFilter 합계 (${_recordsInSelectedMajorCategory.length}건): ${NumberFormat('#,###').format(majorTotalSum)}원',
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: Color(0xFF1E3A8A),
+                                ),
                               ),
                             ),
                             if (_usesSubCategory(_selectedCategoryFilter) &&
@@ -10917,7 +11532,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 '[$_selectedSubCategoryFilter 합계: ${NumberFormat('#,###').format(currentSubTotalSum)}원]',
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
-                                  fontSize: 12.5,
+                                  fontSize: 12,
                                   color: Colors.indigo,
                                 ),
                               )
@@ -10940,7 +11555,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           ],
                         ),
                         if (_usesSubCategory(_selectedCategoryFilter) &&
-                            subCategories.length > 1) ...[
+                            (subCategories.length > 1 ||
+                                _selectedCategoryFilter ==
+                                    DocCategory.medical)) ...[
                           const SizedBox(height: 6),
                           SizedBox(
                             height: 32,
@@ -10958,8 +11575,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                 final labelText = subCat == '전체'
                                     ? '전체 ($cnt건 · ${NumberFormat('#,###').format(sum)}원)'
                                     : '$subCat ($cnt건 · ${NumberFormat('#,###').format(sum)}원)';
-                                final canDelete =
-                                    subCat != '전체' && subCat != '미지정';
+                                final canDelete = (_selectedCategoryFilter !=
+                                            DocCategory.medical ||
+                                        (_medSumByCat && !_medSumByPatient)) &&
+                                    subCat != '전체' &&
+                                    subCat != '미지정';
                                 return InputChip(
                                   visualDensity: VisualDensity.compact,
                                   selectedColor: Colors.indigo.shade100,
@@ -11064,7 +11684,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             totalW > totalH;
 
                     if (isLandscape) {
-                      const double dividerBarWidth = 22.0;
+                      const double dividerBarWidth = 28.0;
                       final double usableW =
                           math.max(120.0, totalW - dividerBarWidth);
                       final double listW = (usableW * _detailHorizSplitRatio)
