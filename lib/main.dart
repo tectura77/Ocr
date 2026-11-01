@@ -1184,7 +1184,7 @@ class DocRecord {
     };
   }
 
-  /// ★ HTML 내보내기 / 현장공유방 전송 전용 JSON (필요한 순간에만 원본 사진 파일을 읽어 HTML 안에 포함)
+  /// ★ 단독 HTML 내보내기 전용 JSON (카톡/이메일 등으로 HTML 파일 1개만 보낼 때는 사진 포함)
   Map<String, dynamic> toExportJson() {
     final Map<String, String> exportFields = Map<String, String>.from(fields);
     if (category == DocCategory.medical && proofAttachmentCount > 0) {
@@ -1200,6 +1200,30 @@ class DocRecord {
       'imagePath': imagePath,
       'base64Image': resolveMainImageBase64(),
       'fields': exportFields,
+    };
+  }
+
+  /// ★ GitHub 현장공유방 통합 HTML 전용 초경량 JSON:
+  /// 사진 원본은 GitHub 공유방 내 `photos/doc_{id}.jpg` 별도 파일로 분리 업로드하고,
+  /// 통합 HTML(`공문_통합.html` / `자재송장_통합.html`) 안에는 무거운 base64를 빼고
+  /// 가벼운 상대 경로(`remoteImagePath`: `photos/doc_{id}.jpg`)만 기록하여
+  /// 300장, 1,000장이 쌓여도 통합 HTML 용량이 수십 KB로 초경량 유지되도록 합니다!
+  Map<String, dynamic> toLightweightShareRoomJson() {
+    final Map<String, String> lightFields = Map<String, String>.from(fields);
+    lightFields.remove('proofImagesJson');
+    final String relPhotoPath =
+        (lightFields['remoteImagePath'] ?? '').trim().isNotEmpty
+            ? lightFields['remoteImagePath']!.trim()
+            : 'photos/doc_$id.jpg';
+    lightFields['remoteImagePath'] = relPhotoPath;
+    return {
+      'id': id,
+      'category': category,
+      'createdAt': createdAt,
+      'imagePath': relPhotoPath,
+      'remoteImagePath': relPhotoPath,
+      'base64Image': '', // ★ 통합 HTML에는 base64 사진을 넣지 않아 파일 크기를 99% 경량화!
+      'fields': lightFields,
     };
   }
 
@@ -7183,6 +7207,198 @@ class _HomeScreenState extends State<HomeScreen> {
     return ok;
   }
 
+  /// ★ GitHub 현장공유방의 `photos/` 하위 폴더에 이미 올라가 있는 사진 파일명 목록 조회
+  Future<Set<String>> _fetchExistingGithubPhotoFileNames() async {
+    final repo = _normalizeGithubRepo(_githubRepo);
+    final token = _githubToken.trim();
+    if (repo.isEmpty || token.isEmpty) return <String>{};
+    try {
+      final folder = _resolvedShareRoomFolder;
+      final relPath = '$folder/photos';
+      final encodedPath = relPath.split('/').map(Uri.encodeComponent).join('/');
+      final uri = Uri.parse(
+        'https://api.github.com/repos/$repo/contents/$encodedPath',
+      );
+      final resp = await http.get(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      ).timeout(const Duration(seconds: 15));
+      if (resp.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(resp.bodyBytes));
+        if (decoded is List) {
+          final Set<String> names = <String>{};
+          for (final item in decoded) {
+            if (item is Map && item['name'] != null) {
+              names.add(item['name'].toString());
+            }
+          }
+          return names;
+        }
+      }
+    } catch (_) {}
+    return <String>{};
+  }
+
+  /// ★ GitHub 현장공유방의 `photos/doc_{id}.jpg` 경로로 개별 사진 파일 업로드 (아직 안 올라간 사진만 업로드!)
+  Future<bool> _uploadSinglePhotoToGithubIfNeeded({
+    required DocRecord record,
+    required Set<String> existingPhotoNames,
+  }) async {
+    final repo = _normalizeGithubRepo(_githubRepo);
+    final token = _githubToken.trim();
+    if (repo.isEmpty || token.isEmpty) return false;
+
+    final String photoFileName = 'doc_${record.id}.jpg';
+    if (existingPhotoNames.contains(photoFileName)) {
+      return true; // 이미 GitHub photos/ 폴더에 존재하므로 재업로드 생략!
+    }
+
+    final Uint8List? imgBytes = record.resolveMainImageBytes();
+    if (imgBytes == null || imgBytes.isEmpty) {
+      return false;
+    }
+
+    final folder = _resolvedShareRoomFolder;
+    final relPath = '$folder/photos/$photoFileName';
+    final encodedPath = relPath.split('/').map(Uri.encodeComponent).join('/');
+    final uri = Uri.parse(
+      'https://api.github.com/repos/$repo/contents/$encodedPath',
+    );
+
+    final bodyMap = <String, dynamic>{
+      'message': 'Upload photo $photoFileName [skip ci]',
+      'content': base64Encode(imgBytes),
+    };
+
+    try {
+      final resp = await http.put(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        body: jsonEncode(bodyMap),
+      ).timeout(const Duration(seconds: 30));
+      if (resp.statusCode == 200 || resp.statusCode == 201) {
+        existingPhotoNames.add(photoFileName);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// ★ GitHub 현장공유방 `photos/doc_{id}.jpg`에서 특정 서류의 원본 사진 1장을 필요할 때만(On-Demand) 다운로드하여
+  /// 스마트폰 로컬 파일(`doc_{id}.jpg`)로 캐시하고 바이트를 반환하는 함수
+  Future<Uint8List?> _ensureShareRoomRecordImageBytes(DocRecord rec) async {
+    final localBytes = rec.resolveMainImageBytes();
+    if (localBytes != null && localBytes.isNotEmpty) {
+      return localBytes;
+    }
+    final repo = _normalizeGithubRepo(_githubRepo);
+    final token = _githubToken.trim();
+    if (repo.isEmpty || token.isEmpty) return null;
+
+    final folder = _resolvedShareRoomFolder;
+    final String relPhoto =
+        (rec.fields['remoteImagePath'] ?? '').trim().isNotEmpty
+            ? rec.fields['remoteImagePath']!.trim()
+            : 'photos/doc_${rec.id}.jpg';
+    final String fullRelPath = relPhoto.startsWith('$folder/')
+        ? relPhoto
+        : '$folder/$relPhoto';
+    final encodedPath =
+        fullRelPath.split('/').map(Uri.encodeComponent).join('/');
+    final uri = Uri.parse(
+      'https://api.github.com/repos/$repo/contents/$encodedPath',
+    );
+
+    try {
+      final resp = await http.get(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      ).timeout(const Duration(seconds: 20));
+
+      Uint8List? fetchedBytes;
+      if (resp.statusCode == 200) {
+        final decoded =
+            jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+        final rawB64 = (decoded['content']?.toString() ?? '')
+            .replaceAll(RegExp(r'\s+'), '');
+        final dlUrl = decoded['download_url']?.toString() ?? '';
+        final sha = decoded['sha']?.toString() ?? '';
+        if (rawB64.isNotEmpty) {
+          try {
+            fetchedBytes = base64Decode(rawB64);
+          } catch (_) {}
+        }
+        if ((fetchedBytes == null || fetchedBytes.isEmpty) &&
+            dlUrl.isNotEmpty) {
+          final dlResp = await http.get(
+            Uri.parse(dlUrl),
+            headers: {'Authorization': 'Bearer $token'},
+          ).timeout(const Duration(seconds: 20));
+          if (dlResp.statusCode == 200 && dlResp.bodyBytes.isNotEmpty) {
+            fetchedBytes = dlResp.bodyBytes;
+          }
+        }
+        if ((fetchedBytes == null || fetchedBytes.isEmpty) && sha.isNotEmpty) {
+          final blobUri = Uri.parse(
+            'https://api.github.com/repos/$repo/git/blobs/$sha',
+          );
+          final blobResp = await http.get(
+            blobUri,
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/vnd.github+json',
+            },
+          ).timeout(const Duration(seconds: 20));
+          if (blobResp.statusCode == 200) {
+            final bJson = jsonDecode(utf8.decode(blobResp.bodyBytes))
+                as Map<String, dynamic>;
+            final b64 = (bJson['content']?.toString() ?? '')
+                .replaceAll(RegExp(r'\s+'), '');
+            if (b64.isNotEmpty) {
+              fetchedBytes = base64Decode(b64);
+            }
+          }
+        }
+      }
+
+      if (fetchedBytes != null && fetchedBytes.isNotEmpty) {
+        final appDir = await getApplicationDocumentsDirectory();
+        final localFile = File(p.join(appDir.path, 'doc_${rec.id}.jpg'));
+        await localFile.writeAsBytes(fetchedBytes, flush: true);
+
+        // 내 로컬 _records에도 파일 경로 연결
+        final idx = _records.indexWhere((r) => r.id == rec.id);
+        if (idx != -1) {
+          final existing = _records[idx];
+          _records[idx] = DocRecord(
+            id: existing.id,
+            category: existing.category,
+            createdAt: existing.createdAt,
+            imagePath: localFile.path,
+            base64Image: '',
+            fields: existing.fields,
+          );
+          await _saveLocalRecords();
+        }
+        return fetchedBytes;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
   // 방식 B: OneDrive 공유방 연동 (일반 사용자 / 플레이스토어 배포용 쉬운 방식)
   // - 1) 원드라이브 공유폴더 링크(1drv.ms 등)가 등록되어 있으면 OneDrive API로 즉시 읽기/덮어쓰기 시도
@@ -7401,6 +7617,40 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       // 4) 내 앱 전체 기록(_records)에도 공유방에서 새로 받은 서류를 합산
+      // ★ 내 로컬에 이미 원본 사진 파일(imagePath)이 있는 항목은 로컬 파일 경로를 보존하고,
+      //    공유방 통합 HTML 용량 경량화를 위해 remoteImagePath(`photos/doc_{id}.jpg`)를 부여합니다.
+      final Map<String, DocRecord> localBySig = {
+        for (final r in _records) r.contentSignature: _ensureUploaderField(r),
+      };
+      for (int i = 0; i < mergedRoomList.length; i++) {
+        final r = mergedRoomList[i];
+        final localMatch = localBySig[r.contentSignature];
+        final nf = Map<String, String>.from(r.fields);
+        nf['remoteImagePath'] = 'photos/doc_${r.id}.jpg';
+        final String bestImgPath = (localMatch != null &&
+                localMatch.imagePath.trim().isNotEmpty &&
+                File(localMatch.imagePath).existsSync())
+            ? localMatch.imagePath
+            : r.imagePath;
+        final String bestBase64 =
+            bestImgPath.isNotEmpty && File(bestImgPath).existsSync()
+                ? ''
+                : (r.base64Image.isNotEmpty
+                    ? r.base64Image
+                    : (localMatch?.base64Image ?? ''));
+        mergedRoomList[i] = DocRecord(
+          id: r.id,
+          category: r.category,
+          createdAt: r.createdAt,
+          imagePath: bestImgPath,
+          base64Image: bestBase64,
+          fields: nf,
+        );
+      }
+
+      // 혹시 예전 방식의 통합 HTML에서 넘어온 base64 사진이 있다면 스마트폰 로컬 파일로 먼저 분리
+      await _migrateRecordsToLightweightFiles(mergedRoomList);
+
       final Map<String, DocRecord> allAppMap = {
         for (final r in _records) r.contentSignature: _ensureUploaderField(r),
       };
@@ -7410,26 +7660,22 @@ class _HomeScreenState extends State<HomeScreen> {
           allAppMap[r.contentSignature] = r;
           downloadedNewCount++;
         } else {
-          allAppMap[r.contentSignature] =
-              _ensureUploaderField(allAppMap[r.contentSignature]!);
+          final existing = _ensureUploaderField(allAppMap[r.contentSignature]!);
+          final nf = Map<String, String>.from(existing.fields);
+          nf['remoteImagePath'] = 'photos/doc_${existing.id}.jpg';
+          allAppMap[r.contentSignature] = DocRecord(
+            id: existing.id,
+            category: existing.category,
+            createdAt: existing.createdAt,
+            imagePath: existing.imagePath,
+            base64Image: existing.base64Image,
+            fields: nf,
+          );
         }
       }
 
       final updatedAllRecords = allAppMap.values.toList()
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-
-      // 5) 최신 통합 HTML 생성
-      final repliedKeys = _computeRepliedDocNumKeys(updatedAllRecords);
-      final String initialTab = isOfficialRoom
-          ? DocCategory.officialIn
-          : DocCategory.invoice;
-
-      final htmlContent = _buildLeftListRightPhotoHtmlDocument(
-        records: mergedRoomList,
-        scopeTitle: scopeTitle,
-        repliedKeys: repliedKeys,
-        forcedInitialTab: initialTab,
-      );
 
       setState(() {
         _records = updatedAllRecords;
@@ -7444,14 +7690,38 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       await _saveLocalRecords();
 
+      final repliedKeys = _computeRepliedDocNumKeys(updatedAllRecords);
+      final String initialTab = isOfficialRoom
+          ? DocCategory.officialIn
+          : DocCategory.invoice;
+
       // 6) 선택된 방식(GitHub vs OneDrive)으로 업로드/저장 마무리
       if (_shareRoomMode == 'github') {
+        // ★ GitHub 공유방:
+        //   (1) 각 서류 사진 원본은 `현장공유방/{현장명}/photos/doc_{id}.jpg`에 개별 파일로 별도 업로드! (이미 올라간 사진은 건너뜀)
+        //   (2) 통합 HTML(`공문_통합.html` / `자재송장_통합.html`)은 사진 base64를 뺀 초경량 구조(`useExternalPhotos: true`)로 생성하여 업로드!
+        final existingPhotoNames = await _fetchExistingGithubPhotoFileNames();
+        for (final rec in mergedRoomList) {
+          await _uploadSinglePhotoToGithubIfNeeded(
+            record: rec,
+            existingPhotoNames: existingPhotoNames,
+          );
+        }
+
+        final htmlContent = _buildLeftListRightPhotoHtmlDocument(
+          records: mergedRoomList,
+          scopeTitle: scopeTitle,
+          repliedKeys: repliedKeys,
+          forcedInitialTab: initialTab,
+          useExternalPhotos: true,
+        );
+
         final uploader = _exporterUserName.trim();
         final ok = await _putGithubFileContent(
           fileName: targetFileName,
           htmlContent: htmlContent,
           commitMessage:
-              '[$uploader] $targetFileName 업데이트 (총 ${mergedRoomList.length}건)',
+              '[$uploader] $targetFileName 초경량 업데이트 (총 ${mergedRoomList.length}건 · 사진 별도분리)',
           existingSha: existingSha,
         );
         if (ok) {
@@ -7470,7 +7740,14 @@ class _HomeScreenState extends State<HomeScreen> {
           _showSnack('⚠️ GitHub 업로드 실패: 저장소 이름(아이디/저장소명)과 토큰 권한(repo)을 확인해 주세요.');
         }
       } else {
-        // OneDrive 방식: 공유링크 자동 업로드 시도 -> 실패 또는 미설정 시 OneDrive 앱 공유시트 호출
+        // OneDrive 방식: 단일 파일 공유 호환을 위해 HTML 생성 후 업로드
+        final htmlContent = _buildLeftListRightPhotoHtmlDocument(
+          records: mergedRoomList,
+          scopeTitle: scopeTitle,
+          repliedKeys: repliedKeys,
+          forcedInitialTab: initialTab,
+          useExternalPhotos: false,
+        );
         final autoUploaded = await _putOneDriveFileViaLink(
           fileName: targetFileName,
           htmlContent: htmlContent,
@@ -7561,14 +7838,41 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      // 열람과 동시에 내 앱에도 없는 항목을 자동으로 합쳐 줌
+      // 예전 통합 HTML에 base64가 들어있다면 로컬 파일로 자동 분리하고, 로컬 파일 경로와 매칭
+      await _migrateRecordsToLightweightFiles(remoteRecords);
       final Map<String, DocRecord> allAppMap = {
         for (final r in _records) r.contentSignature: r,
       };
       int added = 0;
-      for (final r in remoteRecords) {
-        if (!allAppMap.containsKey(r.contentSignature)) {
-          allAppMap[r.contentSignature] = r;
+      for (int i = 0; i < remoteRecords.length; i++) {
+        final r = remoteRecords[i];
+        final localMatch = allAppMap[r.contentSignature];
+        if (localMatch != null &&
+            localMatch.imagePath.trim().isNotEmpty &&
+            File(localMatch.imagePath).existsSync()) {
+          final nf = Map<String, String>.from(r.fields);
+          nf['remoteImagePath'] = 'photos/doc_${r.id}.jpg';
+          remoteRecords[i] = DocRecord(
+            id: r.id,
+            category: r.category,
+            createdAt: r.createdAt,
+            imagePath: localMatch.imagePath,
+            base64Image: '',
+            fields: nf,
+          );
+        } else if (!allAppMap.containsKey(r.contentSignature)) {
+          final nf = Map<String, String>.from(r.fields);
+          nf['remoteImagePath'] = 'photos/doc_${r.id}.jpg';
+          final newRec = DocRecord(
+            id: r.id,
+            category: r.category,
+            createdAt: r.createdAt,
+            imagePath: r.imagePath,
+            base64Image: '',
+            fields: nf,
+          );
+          remoteRecords[i] = newRec;
+          allAppMap[r.contentSignature] = newRec;
           added++;
         }
       }
@@ -7615,6 +7919,7 @@ class _HomeScreenState extends State<HomeScreen> {
       scopeTitle: scopeTitle,
       repliedKeys: repliedKeys,
       forcedInitialTab: initialTab,
+      useExternalPhotos: _shareRoomMode == 'github',
     );
 
     if (_shareRoomMode == 'github') {
@@ -7961,26 +8266,81 @@ class _HomeScreenState extends State<HomeScreen> {
           }
 
           Widget buildShareRoomPhoto() {
-            final bytes = currentSel?.resolveMainImageBytes();
+            final sel = currentSel;
+            if (sel == null) {
+              return Container(
+                width: double.infinity,
+                height: double.infinity,
+                color: const Color(0xFF0F172A),
+                child: const Center(
+                  child: Text(
+                    '목록에서 항목을 터치하면 원본 사진이 표시됩니다.',
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                ),
+              );
+            }
+            final localBytes = sel.resolveMainImageBytes();
+            if (localBytes != null && localBytes.isNotEmpty) {
+              return Container(
+                width: double.infinity,
+                height: double.infinity,
+                color: const Color(0xFF0F172A),
+                child: InteractiveViewer(
+                  key: ValueKey('shareroom_photo_${sel.id}'),
+                  minScale: 0.6,
+                  maxScale: 6.0,
+                  child: Image.memory(
+                    localBytes,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              );
+            }
+            // ★ 로컬에 아직 없는 공유방 사진은 터치한 순간 GitHub `photos/doc_{id}.jpg`에서 즉시 불러와 캐시!
             return Container(
               width: double.infinity,
               height: double.infinity,
               color: const Color(0xFF0F172A),
-              child: bytes != null && bytes.isNotEmpty
-                  ? InteractiveViewer(
+              child: FutureBuilder<Uint8List?>(
+                key: ValueKey('shareroom_future_${sel.id}'),
+                future: _ensureShareRoomRecordImageBytes(sel),
+                builder: (bCtx, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(color: Colors.amberAccent),
+                          SizedBox(height: 10),
+                          Text(
+                            '공유방(photos 폴더)에서 원본 사진을 불러오는 중...',
+                            style: TextStyle(color: Colors.white70, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                  final data = snap.data;
+                  if (data != null && data.isNotEmpty) {
+                    return InteractiveViewer(
+                      key: ValueKey('shareroom_loaded_${sel.id}'),
                       minScale: 0.6,
                       maxScale: 6.0,
                       child: Image.memory(
-                        bytes,
+                        data,
                         fit: BoxFit.contain,
                       ),
-                    )
-                  : const Center(
-                      child: Text(
-                        '목록에서 항목을 터치하면 원본 사진이 표시됩니다.',
-                        style: TextStyle(color: Colors.white70),
-                      ),
+                    );
+                  }
+                  return const Center(
+                    child: Text(
+                      '원본 사진을 불러올 수 없습니다.',
+                      style: TextStyle(color: Colors.white70),
                     ),
+                  );
+                },
+              ),
             );
           }
 
@@ -9363,8 +9723,15 @@ class _HomeScreenState extends State<HomeScreen> {
     required String scopeTitle,
     required Set<String> repliedKeys,
     String? forcedInitialTab,
+    bool useExternalPhotos = false,
   }) {
-    final recordsJson = jsonEncode(records.map((r) => _ensureUploaderField(r).toExportJson()).toList());
+    final recordsJson = jsonEncode(
+      records
+          .map((r) => useExternalPhotos
+              ? _ensureUploaderField(r).toLightweightShareRoomJson()
+              : _ensureUploaderField(r).toExportJson())
+          .toList(),
+    );
     final cumMap = _computeInvoiceCumulativeMap(records);
     final cumMapJson = jsonEncode(cumMap);
     final repliedListJson = jsonEncode(repliedKeys.toList());
@@ -9403,7 +9770,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final firstRecord = records.isNotEmpty ? records.first : null;
     final firstId = firstRecord?.id ?? '';
-    final firstBase64 = firstRecord?.resolveMainImageBase64() ?? '';
+    final String firstImgSrc = firstRecord == null
+        ? ''
+        : (useExternalPhotos
+            ? ((firstRecord.fields['remoteImagePath'] ?? '').trim().isNotEmpty
+                ? firstRecord.fields['remoteImagePath']!.trim()
+                : 'photos/doc_${firstRecord.id}.jpg')
+            : (firstRecord.resolveMainImageBase64().isNotEmpty
+                ? 'data:image/jpeg;base64,${firstRecord.resolveMainImageBase64()}'
+                : ''));
     final initialTableHtml = _buildStaticHtmlTable(
       records,
       majorCat,
@@ -9939,8 +10314,8 @@ class _HomeScreenState extends State<HomeScreen> {
     <div id="right-photo-pane">
       <div id="photo-tabs-bar" style="display:none; position:absolute; top:8px; left:8px; right:8px; z-index:12; overflow-x:auto; white-space:nowrap;"></div>
       <div id="photo-viewport">
-        <img id="preview-img" src="${firstBase64.isNotEmpty ? 'data:image/jpeg;base64,$firstBase64' : ''}" style="${firstBase64.isNotEmpty ? 'display:block;' : 'display:none;'}" alt="증빙서류 사진" />
-        <div id="empty-photo-msg" style="${firstBase64.isNotEmpty ? 'display:none;' : 'display:block;'} color:#cbd5e1; font-size:13px; text-align:center; padding:16px;">
+        <img id="preview-img" src="$firstImgSrc" style="${firstImgSrc.isNotEmpty ? 'display:block;' : 'display:none;'}" alt="증빙서류 사진" />
+        <div id="empty-photo-msg" style="${firstImgSrc.isNotEmpty ? 'display:none;' : 'display:block;'} color:#cbd5e1; font-size:13px; text-align:center; padding:16px;">
           목록에서 항목을 선택하면<br/>이곳에 증빙사진이 크게 표시됩니다.
         </div>
       </div>
@@ -11200,9 +11575,16 @@ class _HomeScreenState extends State<HomeScreen> {
       const activeB64 = (selectedPhotoIdx > 0 && selectedPhotoIdx - 1 < proofs.length)
         ? proofs[selectedPhotoIdx - 1]
         : (current.base64Image || '');
+      const remoteRel = (selectedPhotoIdx === 0)
+        ? (current.remoteImagePath || (current.fields && current.fields.remoteImagePath) || '')
+        : '';
 
       if (activeB64) {
-        imgEl.src = 'data:image/jpeg;base64,' + activeB64;
+        imgEl.src = activeB64.startsWith('data:') ? activeB64 : ('data:image/jpeg;base64,' + activeB64);
+        imgEl.style.display = 'block';
+        if (emptyMsg) emptyMsg.style.display = 'none';
+      } else if (remoteRel) {
+        imgEl.src = remoteRel;
         imgEl.style.display = 'block';
         if (emptyMsg) emptyMsg.style.display = 'none';
       } else {
@@ -11237,19 +11619,23 @@ class _HomeScreenState extends State<HomeScreen> {
       const pages = [];
       items.forEach(function(rec, idx) {
         const proofs = rec.category === '병원비' ? getExtraProofImages(rec) : [];
-        if (rec.base64Image) {
+        const mainSrc = rec.base64Image
+          ? (rec.base64Image.startsWith('data:') ? rec.base64Image : ('data:image/jpeg;base64,' + rec.base64Image))
+          : (rec.remoteImagePath || (rec.fields && rec.fields.remoteImagePath) || '');
+        if (mainSrc) {
           const badge = proofs.length > 0
             ? ('[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + ' · 기본영수증 (증빙 ' + proofs.length + '장 포함)] ')
             : ('[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + '] ');
           pages.push({
             header: badge + getDisplayTitle(rec) + ' (' + getDisplaySubtitle(rec) + ')',
-            base64: rec.base64Image
+            imgSrc: mainSrc
           });
         }
         proofs.forEach(function(pb64, pIdx) {
+          const pSrc = pb64.startsWith('data:') ? pb64 : ('data:image/jpeg;base64,' + pb64);
           pages.push({
             header: '[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + ' · 증빙첨부 ' + (pIdx + 1) + '/' + proofs.length + '] ' + getDisplayTitle(rec) + ' (' + getDisplaySubtitle(rec) + ')',
-            base64: pb64
+            imgSrc: pSrc
           });
         });
       });
@@ -11265,7 +11651,7 @@ class _HomeScreenState extends State<HomeScreen> {
       let pHtml = '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>증빙서류 PDF 출력 (' + pages.length + '장)</title>';
       pHtml += '<style>@page { size: A4 portrait; margin: 10mm; } * { box-sizing: border-box; margin:0; padding:0; } body { font-family: "Malgun Gothic", sans-serif; background:#fff; } .pdf-page { width: 100%; height: 272mm; display:flex; flex-direction:column; page-break-after: always; padding: 4mm; } .pdf-page:last-child { page-break-after: auto; } .pdf-hdr { background:#e2e8f0; color:#0f172a; padding:6px 10px; border-radius:4px; font-size:12px; font-weight:700; margin-bottom:8px; display:flex; justify-content:space-between; } .pdf-img-wrap { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; } .pdf-img-wrap img { max-width:100%; max-height:245mm; object-fit:contain; }</style></head><body>';
       pages.forEach(function(pg, i) {
-        pHtml += '<div class="pdf-page"><div class="pdf-hdr"><span>' + escapeHtml(pg.header) + '</span><span>' + (i + 1) + ' / ' + pages.length + '쪽</span></div><div class="pdf-img-wrap"><img src="data:image/jpeg;base64,' + pg.base64 + '" /></div></div>';
+        pHtml += '<div class="pdf-page"><div class="pdf-hdr"><span>' + escapeHtml(pg.header) + '</span><span>' + (i + 1) + ' / ' + pages.length + '쪽</span></div><div class="pdf-img-wrap"><img src="' + pg.imgSrc + '" /></div></div>';
       });
       pHtml += '<script>window.onload=function(){ setTimeout(function(){ window.print(); }, 350); };<\\/script></body></html>';
       win.document.open();
@@ -11456,7 +11842,8 @@ class _HomeScreenState extends State<HomeScreen> {
         final extraProofBytesList = rec.category == DocCategory.medical
             ? rec.resolveExtraProofBytesList()
             : const <Uint8List>[];
-        final mainBytes = rec.resolveMainImageBytes();
+        final mainBytes = rec.resolveMainImageBytes() ??
+            await _ensureShareRoomRecordImageBytes(rec);
 
         if (mainBytes != null && mainBytes.isNotEmpty) {
           final String pageBadge = extraProofBytesList.isNotEmpty
@@ -13433,15 +13820,18 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    final file = File(record.imagePath);
-    if (file.existsSync()) {
-      return Image.file(
-        file,
-        width: double.infinity,
-        height: double.infinity,
-        fit: BoxFit.contain,
-        filterQuality: FilterQuality.high,
-      );
+    if (record.imagePath.trim().isNotEmpty &&
+        !record.imagePath.startsWith('photos/')) {
+      final file = File(record.imagePath);
+      if (file.existsSync()) {
+        return Image.file(
+          file,
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.contain,
+          filterQuality: FilterQuality.high,
+        );
+      }
     }
     if (record.base64Image.isNotEmpty) {
       return Image.memory(
@@ -13450,6 +13840,48 @@ class _HomeScreenState extends State<HomeScreen> {
         height: double.infinity,
         fit: BoxFit.contain,
         filterQuality: FilterQuality.high,
+      );
+    }
+    // ★ 공유방에서 받아온 항목이라 아직 스마트폰 로컬에 사진 파일이 없다면,
+    //    항목을 선택한 순간 GitHub `photos/doc_{id}.jpg`에서 1장만 즉시 불러와 캐시!
+    if ((record.fields['remoteImagePath'] ?? '').trim().isNotEmpty ||
+        record.imagePath.startsWith('photos/')) {
+      return FutureBuilder<Uint8List?>(
+        key: ValueKey('main_remote_img_${record.id}'),
+        future: _ensureShareRoomRecordImageBytes(record),
+        builder: (ctx, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: Colors.amberAccent),
+                  SizedBox(height: 8),
+                  Text(
+                    '공유방(photos 폴더)에서 사진을 불러오는 중...',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            );
+          }
+          final bytes = snap.data;
+          if (bytes != null && bytes.isNotEmpty) {
+            return Image.memory(
+              bytes,
+              width: double.infinity,
+              height: double.infinity,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.high,
+            );
+          }
+          return const Center(
+            child: Text(
+              '이미지를 불러올 수 없습니다.',
+              style: TextStyle(color: Colors.white),
+            ),
+          );
+        },
       );
     }
     return const Center(
