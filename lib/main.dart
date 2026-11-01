@@ -3727,6 +3727,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final pmFull = RegExp(
         r'(?:환\s*자\s*성\s*명|환\s*자\s*명|수\s*진\s*자\s*성?\s*명)\s*[:：|\s]+\s*([가-힣]{2,5})',
       ).firstMatch(fullText);
+      if (pmFull != null) {
         final cand = pmFull.group(1)!.trim();
         if (!patientStopWords.contains(cand)) {
           extractedPatient = cand;
