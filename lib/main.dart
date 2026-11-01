@@ -818,7 +818,7 @@ class DocRecord {
     return fields['subCategory']?.trim() ?? '';
   }
 
-  /// ★ 병원비 전용 추가 증빙첨부(진료비 세부내역서, 처방전 등) base64 이미지 목록
+  /// ★ 병원비 전용 추가 증빙첨부(진료비 세부내역서, 처방전 등) base64 이미지 목록 (HTML 내보내기/가져오기 호환용)
   List<String> get extraProofImages {
     final raw = fields['proofImagesJson']?.trim() ?? '';
     if (raw.isEmpty) return const <String>[];
@@ -834,17 +834,103 @@ class DocRecord {
     return const <String>[];
   }
 
-  /// ★ 병원비 전용 추가 증빙첨부 로컬 파일 경로 목록
+  /// ★ 병원비 전용 추가 증빙첨부 로컬 파일 경로 목록 (초경량 파일 연동 방식!)
   List<String> get extraProofImagePaths {
     final raw = fields['proofPathsJson']?.trim() ?? '';
     if (raw.isEmpty) return const <String>[];
     try {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
-        return decoded.map((e) => e?.toString() ?? '').toList();
+        return decoded
+            .map((e) => e?.toString() ?? '')
+            .where((s) => s.trim().isNotEmpty)
+            .toList();
       }
     } catch (_) {}
     return const <String>[];
+  }
+
+  /// ★ 병원비 추가 증빙첨부 개수 (로컬 파일 경로 개수와 base64 개수 중 큰 값)
+  int get proofAttachmentCount {
+    final pLen = extraProofImagePaths.length;
+    final bLen = extraProofImages.length;
+    return pLen >= bLen ? pLen : bLen;
+  }
+
+  /// ★ 필요할 때만(선택 시 / PDF 내보내기 시) 스마트폰 저장소의 원본 사진 파일을 읽어오는 지연 로딩(On-Demand) 헬퍼
+  Uint8List? resolveMainImageBytes() {
+    if (imagePath.trim().isNotEmpty) {
+      try {
+        final f = File(imagePath);
+        if (f.existsSync()) {
+          return f.readAsBytesSync();
+        }
+      } catch (_) {}
+    }
+    if (base64Image.trim().isNotEmpty) {
+      try {
+        return base64Decode(base64Image);
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  String resolveMainImageBase64() {
+    if (base64Image.trim().isNotEmpty) return base64Image;
+    final bytes = resolveMainImageBytes();
+    if (bytes != null && bytes.isNotEmpty) {
+      return base64Encode(bytes);
+    }
+    return '';
+  }
+
+  List<Uint8List> resolveExtraProofBytesList() {
+    final paths = extraProofImagePaths;
+    final b64s = extraProofImages;
+    final count = proofAttachmentCount;
+    final List<Uint8List> out = <Uint8List>[];
+    for (int i = 0; i < count; i++) {
+      Uint8List? bytes;
+      if (i < paths.length && paths[i].trim().isNotEmpty) {
+        try {
+          final pf = File(paths[i]);
+          if (pf.existsSync()) {
+            bytes = pf.readAsBytesSync();
+          }
+        } catch (_) {}
+      }
+      if (bytes == null && i < b64s.length && b64s[i].trim().isNotEmpty) {
+        try {
+          bytes = base64Decode(b64s[i]);
+        } catch (_) {}
+      }
+      if (bytes != null && bytes.isNotEmpty) {
+        out.add(bytes);
+      }
+    }
+    return out;
+  }
+
+  List<String> resolveExtraProofBase64List() {
+    final paths = extraProofImagePaths;
+    final b64s = extraProofImages;
+    final count = proofAttachmentCount;
+    final List<String> out = <String>[];
+    for (int i = 0; i < count; i++) {
+      if (i < paths.length && paths[i].trim().isNotEmpty) {
+        try {
+          final pf = File(paths[i]);
+          if (pf.existsSync()) {
+            out.add(base64Encode(pf.readAsBytesSync()));
+            continue;
+          }
+        } catch (_) {}
+      }
+      if (i < b64s.length && b64s[i].trim().isNotEmpty) {
+        out.add(b64s[i]);
+      }
+    }
+    return out;
   }
 
   String get travelDivision {
@@ -1075,14 +1161,47 @@ class DocRecord {
     return NumberFormat('#,###').format(val);
   }
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'category': category,
-        'createdAt': createdAt,
-        'imagePath': imagePath,
-        'base64Image': base64Image,
-        'fields': fields,
-      };
+  /// ★ 앱 내부 DB(SharedPreferences) 저장용 초경량 JSON:
+  /// 사진이 스마트폰 파일(imagePath / proofPathsJson)로 저장되어 있으면 무거운 base64 문자열을 DB에 중복 저장하지 않고
+  /// 오직 파일 경로만 연동하여 300장, 500장이 넘어도 앱이 0.01초 만에 가볍게 돌아가도록 합니다!
+  Map<String, dynamic> toJson() {
+    final bool hasLocalFile =
+        imagePath.trim().isNotEmpty && File(imagePath).existsSync();
+    final Map<String, String> lightFields = Map<String, String>.from(fields);
+    if (lightFields.containsKey('proofPathsJson')) {
+      final paths = extraProofImagePaths;
+      if (paths.isNotEmpty && paths.every((p) => File(p).existsSync())) {
+        lightFields.remove('proofImagesJson');
+      }
+    }
+    return {
+      'id': id,
+      'category': category,
+      'createdAt': createdAt,
+      'imagePath': imagePath,
+      'base64Image': hasLocalFile ? '' : base64Image,
+      'fields': lightFields,
+    };
+  }
+
+  /// ★ HTML 내보내기 / 현장공유방 전송 전용 JSON (필요한 순간에만 원본 사진 파일을 읽어 HTML 안에 포함)
+  Map<String, dynamic> toExportJson() {
+    final Map<String, String> exportFields = Map<String, String>.from(fields);
+    if (category == DocCategory.medical && proofAttachmentCount > 0) {
+      final resolvedProofs = resolveExtraProofBase64List();
+      if (resolvedProofs.isNotEmpty) {
+        exportFields['proofImagesJson'] = jsonEncode(resolvedProofs);
+      }
+    }
+    return {
+      'id': id,
+      'category': category,
+      'createdAt': createdAt,
+      'imagePath': imagePath,
+      'base64Image': resolveMainImageBase64(),
+      'fields': exportFields,
+    };
+  }
 
   factory DocRecord.fromJson(Map<String, dynamic> json) {
     final rawFields = json['fields'] as Map<String, dynamic>? ?? {};
@@ -1418,9 +1537,92 @@ class _HomeScreenState extends State<HomeScreen> {
           (prefs.getDouble(_prefsHorizSplitRatioKey) ?? 0.42).clamp(0.18, 0.82);
     });
 
+    // ★ 기존에 무거운 base64로 DB에 들어있던 사진들을 스마트폰 개별 파일로 자동 분리(경량화 마이그레이션)!
+    final migrated = await _migrateRecordsToLightweightFiles(loaded);
+    if (migrated) {
+      autoFixedExisting = true;
+      if (mounted) {
+        setState(() {
+          _records = loaded;
+        });
+      }
+    }
+
     if (autoFixedExisting) {
       await _saveLocalRecords();
     }
+  }
+
+  /// ★ 무거운 base64 데이터를 스마트폰 내부 개별 이미지 파일(.jpg)로 분리하고,
+  /// 앱 메모리와 DB에는 가벼운 파일 경로(imagePath, proofPathsJson)만 남겨 앱 속도를 극대화하는 함수
+  Future<bool> _migrateRecordsToLightweightFiles(List<DocRecord> list) async {
+    bool anyMigrated = false;
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      for (int i = 0; i < list.length; i++) {
+        final r = list[i];
+        String newImgPath = r.imagePath;
+        String newBase64 = r.base64Image;
+        final nf = Map<String, String>.from(r.fields);
+        bool recordChanged = false;
+
+        final bool fileExists =
+            newImgPath.trim().isNotEmpty && File(newImgPath).existsSync();
+        if (!fileExists && newBase64.trim().isNotEmpty) {
+          try {
+            final bytes = base64Decode(newBase64);
+            final fPath = p.join(appDir.path, 'doc_${r.id}.jpg');
+            await File(fPath).writeAsBytes(bytes, flush: true);
+            newImgPath = fPath;
+            newBase64 = '';
+            recordChanged = true;
+          } catch (_) {}
+        } else if (fileExists && newBase64.isNotEmpty) {
+          newBase64 = '';
+          recordChanged = true;
+        }
+
+        // 병원비 추가 증빙첨부 사진들도 개별 파일로 분리 후 proofImagesJson(base64) 비우기
+        final b64Proofs = r.extraProofImages;
+        final pathProofs = List<String>.from(r.extraProofImagePaths);
+        if (b64Proofs.isNotEmpty) {
+          final List<String>resolvedPaths = <String>[];
+          for (int pIdx = 0; pIdx < b64Proofs.length; pIdx++) {
+            final existingP = pIdx < pathProofs.length ? pathProofs[pIdx] : '';
+            if (existingP.trim().isNotEmpty && File(existingP).existsSync()) {
+              resolvedPaths.add(existingP);
+            } else {
+              try {
+                final pBytes = base64Decode(b64Proofs[pIdx]);
+                final pfPath =
+                    p.join(appDir.path, 'proof_${r.id}_${pIdx + 1}.jpg');
+                await File(pfPath).writeAsBytes(pBytes, flush: true);
+                resolvedPaths.add(pfPath);
+              } catch (_) {}
+            }
+          }
+          if (resolvedPaths.isNotEmpty) {
+            nf['proofPathsJson'] = jsonEncode(resolvedPaths);
+            nf.remove('proofImagesJson');
+            nf['proofStatus'] = '첨부(${resolvedPaths.length}장)';
+            recordChanged = true;
+          }
+        }
+
+        if (recordChanged) {
+          list[i] = DocRecord(
+            id: r.id,
+            category: r.category,
+            createdAt: r.createdAt,
+            imagePath: newImgPath,
+            base64Image: newBase64,
+            fields: nf,
+          );
+          anyMigrated = true;
+        }
+      }
+    } catch (_) {}
+    return anyMigrated;
   }
 
   Future<void> _saveLocalRecords() async {
@@ -4410,11 +4612,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// ★ 병원비 표의 [증빙첨부] 칸을 눌렀을 때 바로 추가 증빙사진을 촬영/첨부·열람·삭제하는 다이얼로그
   Future<void> _openMedicalProofAttachmentDialog(DocRecord record) async {
-    final List<String> proofBase64List =
-        List<String>.from(record.extraProofImages);
+    final List<Uint8List> proofBytesList =
+        List<Uint8List>.from(record.resolveExtraProofBytesList());
     final List<String> proofPathList =
         List<String>.from(record.extraProofImagePaths);
-    while (proofPathList.length < proofBase64List.length) {
+    while (proofPathList.length < proofBytesList.length) {
       proofPathList.add('');
     }
 
@@ -4426,10 +4628,19 @@ class _HomeScreenState extends State<HomeScreen> {
             Future<void> addProofFrom(ImageSource src) async {
               final added = await _pickAndCropSingleProofPhoto(src);
               if (added != null && ctx.mounted) {
-                setModalState(() {
-                  proofBase64List.add(added['base64'] ?? '');
-                  proofPathList.add(added['path'] ?? '');
-                });
+                final String pPath = added['path'] ?? '';
+                Uint8List? pBytes;
+                if (pPath.isNotEmpty && File(pPath).existsSync()) {
+                  pBytes = await File(pPath).readAsBytes();
+                } else if ((added['base64'] ?? '').isNotEmpty) {
+                  pBytes = base64Decode(added['base64']!);
+                }
+                if (pBytes != null && ctx.mounted) {
+                  setModalState(() {
+                    proofBytesList.add(pBytes!);
+                    proofPathList.add(pPath);
+                  });
+                }
               }
             }
 
@@ -4440,7 +4651,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      '병원비 추가 증빙첨부 (${proofBase64List.length}장)',
+                      '병원비 추가 증빙첨부 (${proofBytesList.length}장)',
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -4518,7 +4729,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                       const SizedBox(height: 12),
-                      if (proofBase64List.isEmpty)
+                      if (proofBytesList.isEmpty)
                         Container(
                           padding: const EdgeInsets.symmetric(vertical: 24),
                           alignment: Alignment.center,
@@ -4541,8 +4752,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           spacing: 8,
                           runSpacing: 8,
                           children:
-                              List.generate(proofBase64List.length, (pIdx) {
-                            final b64 = proofBase64List[pIdx];
+                              List.generate(proofBytesList.length, (pIdx) {
+                            final pBytes = proofBytesList[pIdx];
                             return Stack(
                               children: [
                                 Container(
@@ -4576,7 +4787,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                         child: Padding(
                                           padding: const EdgeInsets.all(3),
                                           child: Image.memory(
-                                            base64Decode(b64),
+                                            pBytes,
                                             fit: BoxFit.contain,
                                           ),
                                         ),
@@ -4590,7 +4801,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   child: InkWell(
                                     onTap: () {
                                       setModalState(() {
-                                        proofBase64List.removeAt(pIdx);
+                                        proofBytesList.removeAt(pIdx);
                                         if (pIdx < proofPathList.length) {
                                           proofPathList.removeAt(pIdx);
                                         }
@@ -4639,15 +4850,27 @@ class _HomeScreenState extends State<HomeScreen> {
     final idx = _records.indexWhere((r) => r.id == record.id);
     if (idx == -1) return;
 
+    final appDir = await getApplicationDocumentsDirectory();
+    final List<String> finalPaths = <String>[];
+    for (int i = 0; i < proofBytesList.length; i++) {
+      final existingP = i < proofPathList.length ? proofPathList[i] : '';
+      if (existingP.trim().isNotEmpty && File(existingP).existsSync()) {
+        finalPaths.add(existingP);
+      } else {
+        final pf = File(p.join(appDir.path, 'proof_${const Uuid().v4()}.jpg'));
+        await pf.writeAsBytes(proofBytesList[i], flush: true);
+        finalPaths.add(pf.path);
+      }
+    }
+
     final updatedFields = Map<String, String>.from(record.fields);
-    if (proofBase64List.isEmpty) {
-      updatedFields.remove('proofImagesJson');
+    updatedFields.remove('proofImagesJson'); // ★ 무거운 base64는 DB에 넣지 않고 파일 경로만 저장!
+    if (finalPaths.isEmpty) {
       updatedFields.remove('proofPathsJson');
       updatedFields['proofStatus'] = '';
     } else {
-      updatedFields['proofImagesJson'] = jsonEncode(proofBase64List);
-      updatedFields['proofPathsJson'] = jsonEncode(proofPathList);
-      updatedFields['proofStatus'] = '첨부(${proofBase64List.length}장)';
+      updatedFields['proofPathsJson'] = jsonEncode(finalPaths);
+      updatedFields['proofStatus'] = '첨부(${finalPaths.length}장)';
     }
 
     final updatedRecord = DocRecord(
@@ -4655,20 +4878,20 @@ class _HomeScreenState extends State<HomeScreen> {
       category: record.category,
       createdAt: record.createdAt,
       imagePath: record.imagePath,
-      base64Image: record.base64Image,
+      base64Image: '',
       fields: updatedFields,
     );
 
     setState(() {
       _records[idx] = updatedRecord;
       _selectedRecord = updatedRecord;
-      _selectedPhotoIndex = proofBase64List.isNotEmpty ? 1 : 0;
+      _selectedPhotoIndex = finalPaths.isNotEmpty ? 1 : 0;
     });
     await _saveLocalRecords();
     _showSnack(
-      proofBase64List.isEmpty
+      finalPaths.isEmpty
           ? '추가 증빙첨부가 해제되었습니다.'
-          : '✅ 추가 증빙첨부(${proofBase64List.length}장)가 저장되었습니다! (PDF 내보내기 시 함께 출력됩니다)',
+          : '✅ 추가 증빙첨부(${finalPaths.length}장)가 가벼운 파일 연동 방식으로 저장되었습니다!',
     );
   }
 
@@ -5813,7 +6036,7 @@ class _HomeScreenState extends State<HomeScreen> {
               category: chosenCategory,
               createdAt: nowStr,
               imagePath: savedFile.path,
-              base64Image: base64Str,
+              base64Image: '', // ★ 원본 사진 파일(savedFile.path)만 연동하여 앱을 초경량으로 유지!
               fields: fields,
             ),
           );
@@ -5864,13 +6087,11 @@ class _HomeScreenState extends State<HomeScreen> {
           collectedFields['issueDate'] =
               DocRecord.formatDotDate(issueDateCtrl.text.trim());
           collectedFields['totalPaid'] = totalPaidCtrl.text.trim();
-          if (medicalProofBase64List.isNotEmpty) {
-            collectedFields['proofImagesJson'] =
-                jsonEncode(medicalProofBase64List);
+          if (medicalProofPathList.isNotEmpty) {
             collectedFields['proofPathsJson'] =
                 jsonEncode(medicalProofPathList);
             collectedFields['proofStatus'] =
-                '첨부(${medicalProofBase64List.length}장)';
+                '첨부(${medicalProofPathList.length}장)';
           }
         }
 
@@ -5880,7 +6101,7 @@ class _HomeScreenState extends State<HomeScreen> {
             category: chosenCategory,
             createdAt: nowStr,
             imagePath: savedFile.path,
-            base64Image: base64Str,
+            base64Image: '', // ★ 원본 사진 파일(savedFile.path)만 연동하여 앱을 초경량으로 유지!
             fields: collectedFields,
           ),
         );
@@ -6032,7 +6253,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final bizRegNumberCtrl =
         TextEditingController(text: f['bizRegNumber'] ?? '');
     final List<String> editProofBase64List =
-        List<String>.from(record.extraProofImages);
+        List<String>.from(record.resolveExtraProofBase64List());
     final List<String> editProofPathList =
         List<String>.from(record.extraProofImagePaths);
     while (editProofPathList.length < editProofBase64List.length) {
@@ -6609,14 +6830,13 @@ class _HomeScreenState extends State<HomeScreen> {
       updatedFields['clinicName'] = clinicNameCtrl.text.trim();
       updatedFields['totalPaid'] = totalPaidCtrl.text.trim();
       updatedFields['bizRegNumber'] = bizRegNumberCtrl.text.trim();
-      if (editProofBase64List.isEmpty) {
-        updatedFields.remove('proofImagesJson');
+      updatedFields.remove('proofImagesJson');
+      if (editProofPathList.isEmpty) {
         updatedFields.remove('proofPathsJson');
         updatedFields['proofStatus'] = '';
       } else {
-        updatedFields['proofImagesJson'] = jsonEncode(editProofBase64List);
         updatedFields['proofPathsJson'] = jsonEncode(editProofPathList);
-        updatedFields['proofStatus'] = '첨부(${editProofBase64List.length}장)';
+        updatedFields['proofStatus'] = '첨부(${editProofPathList.length}장)';
       }
     }
 
@@ -6665,9 +6885,19 @@ class _HomeScreenState extends State<HomeScreen> {
     if (confirm != true) return;
 
     try {
-      final imgFile = File(record.imagePath);
-      if (await imgFile.exists()) {
-        await imgFile.delete();
+      if (record.imagePath.trim().isNotEmpty) {
+        final imgFile = File(record.imagePath);
+        if (await imgFile.exists()) {
+          await imgFile.delete();
+        }
+      }
+      for (final pPath in record.extraProofImagePaths) {
+        if (pPath.trim().isNotEmpty) {
+          final pf = File(pPath);
+          if (await pf.exists()) {
+            await pf.delete();
+          }
+        }
       }
     } catch (_) {}
 
@@ -7731,16 +7961,17 @@ class _HomeScreenState extends State<HomeScreen> {
           }
 
           Widget buildShareRoomPhoto() {
+            final bytes = currentSel?.resolveMainImageBytes();
             return Container(
               width: double.infinity,
               height: double.infinity,
               color: const Color(0xFF0F172A),
-              child: currentSel != null && currentSel!.base64Image.isNotEmpty
+              child: bytes != null && bytes.isNotEmpty
                   ? InteractiveViewer(
                       minScale: 0.6,
                       maxScale: 6.0,
                       child: Image.memory(
-                        base64Decode(currentSel!.base64Image),
+                        bytes,
                         fit: BoxFit.contain,
                       ),
                     )
@@ -8878,6 +9109,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final updatedList = sigMap.values.toList()
         ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      await _migrateRecordsToLightweightFiles(updatedList);
 
       setState(() {
         _records = updatedList;
@@ -9079,7 +9311,7 @@ class _HomeScreenState extends State<HomeScreen> {
             f['issueDate'] ?? item.createdAt.split(' ').first);
         final amt =
             '${NumberFormat('#,###').format(item.numericAmount)}원';
-        final proofCnt = item.extraProofImages.length;
+        final proofCnt = item.proofAttachmentCount;
         final proofText = proofCnt > 0 ? '📎 첨부($proofCnt)' : '+ 증빙추가';
         final safeId = _escapeHtmlText(item.id);
         sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
@@ -9132,7 +9364,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required Set<String> repliedKeys,
     String? forcedInitialTab,
   }) {
-    final recordsJson = jsonEncode(records.map((r) => _ensureUploaderField(r).toJson()).toList());
+    final recordsJson = jsonEncode(records.map((r) => _ensureUploaderField(r).toExportJson()).toList());
     final cumMap = _computeInvoiceCumulativeMap(records);
     final cumMapJson = jsonEncode(cumMap);
     final repliedListJson = jsonEncode(repliedKeys.toList());
@@ -9171,7 +9403,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final firstRecord = records.isNotEmpty ? records.first : null;
     final firstId = firstRecord?.id ?? '';
-    final firstBase64 = firstRecord?.base64Image ?? '';
+    final firstBase64 = firstRecord?.resolveMainImageBase64() ?? '';
     final initialTableHtml = _buildStaticHtmlTable(
       records,
       majorCat,
@@ -11221,30 +11453,31 @@ class _HomeScreenState extends State<HomeScreen> {
 
       for (int i = 0; i < totalRecordCount; i++) {
         final rec = uniquePhotoRecords[i];
-        final extraProofs = rec.category == DocCategory.medical
-            ? rec.extraProofImages
-            : const <String>[];
+        final extraProofBytesList = rec.category == DocCategory.medical
+            ? rec.resolveExtraProofBytesList()
+            : const <Uint8List>[];
+        final mainBytes = rec.resolveMainImageBytes();
 
-        if (rec.base64Image.trim().isNotEmpty) {
-          final String pageBadge = extraProofs.isNotEmpty
-              ? '[$filterScopeName ${i + 1}/$totalRecordCount · 기본영수증 (증빙 ${extraProofs.length}장 포함)]'
+        if (mainBytes != null && mainBytes.isNotEmpty) {
+          final String pageBadge = extraProofBytesList.isNotEmpty
+              ? '[$filterScopeName ${i + 1}/$totalRecordCount · 기본영수증 (증빙 ${extraProofBytesList.length}장 포함)]'
               : '[$filterScopeName ${i + 1}/$totalRecordCount]';
           pdfPageSpecs.add({
             'rec': rec,
-            'base64': rec.base64Image,
+            'bytes': mainBytes,
             'headerTitle':
                 '$pageBadge ${rec.displayTitle}  (${rec.displaySubtitle})',
           });
         }
 
-        for (int pIdx = 0; pIdx < extraProofs.length; pIdx++) {
-          final proofB64 = extraProofs[pIdx].trim();
-          if (proofB64.isEmpty) continue;
+        for (int pIdx = 0; pIdx < extraProofBytesList.length; pIdx++) {
+          final proofBytes = extraProofBytesList[pIdx];
+          if (proofBytes.isEmpty) continue;
           pdfPageSpecs.add({
             'rec': rec,
-            'base64': proofB64,
+            'bytes': proofBytes,
             'headerTitle':
-                '[$filterScopeName ${i + 1}/$totalRecordCount · 증빙첨부 ${pIdx + 1}/${extraProofs.length}] ${rec.displayTitle}  (${rec.displaySubtitle})',
+                '[$filterScopeName ${i + 1}/$totalRecordCount · 증빙첨부 ${pIdx + 1}/${extraProofBytesList.length}] ${rec.displayTitle}  (${rec.displaySubtitle})',
           });
         }
       }
@@ -11253,9 +11486,8 @@ class _HomeScreenState extends State<HomeScreen> {
       for (int pageIdx = 0; pageIdx < totalPages; pageIdx++) {
         final spec = pdfPageSpecs[pageIdx];
         final rec = spec['rec'] as DocRecord;
-        final b64 = spec['base64'] as String;
+        final imgBytes = spec['bytes'] as Uint8List;
         final headerTitle = spec['headerTitle'] as String;
-        final imgBytes = base64Decode(b64);
         final pdfImage = pw.MemoryImage(imgBytes);
 
         combinedPdf.addPage(
@@ -11895,7 +12127,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           f['issueDate'] ?? rec.createdAt.split(' ').first);
                       final amtStr =
                           '${DocRecord._formatCurrency(f['totalPaid'])}원';
-                      final proofCount = rec.extraProofImages.length;
+                      final proofCount = rec.proofAttachmentCount;
 
                       return InkWell(
                         onTap: () => setState(() {
@@ -13039,9 +13271,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final extraPaths = record.category == DocCategory.medical
         ? record.extraProofImagePaths
         : const <String>[];
-    final int maxIndex = extraProofs.length;
+    final int proofCnt = record.category == DocCategory.medical
+        ? record.proofAttachmentCount
+        : 0;
     final int activeIdx =
-        _selectedPhotoIndex.clamp(0, maxIndex);
+        _selectedPhotoIndex.clamp(0, proofCnt);
 
     return Stack(
       children: [
@@ -13105,7 +13339,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     ),
-                    for (int pIdx = 0; pIdx < extraProofs.length; pIdx++) ...[
+                    for (int pIdx = 0; pIdx < proofCnt; pIdx++) ...[
                       const SizedBox(width: 4),
                       InkWell(
                         onTap: () =>
@@ -13145,9 +13379,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: Text(
-                          extraProofs.isEmpty
+                          proofCnt == 0
                               ? '+ 증빙첨부 추가'
-                              : '📎 증빙관리(${extraProofs.length})',
+                              : '📎 증빙관리($proofCnt)',
                           style: const TextStyle(
                             color: Color(0xFF0F172A),
                             fontSize: 11,
@@ -13171,7 +13405,10 @@ class _HomeScreenState extends State<HomeScreen> {
     List<String> extraProofs = const <String>[],
     List<String> extraPaths = const <String>[],
   }) {
-    if (photoIndex > 0 && photoIndex - 1 < extraProofs.length) {
+    final int proofCnt = extraPaths.length >= extraProofs.length
+        ? extraPaths.length
+        : extraProofs.length;
+    if (photoIndex > 0 && photoIndex - 1 < proofCnt) {
       final int pIdx = photoIndex - 1;
       if (pIdx < extraPaths.length && extraPaths[pIdx].trim().isNotEmpty) {
         final pFile = File(extraPaths[pIdx]);
@@ -13185,10 +13422,9 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         }
       }
-      final b64 = extraProofs[pIdx];
-      if (b64.isNotEmpty) {
+      if (pIdx < extraProofs.length && extraProofs[pIdx].trim().isNotEmpty) {
         return Image.memory(
-          base64Decode(b64),
+          base64Decode(extraProofs[pIdx]),
           width: double.infinity,
           height: double.infinity,
           fit: BoxFit.contain,
