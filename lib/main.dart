@@ -19,7 +19,9 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
 void main() {
@@ -52,6 +54,7 @@ class DocCategory {
   static const String invoice = '자재송장';
   static const String travel = '출장비';
   static const String medical = '병원비';
+  static const String businessCard = '명함관리'; // ★ 맨 우측 명함관리 탭 (회사명 | 현장명 | 이름 | 휴대폰번호 | 이메일주소)
 
   static const List<String> filterList = [
     officialIn,
@@ -59,6 +62,7 @@ class DocCategory {
     invoice,
     travel,
     medical,
+    businessCard,
   ];
 
   static const List<String> inputList = [
@@ -67,6 +71,7 @@ class DocCategory {
     invoice,
     travel,
     medical,
+    businessCard,
   ];
 
   static bool isOfficial(String cat) =>
@@ -991,6 +996,13 @@ class DocRecord {
       final amt = (fields['totalAmount'] ?? '').trim();
       final m = (fields['merchantName'] ?? '').replaceAll(RegExp(r'\s+'), '');
       return 'TRV|$d|$div|$amt|$m';
+    } else if (category == DocCategory.businessCard) {
+      final comp = (fields['companyName'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      final site = (fields['siteName'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      final name = (fields['personName'] ?? '').replaceAll(RegExp(r'\s+'), '');
+      final phone = (fields['mobilePhone'] ?? '').replaceAll(RegExp(r'[^0-9]'), '');
+      final email = (fields['email'] ?? '').trim().toLowerCase();
+      return 'BIZCARD|$comp|$site|$name|$phone|$email';
     } else {
       final d = formatDotDate(fields['issueDate']);
       final c = (fields['clinicName'] ?? '').replaceAll(RegExp(r'\s+'), '');
@@ -1123,6 +1135,14 @@ class DocRecord {
         final paid = fields['totalPaid'] ?? '0';
         final patientPrefix = patient.isNotEmpty ? '[$patient] ' : '';
         return '$patientPrefix${clinic.isNotEmpty ? clinic : "병원비"} (${_formatCurrency(paid)}원)';
+      case DocCategory.businessCard:
+        final comp = (fields['companyName'] ?? '').trim();
+        final site = (fields['siteName'] ?? '').trim();
+        final name = (fields['personName'] ?? '').trim();
+        final prefix = comp.isNotEmpty
+            ? (site.isNotEmpty ? '[$comp · $site] ' : '[$comp] ')
+            : (site.isNotEmpty ? '[$site] ' : '');
+        return '$prefix${name.isNotEmpty ? name : "명함"}'.trim();
       default:
         return category;
     }
@@ -1157,6 +1177,14 @@ class DocRecord {
             ? fields['patientName']!
             : '-';
         return '환자성명: $patient | 사업자번호: ${fields['bizRegNumber'] ?? '-'} | 발행일: ${fields['issueDate'] ?? '-'} | 수납액: ${_formatCurrency(fields['totalPaid'])}원';
+      case DocCategory.businessCard:
+        final phone = (fields['mobilePhone'] ?? '').trim().isNotEmpty
+            ? fields['mobilePhone']!.trim()
+            : '-';
+        final email = (fields['email'] ?? '').trim().isNotEmpty
+            ? fields['email']!.trim()
+            : '-';
+        return '휴대폰: $phone | 이메일: $email';
       default:
         return createdAt;
     }
@@ -2661,6 +2689,26 @@ class _HomeScreenState extends State<HomeScreen> {
         final sa = (a.fields['specName'] ?? '').trim();
         final sb = (b.fields['specName'] ?? '').trim();
         cmp = sa.compareTo(sb);
+      } else if (sortCol == 'companyName') {
+        final ca = (a.fields['companyName'] ?? '').trim();
+        final cb = (b.fields['companyName'] ?? '').trim();
+        cmp = ca.compareTo(cb);
+      } else if (sortCol == 'siteName') {
+        final sa = (a.fields['siteName'] ?? '').trim();
+        final sb = (b.fields['siteName'] ?? '').trim();
+        cmp = sa.compareTo(sb);
+      } else if (sortCol == 'personName') {
+        final na = (a.fields['personName'] ?? '').trim();
+        final nb = (b.fields['personName'] ?? '').trim();
+        cmp = na.compareTo(nb);
+      } else if (sortCol == 'mobilePhone') {
+        final pa = (a.fields['mobilePhone'] ?? '').trim();
+        final pb = (b.fields['mobilePhone'] ?? '').trim();
+        cmp = pa.compareTo(pb);
+      } else if (sortCol == 'email') {
+        final ea = (a.fields['email'] ?? '').trim().toLowerCase();
+        final eb = (b.fields['email'] ?? '').trim().toLowerCase();
+        cmp = ea.compareTo(eb);
       } else {
         // 'date'
         final ka = _extractSortableDateKey(a);
@@ -2999,6 +3047,52 @@ class _HomeScreenState extends State<HomeScreen> {
     return mergedRows;
   }
 
+  /// ★ 명함관리 탭에서 [휴대폰번호] 터치 시 스마트폰 전화 걸기(다이얼) 화면으로 즉시 연결!
+  Future<void> _launchPhoneDialer(String? rawPhone) async {
+    final cleaned = (rawPhone ?? '').replaceAll(RegExp(r'[^0-9+]'), '').trim();
+    if (cleaned.isEmpty) {
+      _showSnack('연결할 휴대폰번호가 없습니다.');
+      return;
+    }
+    final uri = Uri(scheme: 'tel', path: cleaned);
+    try {
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched) {
+        await Clipboard.setData(ClipboardData(text: rawPhone ?? cleaned));
+        _showSnack('전화 앱을 열 수 없어 번호($cleaned)를 클립보드에 복사했습니다.');
+      }
+    } catch (_) {
+      await Clipboard.setData(ClipboardData(text: rawPhone ?? cleaned));
+      _showSnack('전화번호($cleaned)가 클립보드에 복사되었습니다.');
+    }
+  }
+
+  /// ★ 명함관리 탭에서 [이메일주소] 터치 시 스마트폰 메일 보내기 화면으로 즉시 연결!
+  Future<void> _launchEmailComposer(String? rawEmail) async {
+    final cleaned = (rawEmail ?? '').trim();
+    if (cleaned.isEmpty || !cleaned.contains('@')) {
+      _showSnack('연결할 이메일주소가 없습니다.');
+      return;
+    }
+    final uri = Uri(scheme: 'mailto', path: cleaned);
+    try {
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched) {
+        await Clipboard.setData(ClipboardData(text: cleaned));
+        _showSnack('메일 앱을 열 수 없어 이메일($cleaned)을 클립보드에 복사했습니다.');
+      }
+    } catch (_) {
+      await Clipboard.setData(ClipboardData(text: cleaned));
+      _showSnack('이메일주소($cleaned)가 클립보드에 복사되었습니다.');
+    }
+  }
+
   Future<Map<String, String>> _extractFieldsOfflineOcr({
     required String imagePath,
     required Uint8List imageBytes,
@@ -3090,6 +3184,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (category == DocCategory.medical) {
         return _parseMedicalReceiptText(fullText, mergedRows, recognized);
+      } else if (category == DocCategory.businessCard) {
+        return _parseBusinessCardText(fullText, mergedRows, recognized);
       } else {
         return _parseTravelReceiptText(fullText, mergedRows, recognized.blocks);
       }
@@ -4374,6 +4470,189 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
+  /// ★ 명함(Business Card) 오프라인 한국어 OCR 정밀 파서:
+  ///   회사명(companyName), 현장명/부서명(siteName), 이름(personName), 휴대폰번호(mobilePhone), 이메일주소(email) 자동 추출!
+  Map<String, String> _parseBusinessCardText(
+    String fullText,
+    List<String> rows,
+    RecognizedText recognized,
+  ) {
+    final result = <String, String>{};
+    final lines = rows
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+
+    // 1) 이메일주소 추출
+    final emailMatch = RegExp(
+      r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}',
+    ).firstMatch(fullText.replaceAll(' ', ''));
+    if (emailMatch != null) {
+      result['email'] = emailMatch.group(0)!;
+    } else {
+      for (final line in lines) {
+        final m = RegExp(r'[A-Za-z0-9._%+-]+\s*@\s*[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+            .firstMatch(line);
+        if (m != null) {
+          result['email'] = m.group(0)!.replaceAll(' ', '');
+          break;
+        }
+      }
+    }
+
+    // 2) 휴대폰번호 추출 (010-XXXX-XXXX 또는 +82-10-XXXX-XXXX 최우선, 없으면 일반 전화번호)
+    final mobileMatch = RegExp(
+      r'(?:(?:\+?82[\s.-]*)?0?1[016789])[\s.-]*(\d{3,4})[\s.-]*(\d{4})',
+    ).firstMatch(fullText);
+    if (mobileMatch != null) {
+      result['mobilePhone'] =
+          '010-${mobileMatch.group(1)}-${mobileMatch.group(2)}';
+    } else {
+      final telMatch = RegExp(
+        r'(0\d{1,2})[\s.-]*(\d{3,4})[\s.-]*(\d{4})',
+      ).firstMatch(fullText);
+      if (telMatch != null) {
+        result['mobilePhone'] =
+            '${telMatch.group(1)}-${telMatch.group(2)}-${telMatch.group(3)}';
+      }
+    }
+
+    // 3) 회사명 추출 ((주), ㈜, 주식회사, 건설, 엔지니어링, 산업, 코퍼레이션, 그룹, 건축사사무소 등)
+    final companySuffixRegex = RegExp(
+      r'(?:주식회사|\(주\)|㈜|\(유\)|유한회사|건설|엔지니어링|산업|개발|건축|종합건설|토건|전기|통신|설비|소방|기계|테크|코퍼레이션|그룹|파트너스|공사|공단|시청|구청|군청)',
+      caseSensitive: false,
+    );
+    for (final line in lines) {
+      if (line.contains('@') || RegExp(r'\d{3,4}[-\s.]\d{4}').hasMatch(line)) {
+        continue;
+      }
+      if (companySuffixRegex.hasMatch(line)) {
+        String comp = line
+            .replaceAll(RegExp(r'\s{2,}.*$'), '')
+            .trim();
+        if (comp.length >= 2 && comp.length <= 28) {
+          result['companyName'] = comp;
+          break;
+        }
+      }
+    }
+
+    // 4) 현장명(또는 소속 부서/사업소) 추출 ('현장', '사업소', '공사', '아파트', '신축', '재개발', '재건축', '본부', '팀', '부', '과')
+    for (final line in lines) {
+      if (line == result['companyName']) continue;
+      if (line.contains('@') || RegExp(r'\d{3,4}[-\s.]\d{4}').hasMatch(line)) {
+        continue;
+      }
+      if (RegExp(r'(?:현장|사업소|신축|증축|재개발|재건축|아파트|공동주택|공사|공구|사업단|지사|본부|부|팀|과|실|소)')
+          .hasMatch(line)) {
+        // 주소 줄('시/도 ... 구/군 ... 로/길')은 제외
+        if (RegExp(r'(?:특별시|광역시|특별자치|도로명|번길|\d+번지|\(\d{5}\))').hasMatch(line) &&
+            !line.contains('현장')) {
+          continue;
+        }
+        result['siteName'] = line.trim();
+        break;
+      }
+    }
+
+    // 5) 이름 추출 (직함 키워드와 함께 있거나 글자 크기가 가장 큰 2~4글자 한글 이름)
+    final jobTitles = [
+      '현장소장',
+      '소장',
+      '공무팀장',
+      '공사팀장',
+      '안전팀장',
+      '품질팀장',
+      '설비팀장',
+      '전기팀장',
+      '팀장',
+      '공무과장',
+      '공사과장',
+      '과장',
+      '차장',
+      '부장',
+      '대리',
+      '주임',
+      '사원',
+      '실장',
+      '원장',
+      '본부장',
+      '이사',
+      '상무',
+      '전무',
+      '부사장',
+      '사장',
+      '대표이사',
+      '대표',
+      '감리단장',
+      '단장',
+      '기술사',
+      '건축사',
+      '매니저',
+      '프로',
+      '선임',
+      '책임',
+      '수석',
+    ];
+    final stopWords = <String>{
+      '주식회사',
+      '유한회사',
+      '대표이사',
+      '현장소장',
+      '공무팀장',
+      '공사팀장',
+      '안전팀장',
+      '품질팀장',
+      '감리단장',
+      '휴대전화',
+      '휴대폰',
+      '이메일',
+      '팩스번호',
+      '전화번호',
+      '홈페이지',
+      '사업자',
+      '주소지',
+      '본부장',
+    };
+
+    for (final line in lines) {
+      if (line.contains('@') || RegExp(r'\d{3}').hasMatch(line)) continue;
+      String cleaned = line;
+      for (final jt in jobTitles) {
+        cleaned = cleaned.replaceAll(jt, ' ');
+      }
+      // 한글 글자 사이 공백 제거: 예) "홍 길 동" -> "홍길동"
+      final spacedNameMatch =
+          RegExp(r'(?<![가-힣])([가-힣])\s+([가-힣])\s+([가-힣])(?![가-힣])')
+              .firstMatch(cleaned);
+      if (spacedNameMatch != null) {
+        final cand =
+            '${spacedNameMatch.group(1)}${spacedNameMatch.group(2)}${spacedNameMatch.group(3)}';
+        if (!stopWords.contains(cand)) {
+          result['personName'] = cand;
+          break;
+        }
+      }
+      final nameMatches = RegExp(r'(?<![가-힣])[가-힣]{2,4}(?![가-힣])')
+          .allMatches(cleaned);
+      for (final m in nameMatches) {
+        final cand = m.group(0)!;
+        if (!stopWords.contains(cand) &&
+            !companySuffixRegex.hasMatch(cand) &&
+            !cand.endsWith('현장') &&
+            !cand.endsWith('팀') &&
+            !cand.endsWith('부') &&
+            !cand.endsWith('과')) {
+          result['personName'] = cand;
+          break;
+        }
+      }
+      if ((result['personName'] ?? '').isNotEmpty) break;
+    }
+
+    return result;
+  }
+
   // ===========================================================================
   // 2단계: Gemini Vision AI 분석 (선택사항)
   // ===========================================================================
@@ -4595,6 +4874,21 @@ class _HomeScreenState extends State<HomeScreen> {
   "totalAmount": "결제금액 숫자만 (영수증이 여러 장이면 합산한 금액)",
   "merchantName": "실제 상호명/지점명 (예: 롯데리아 창곡점, 하이패스 통행료, 카카오택시)",
   "date": "YYYY-MM-DD"
+}''';
+    } else if (category == DocCategory.businessCard) {
+      prompt = '''
+이 명함(Business Card) 이미지를 읽고 다음 5가지 항목을 순수 JSON 객체로 정확히 추출해줘:
+- companyName (회사명): 예) "현대건설(주)", "삼성물산", "(주)대우건설"
+- siteName (현장명): 명함에 적힌 현장명 또는 소속 부서/사업소명 (예: "반포주공1단지 재건축현장", "공무팀", 없으면 "")
+- personName (이름): 명함 주인공의 성명만 깔끔하게 (직함 제외, 예: "홍길동")
+- mobilePhone (휴대폰번호): 010-XXXX-XXXX 형태로 정리 (휴대폰 번호가 없으면 명함의 대표 전화번호)
+- email (이메일주소): 명함에 적힌 이메일 주소 (예: "gildong@hyundai.com")
+{
+  "companyName": "회사명",
+  "siteName": "현장명 또는 부서명",
+  "personName": "이름",
+  "mobilePhone": "010-0000-0000",
+  "email": "example@company.com"
 }''';
     } else {
       prompt = '''
@@ -5156,6 +5450,13 @@ class _HomeScreenState extends State<HomeScreen> {
       final List<String> medicalProofBase64List = <String>[];
       final List<String> medicalProofPathList = <String>[];
 
+      // 5. 명함관리 컨트롤러 (회사명, 현장명, 이름, 휴대폰번호, 이메일주소)
+      final companyNameCtrl = TextEditingController();
+      final siteNameCtrl = TextEditingController();
+      final personNameCtrl = TextEditingController();
+      final mobilePhoneCtrl = TextEditingController();
+      final emailCtrl = TextEditingController();
+
       void applyExtractedMap(Map<String, String> extracted) {
         if (DocCategory.isOfficial(chosenCategory)) {
           if (extracted['title']?.isNotEmpty == true) {
@@ -5267,6 +5568,22 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           if (extracted['totalPaid']?.isNotEmpty == true) {
             totalPaidCtrl.text = extracted['totalPaid']!;
+          }
+        } else if (chosenCategory == DocCategory.businessCard) {
+          if (extracted['companyName']?.isNotEmpty == true) {
+            companyNameCtrl.text = extracted['companyName']!;
+          }
+          if (extracted['siteName']?.isNotEmpty == true) {
+            siteNameCtrl.text = extracted['siteName']!;
+          }
+          if (extracted['personName']?.isNotEmpty == true) {
+            personNameCtrl.text = extracted['personName']!;
+          }
+          if (extracted['mobilePhone']?.isNotEmpty == true) {
+            mobilePhoneCtrl.text = extracted['mobilePhone']!;
+          }
+          if (extracted['email']?.isNotEmpty == true) {
+            emailCtrl.text = extracted['email']!;
           }
         }
       }
@@ -6113,6 +6430,37 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                         ],
+
+                        // 5. 명함관리 입력 폼 (회사명, 현장명, 이름, 휴대폰번호, 이메일주소)
+                        if (chosenCategory == DocCategory.businessCard) ...[
+                          _buildField(
+                            companyNameCtrl,
+                            '회사명',
+                            '예: 현대건설(주), 삼성물산',
+                          ),
+                          _buildField(
+                            siteNameCtrl,
+                            '현장명 (또는 부서명)',
+                            '예: 반포주공1단지 재건축현장, 공무팀',
+                          ),
+                          _buildField(
+                            personNameCtrl,
+                            '이름',
+                            '예: 홍길동',
+                          ),
+                          _buildField(
+                            mobilePhoneCtrl,
+                            '휴대폰번호 (목록에서 클릭 시 전화 연결)',
+                            '예: 010-1234-5678',
+                            keyboardType: TextInputType.phone,
+                          ),
+                          _buildField(
+                            emailCtrl,
+                            '이메일주소 (목록에서 클릭 시 메일 보내기)',
+                            '예: gildong@company.com',
+                            keyboardType: TextInputType.emailAddress,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -6239,6 +6587,12 @@ class _HomeScreenState extends State<HomeScreen> {
             collectedFields['proofStatus'] =
                 '첨부(${medicalProofPathList.length}장)';
           }
+        } else if (chosenCategory == DocCategory.businessCard) {
+          collectedFields['companyName'] = companyNameCtrl.text.trim();
+          collectedFields['siteName'] = siteNameCtrl.text.trim();
+          collectedFields['personName'] = personNameCtrl.text.trim();
+          collectedFields['mobilePhone'] = mobilePhoneCtrl.text.trim();
+          collectedFields['email'] = emailCtrl.text.trim();
         }
 
         createdRecords.add(
@@ -6405,6 +6759,15 @@ class _HomeScreenState extends State<HomeScreen> {
     while (editProofPathList.length < editProofBase64List.length) {
       editProofPathList.add('');
     }
+
+    // 5. 명함관리 컨트롤러
+    final companyNameCtrl =
+        TextEditingController(text: f['companyName'] ?? '');
+    final siteNameCtrl = TextEditingController(text: f['siteName'] ?? '');
+    final personNameCtrl = TextEditingController(text: f['personName'] ?? '');
+    final mobilePhoneCtrl =
+        TextEditingController(text: f['mobilePhone'] ?? '');
+    final emailCtrl = TextEditingController(text: f['email'] ?? '');
 
     final saved = await showDialog<bool>(
       context: context,
@@ -6892,6 +7255,35 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
                       ],
+                      if (chosenCategory == DocCategory.businessCard) ...[
+                        _buildField(
+                          companyNameCtrl,
+                          '회사명',
+                          '예: 현대건설(주), 삼성물산',
+                        ),
+                        _buildField(
+                          siteNameCtrl,
+                          '현장명 (또는 부서명)',
+                          '예: 반포주공1단지 재건축현장, 공무팀',
+                        ),
+                        _buildField(
+                          personNameCtrl,
+                          '이름',
+                          '예: 홍길동',
+                        ),
+                        _buildField(
+                          mobilePhoneCtrl,
+                          '휴대폰번호 (클릭 시 전화 연결)',
+                          '예: 010-1234-5678',
+                          keyboardType: TextInputType.phone,
+                        ),
+                        _buildField(
+                          emailCtrl,
+                          '이메일주소 (클릭 시 메일 보내기)',
+                          '예: gildong@company.com',
+                          keyboardType: TextInputType.emailAddress,
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -6984,6 +7376,12 @@ class _HomeScreenState extends State<HomeScreen> {
         updatedFields['proofPathsJson'] = jsonEncode(editProofPathList);
         updatedFields['proofStatus'] = '첨부(${editProofPathList.length}장)';
       }
+    } else if (chosenCategory == DocCategory.businessCard) {
+      updatedFields['companyName'] = companyNameCtrl.text.trim();
+      updatedFields['siteName'] = siteNameCtrl.text.trim();
+      updatedFields['personName'] = personNameCtrl.text.trim();
+      updatedFields['mobilePhone'] = mobilePhoneCtrl.text.trim();
+      updatedFields['email'] = emailCtrl.text.trim();
     }
 
     final idx = _records.indexWhere((r) => r.id == record.id);
@@ -9641,6 +10039,8 @@ class _HomeScreenState extends State<HomeScreen> {
         records.every((r) => r.category == DocCategory.travel);
     final allMedical =
         records.every((r) => r.category == DocCategory.medical);
+    final allBusinessCard =
+        records.every((r) => r.category == DocCategory.businessCard);
 
     if (majorCat == DocCategory.officialIn ||
         majorCat == DocCategory.officialOut ||
@@ -9813,6 +10213,42 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       sb.write('</tbody></table>');
       return sb.toString();
+    } else if (majorCat == DocCategory.businessCard || allBusinessCard) {
+      sb.write('<table class="app-fixed-table" style="width:636px;"><thead><tr>');
+      sb.write('<th style="width:108px;">회사명</th>');
+      sb.write('<th style="width:108px;">현장명</th>');
+      sb.write('<th style="width:68px;">이름</th>');
+      sb.write('<th style="width:124px;">휴대폰번호 (📞전화)</th>');
+      sb.write('<th style="width:160px;">이메일주소 (✉️메일)</th>');
+      sb.write('<th style="width:68px;">수정/삭제</th>');
+      sb.write('</tr></thead><tbody>');
+      for (final item in records) {
+        final f = item.fields;
+        final cls = item.id == firstId ? 'active' : '';
+        final comp = (f['companyName'] ?? '-').trim().isNotEmpty ? f['companyName']!.trim() : '-';
+        final site = (f['siteName'] ?? '-').trim().isNotEmpty ? f['siteName']!.trim() : '-';
+        final name = (f['personName'] ?? '-').trim().isNotEmpty ? f['personName']!.trim() : '-';
+        final phone = (f['mobilePhone'] ?? '').trim();
+        final email = (f['email'] ?? '').trim();
+        final safeId = _escapeHtmlText(item.id);
+        final phoneDigits = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+        final phoneHtml = (phone.isNotEmpty && phone != '-')
+            ? '<a href="tel:${_escapeHtmlText(phoneDigits)}" onclick="event.stopPropagation();" style="color:#15803d; font-weight:700; text-decoration:underline;">📞 ${_escapeHtmlText(phone)}</a>'
+            : '-';
+        final emailHtml = (email.isNotEmpty && email != '-')
+            ? '<a href="mailto:${_escapeHtmlText(email)}" onclick="event.stopPropagation();" style="color:#1d4ed8; font-weight:700; text-decoration:underline;">✉️ ${_escapeHtmlText(email)}</a>'
+            : '-';
+        sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
+        sb.write('<td style="width:108px; font-weight:700;">${_escapeHtmlText(comp)}</td>');
+        sb.write('<td style="width:108px;">${_escapeHtmlText(site)}</td>');
+        sb.write('<td style="width:68px; font-weight:700;">${_escapeHtmlText(name)}</td>');
+        sb.write('<td style="width:124px;">$phoneHtml</td>');
+        sb.write('<td style="width:160px;">$emailHtml</td>');
+        sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
+        sb.write('</tr>');
+      }
+      sb.write('</tbody></table>');
+      return sb.toString();
     } else {
       sb.write('<table class="app-fixed-table" style="width:490px;"><thead><tr>');
       sb.write('<th style="width:72px;">분류</th>');
@@ -9870,6 +10306,8 @@ class _HomeScreenState extends State<HomeScreen> {
         records.every((r) => r.category == DocCategory.travel);
     final bool isAllMedical = records.isNotEmpty &&
         records.every((r) => r.category == DocCategory.medical);
+    final bool isAllBusinessCard = records.isNotEmpty &&
+        records.every((r) => r.category == DocCategory.businessCard);
 
     final List<String> allowedTabs = isAllOfficial
         ? [DocCategory.officialIn, DocCategory.officialOut]
@@ -9879,7 +10317,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? [DocCategory.travel]
                 : isAllMedical
                     ? [DocCategory.medical]
-                    : [DocCategory.officialIn, DocCategory.officialOut, DocCategory.invoice, DocCategory.travel, DocCategory.medical];
+                    : isAllBusinessCard
+                        ? [DocCategory.businessCard]
+                        : [
+                            DocCategory.officialIn,
+                            DocCategory.officialOut,
+                            DocCategory.invoice,
+                            DocCategory.travel,
+                            DocCategory.medical,
+                            DocCategory.businessCard,
+                          ];
     final String allowedTabsJson = jsonEncode(allowedTabs);
 
     String majorCat = forcedInitialTab ?? _selectedCategoryFilter;
@@ -11110,6 +11557,16 @@ class _HomeScreenState extends State<HomeScreen> {
           cmp = String(fa.productName || '').trim().localeCompare(String(fb.productName || '').trim(), 'ko');
         } else if (sortColumn === 'specName') {
           cmp = String(fa.specName || '').trim().localeCompare(String(fb.specName || '').trim(), 'ko');
+        } else if (sortColumn === 'companyName') {
+          cmp = String(fa.companyName || '').trim().localeCompare(String(fb.companyName || '').trim(), 'ko');
+        } else if (sortColumn === 'siteName') {
+          cmp = String(fa.siteName || '').trim().localeCompare(String(fb.siteName || '').trim(), 'ko');
+        } else if (sortColumn === 'personName') {
+          cmp = String(fa.personName || '').trim().localeCompare(String(fb.personName || '').trim(), 'ko');
+        } else if (sortColumn === 'mobilePhone') {
+          cmp = String(fa.mobilePhone || '').trim().localeCompare(String(fb.mobilePhone || '').trim(), 'ko');
+        } else if (sortColumn === 'email') {
+          cmp = String(fa.email || '').trim().localeCompare(String(fb.email || '').trim(), 'ko');
         } else {
           cmp = extractSortableDateStr(a).localeCompare(extractSortableDateStr(b));
         }
@@ -11345,6 +11802,13 @@ class _HomeScreenState extends State<HomeScreen> {
         const sub = f.subCategory ? ('[' + f.subCategory + '] ') : '';
         return sub + (f.clinicName || '병원/약국명 미상');
       }
+      if (item.category === '명함관리') {
+        const comp = (f.companyName || '').trim();
+        const site = (f.siteName || '').trim();
+        const name = (f.personName || '').trim() || '명함';
+        const pfx = comp ? (site ? ('[' + comp + ' · ' + site + '] ') : ('[' + comp + '] ')) : (site ? ('[' + site + '] ') : '');
+        return pfx + name;
+      }
       return '-';
     }
 
@@ -11364,6 +11828,9 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       if (item.category === '병원비') {
         return '수납액: ' + formatNumber(getNumericAmount(item)) + '원 | 사업자번호: ' + (f.bizRegNumber || '-');
+      }
+      if (item.category === '명함관리') {
+        return '휴대폰: ' + (f.mobilePhone || '-') + ' | 이메일: ' + (f.email || '-');
       }
       return '';
     }
@@ -11644,6 +12111,43 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
             '<td onclick="event.stopPropagation(); toggleSingleMedicalClaimInHtml(\\'' + sid + '\\');" style="cursor:pointer;">' + claimBadge + '</td>' +
             '<td onclick="event.stopPropagation(); selectRow(\\'' + sid + '\\'); triggerAddProofForRecord(\\'' + sid + '\\');">' + proofBadge + '</td>' +
+            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
+            '</tr>';
+        });
+        html += '</tbody></table>';
+      } else  if (cat === '명함관리') {
+        const defaultWidths = [108, 108, 68, 124, 160, 68];
+        const cg = buildTableColGroup(defaultWidths);
+        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
+          buildHeaderCell('회사명', 108, 0, 'companyName') +
+          buildHeaderCell('현장명', 108, 1, 'siteName') +
+          buildHeaderCell('이름', 68, 2, 'personName') +
+          buildHeaderCell('휴대폰번호 (📞전화)', 124, 3, 'mobilePhone') +
+          buildHeaderCell('이메일주소 (✉️메일)', 160, 4, 'email') +
+          buildHeaderCell('수정/삭제', 68, 5, null) +
+          '</tr></thead><tbody>';
+        items.forEach(function(item) {
+          const f = item.fields || {};
+          const cls = item.id === selectedId ? 'active' : '';
+          const comp = (f.companyName || '').trim() || '-';
+          const site = (f.siteName || '').trim() || '-';
+          const name = (f.personName || '').trim() || '-';
+          const phone = (f.mobilePhone || '').trim();
+          const email = (f.email || '').trim();
+          const phoneDigits = phone.replace(/[^0-9+]/g, '');
+          const phoneHtml = (phone && phone !== '-')
+            ? ('<a href="tel:' + escapeHtml(phoneDigits) + '" onclick="event.stopPropagation();" style="color:#15803d; font-weight:700; text-decoration:underline;">📞 ' + escapeHtml(phone) + '</a>')
+            : '-';
+          const emailHtml = (email && email !== '-')
+            ? ('<a href="mailto:' + escapeHtml(email) + '" onclick="event.stopPropagation();" style="color:#1d4ed8; font-weight:700; text-decoration:underline;">✉️ ' + escapeHtml(email) + '</a>')
+            : '-';
+          const sid = escapeHtml(item.id);
+          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
+            '<td style="font-weight:700;">' + escapeHtml(comp) + '</td>' +
+            '<td>' + escapeHtml(site) + '</td>' +
+            '<td style="font-weight:700;">' + escapeHtml(name) + '</td>' +
+            '<td>' + phoneHtml + '</td>' +
+            '<td>' + emailHtml + '</td>' +
             '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
@@ -11940,6 +12444,12 @@ class _HomeScreenState extends State<HomeScreen> {
         html += fieldInput('clinicName', '병원/약국 상호', f.clinicName);
         html += fieldInput('totalPaid', '수납 금액 (숫자만)', f.totalPaid);
         html += fieldInput('bizRegNumber', '사업자등록번호', f.bizRegNumber);
+      } else if (rec.category === '명함관리') {
+        html += fieldInput('companyName', '회사명', f.companyName);
+        html += fieldInput('siteName', '현장명 (또는 부서명)', f.siteName);
+        html += fieldInput('personName', '이름', f.personName);
+        html += fieldInput('mobilePhone', '휴대폰번호', f.mobilePhone);
+        html += fieldInput('email', '이메일주소', f.email);
       }
 
       body.innerHTML = html;
@@ -12251,6 +12761,14 @@ class _HomeScreenState extends State<HomeScreen> {
           MapEntry('상호', f['clinicName'] ?? '-'),
           MapEntry('총수납금액', '${DocRecord._formatCurrency(f['totalPaid'])}원'),
           MapEntry('사업자등록번호', f['bizRegNumber'] ?? '-'),
+        ];
+      case DocCategory.businessCard:
+        return [
+          MapEntry('회사명', f['companyName'] ?? '-'),
+          MapEntry('현장명', f['siteName'] ?? '-'),
+          MapEntry('이름', f['personName'] ?? '-'),
+          MapEntry('휴대폰번호', f['mobilePhone'] ?? '-'),
+          MapEntry('이메일주소', f['email'] ?? '-'),
         ];
       default:
         return [];
@@ -13010,7 +13528,214 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // 5) [전체] 탭에서도 깔끔한 표 형식으로 표시 + 수정/삭제 지원
+    // ★ 5) 명함관리: 회사명 - 현장명 - 이름 - 휴대폰번호(클릭 시 전화연결) - 이메일주소(클릭 시 메일보내기) + 수정/삭제
+    if (_selectedCategoryFilter == DocCategory.businessCard) {
+      return ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+        child: SingleChildScrollView(
+          controller: _tableHorizontalScrollCtrl,
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: 636,
+            child: Column(
+              children: [
+                Container(
+                  color: const Color(0xFFE2E8F0),
+                  child: IntrinsicHeight(
+                    child: Row(
+                      children: [
+                        _buildFixedHeaderCell('회사명', width: 108, sortKey: 'companyName'),
+                        _buildFixedHeaderCell('현장명', width: 108, sortKey: 'siteName'),
+                        _buildFixedHeaderCell('이름', width: 68, sortKey: 'personName'),
+                        _buildFixedHeaderCell('휴대폰번호 (📞전화)', width: 124, sortKey: 'mobilePhone'),
+                        _buildFixedHeaderCell('이메일주소 (✉️메일)', width: 160, sortKey: 'email'),
+                        _buildFixedHeaderCell('수정/삭제', width: 68),
+                      ],
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: items.length,
+                    itemBuilder: (ctx, idx) {
+                      final rec = items[idx];
+                      final f = rec.fields;
+                      final isSelected = _selectedRecord?.id == rec.id;
+                      final compStr = (f['companyName'] ?? '').trim().isNotEmpty
+                          ? f['companyName']!.trim()
+                          : '-';
+                      final siteStr = (f['siteName'] ?? '').trim().isNotEmpty
+                          ? f['siteName']!.trim()
+                          : '-';
+                      final nameStr = (f['personName'] ?? '').trim().isNotEmpty
+                          ? f['personName']!.trim()
+                          : '-';
+                      final phoneStr = (f['mobilePhone'] ?? '').trim();
+                      final emailStr = (f['email'] ?? '').trim();
+
+                      return InkWell(
+                        onTap: () => setState(() => _selectedRecord = rec),
+                        onLongPress: () => _editLocalRecord(rec),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFFDBEAFE)
+                                : Colors.white,
+                            border: const Border(
+                              bottom: BorderSide(
+                                  color: Color(0xFFCBD5E1), width: 1),
+                            ),
+                          ),
+                          child: IntrinsicHeight(
+                            child: Row(
+                              children: [
+                                _buildFixedDataCell(
+                                  compStr,
+                                  width: 108,
+                                  isSelected: isSelected,
+                                  forceBold: true,
+                                ),
+                                _buildFixedDataCell(
+                                  siteStr,
+                                  width: 108,
+                                  isSelected: isSelected,
+                                ),
+                                _buildFixedDataCell(
+                                  nameStr,
+                                  width: 68,
+                                  isSelected: isSelected,
+                                  textColor: const Color(0xFF0F172A),
+                                  forceBold: true,
+                                ),
+                                // ★ 휴대폰번호 칸: 클릭 시 해당 명함을 선택함과 동시에 즉시 전화 걸기 모드로 연결!
+                                InkWell(
+                                  onTap: () {
+                                    setState(() => _selectedRecord = rec);
+                                    if (phoneStr.isNotEmpty && phoneStr != '-') {
+                                      _launchPhoneDialer(phoneStr);
+                                    } else {
+                                      _showSnack('등록된 휴대폰번호가 없습니다. 수정(✏️) 버튼으로 번호를 입력해 주세요.');
+                                    }
+                                  },
+                                  child: Container(
+                                    width: 124,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 6, horizontal: 4),
+                                    decoration: const BoxDecoration(
+                                      border: Border(
+                                        right: BorderSide(
+                                            color: Color(0xFFCBD5E1), width: 1),
+                                      ),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: phoneStr.isNotEmpty && phoneStr != '-'
+                                        ? Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(
+                                                Icons.phone_in_talk,
+                                                size: 13,
+                                                color: Color(0xFF15803D),
+                                              ),
+                                              const SizedBox(width: 3),
+                                              Flexible(
+                                                child: Text(
+                                                  phoneStr,
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Color(0xFF15803D),
+                                                    decoration: TextDecoration
+                                                        .underline,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          )
+                                        : const Text(
+                                            '-',
+                                            style: TextStyle(
+                                                fontSize: 11,
+                                                color: Color(0xFF64748B)),
+                                          ),
+                                  ),
+                                ),
+                                // ★ 이메일주소 칸: 클릭 시 해당 명함을 선택함과 동시에 즉시 메일 보내기로 연결!
+                                InkWell(
+                                  onTap: () {
+                                    setState(() => _selectedRecord = rec);
+                                    if (emailStr.isNotEmpty && emailStr != '-') {
+                                      _launchEmailComposer(emailStr);
+                                    } else {
+                                      _showSnack('등록된 이메일주소가 없습니다. 수정(✏️) 버튼으로 이메일을 입력해 주세요.');
+                                    }
+                                  },
+                                  child: Container(
+                                    width: 160,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 6, horizontal: 4),
+                                    decoration: const BoxDecoration(
+                                      border: Border(
+                                        right: BorderSide(
+                                            color: Color(0xFFCBD5E1), width: 1),
+                                      ),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: emailStr.isNotEmpty && emailStr != '-'
+                                        ? Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(
+                                                Icons.email_outlined,
+                                                size: 13,
+                                                color: Color(0xFF1D4ED8),
+                                              ),
+                                              const SizedBox(width: 3),
+                                              Flexible(
+                                                child: Text(
+                                                  emailStr,
+                                                  textAlign: TextAlign.center,
+                                                  style: const TextStyle(
+                                                    fontSize: 10.8,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Color(0xFF1D4ED8),
+                                                    decoration: TextDecoration
+                                                        .underline,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          )
+                                        : const Text(
+                                            '-',
+                                            style: TextStyle(
+                                                fontSize: 11,
+                                                color: Color(0xFF64748B)),
+                                          ),
+                                  ),
+                                ),
+                                _buildRowActionButtons(rec),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 6) [전체] 탭에서도 깔끔한 표 형식으로 표시 + 수정/삭제 지원
     return ScrollConfiguration(
       behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
       child: SingleChildScrollView(
@@ -14114,8 +14839,16 @@ class _HomeScreenState extends State<HomeScreen> {
           FloatingActionButton.extended(
             heroTag: 'camera_btn',
             onPressed: () => _addRecordDialog(ImageSource.camera),
-            icon: const Icon(Icons.camera_alt),
-            label: const Text('서류 촬영'),
+            icon: Icon(
+              _selectedCategoryFilter == DocCategory.businessCard
+                  ? Icons.badge_outlined
+                  : Icons.camera_alt,
+            ),
+            label: Text(
+              _selectedCategoryFilter == DocCategory.businessCard
+                  ? '명함 촬영'
+                  : '서류 촬영',
+            ),
           ),
         ],
       ),
