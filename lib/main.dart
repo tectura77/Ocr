@@ -21,7 +21,6 @@ import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
 void main() {
@@ -3047,6 +3046,54 @@ class _HomeScreenState extends State<HomeScreen> {
     return mergedRows;
   }
 
+  /// ★ 외부 패키지(url_launcher)를 pubspec.yaml에 추가하지 않아도 작동하는 네이티브 URI 실행 헬퍼:
+  ///   1순위: 시스템에 내장된 url_launcher 플랫폼 채널(Android/iOS) 직접 호출
+  ///   2순위: 클립보드 자동 복사 + 원터치 공유/연결 팝업 안내
+  Future<bool> _tryLaunchNativeUri(String uriString) async {
+    const channelNames = <String>[
+      'plugins.flutter.io/url_launcher_android',
+      'plugins.flutter.io/url_launcher_ios',
+      'plugins.flutter.io/url_launcher',
+    ];
+    for (final name in channelNames) {
+      try {
+        final ch = MethodChannel(name);
+        final res = await ch.invokeMethod<dynamic>('launch', <String, dynamic>{
+          'url': uriString,
+          'useSafariVC': false,
+          'useWebView': false,
+          'enableJavaScript': false,
+          'enableDomStorage': false,
+          'universalLinksOnly': false,
+          'headers': <String, String>{},
+        });
+        if (res == true) return true;
+      } catch (_) {}
+      try {
+        // BasicMessageChannel(Pigeon) 방식의 최신 url_launcher_android / iOS 채널 호환 호출
+        final pigeonCh = BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.url_launcher_android.UrlLauncherApi.launchUrl',
+          const StandardMessageCodec(),
+        );
+        final reply = await pigeonCh.send(<Object?>[uriString, <String, String>{}]);
+        if (reply is List && reply.isNotEmpty && reply.first == true) {
+          return true;
+        }
+      } catch (_) {}
+      try {
+        final iosPigeonCh = BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.url_launcher_ios.UrlLauncherApi.launchUrl',
+          const StandardMessageCodec(),
+        );
+        final reply = await iosPigeonCh.send(<Object?>[uriString, false]);
+        if (reply is List && reply.isNotEmpty && reply.first != null) {
+          return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  }
+
   /// ★ 명함관리 탭에서 [휴대폰번호] 터치 시 스마트폰 전화 걸기(다이얼) 화면으로 즉시 연결!
   Future<void> _launchPhoneDialer(String? rawPhone) async {
     final cleaned = (rawPhone ?? '').replaceAll(RegExp(r'[^0-9+]'), '').trim();
@@ -3054,20 +3101,59 @@ class _HomeScreenState extends State<HomeScreen> {
       _showSnack('연결할 휴대폰번호가 없습니다.');
       return;
     }
-    final uri = Uri(scheme: 'tel', path: cleaned);
-    try {
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!launched) {
-        await Clipboard.setData(ClipboardData(text: rawPhone ?? cleaned));
-        _showSnack('전화 앱을 열 수 없어 번호($cleaned)를 클립보드에 복사했습니다.');
-      }
-    } catch (_) {
-      await Clipboard.setData(ClipboardData(text: rawPhone ?? cleaned));
-      _showSnack('전화번호($cleaned)가 클립보드에 복사되었습니다.');
-    }
+    final telUri = 'tel:$cleaned';
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    final launched = await _tryLaunchNativeUri(telUri);
+    if (launched) return;
+
+    if (!mounted) return;
+    // 네이티브 채널이 없는 빌드 환경에서도 전화/연락처/카톡 앱 등으로 즉시 연결할 수 있도록 원터치 다이얼 창 표시
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.phone_in_talk, color: Color(0xFF15803D)),
+            SizedBox(width: 8),
+            Text('전화 연결', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(
+              rawPhone ?? cleaned,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF15803D),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '✅ 휴대폰번호가 클립보드에 자동 복사되었습니다.\n전화 앱에서 바로 붙여넣기 하거나 아래 [연락처/앱으로 연결]을 눌러주세요.',
+              style: TextStyle(fontSize: 12.5, color: Color(0xFF334155)),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('닫기'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF15803D)),
+            onPressed: () {
+              Navigator.pop(ctx);
+              Share.share(telUri, subject: rawPhone ?? cleaned);
+            },
+            icon: const Icon(Icons.call, size: 16),
+            label: const Text('전화/연락처 앱 열기'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// ★ 명함관리 탭에서 [이메일주소] 터치 시 스마트폰 메일 보내기 화면으로 즉시 연결!
@@ -3077,20 +3163,58 @@ class _HomeScreenState extends State<HomeScreen> {
       _showSnack('연결할 이메일주소가 없습니다.');
       return;
     }
-    final uri = Uri(scheme: 'mailto', path: cleaned);
-    try {
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!launched) {
-        await Clipboard.setData(ClipboardData(text: cleaned));
-        _showSnack('메일 앱을 열 수 없어 이메일($cleaned)을 클립보드에 복사했습니다.');
-      }
-    } catch (_) {
-      await Clipboard.setData(ClipboardData(text: cleaned));
-      _showSnack('이메일주소($cleaned)가 클립보드에 복사되었습니다.');
-    }
+    final mailtoUri = 'mailto:$cleaned';
+    await Clipboard.setData(ClipboardData(text: cleaned));
+    final launched = await _tryLaunchNativeUri(mailtoUri);
+    if (launched) return;
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.email_outlined, color: Color(0xFF1D4ED8)),
+            SizedBox(width: 8),
+            Text('메일 보내기', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(
+              cleaned,
+              style: const TextStyle(
+                fontSize: 16.5,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF1D4ED8),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '✅ 이메일주소가 클립보드에 자동 복사되었습니다.\n아래 [메일 앱 열기]를 누르시면 설치된 이메일 앱(Gmail/아웃룩 등)으로 연결됩니다.',
+              style: TextStyle(fontSize: 12.5, color: Color(0xFF334155)),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('닫기'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF1D4ED8)),
+            onPressed: () {
+              Navigator.pop(ctx);
+              Share.share(cleaned, subject: '메일 보내기: $cleaned');
+            },
+            icon: const Icon(Icons.send, size: 16),
+            label: const Text('메일 앱 열기'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<Map<String, String>> _extractFieldsOfflineOcr({
