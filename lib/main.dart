@@ -1066,6 +1066,8 @@ class DocRecord {
       dateStr = formatDotDate(fields['date']);
     } else if (category == DocCategory.medical) {
       dateStr = formatDotDate(fields['issueDate']);
+    } else if (category == DocCategory.businessCard) {
+      dateStr = formatDotDate(fields['cardDate']);
     }
     if (dateStr == '-' || dateStr.isEmpty) {
       dateStr = createdAt.split(' ').first.replaceAll('-', '.');
@@ -1262,6 +1264,132 @@ class DocRecord {
     };
   }
 
+  /// ★ 결재자 이름에 '소장'이라는 글자가 포함되어 있는지 판별 (예: 이경훈 소장, 현장소장, 김소장 등)
+  static bool isDirectorName(String? name) {
+    if (name == null) return false;
+    return name.contains('소장');
+  }
+
+  /// ★ fields['approvalsJson']에 저장된 결재/검토 이력 파싱:
+  /// - 각 항목은 {'name': '이름', 'date': 'YYYY.MM.DD', 'role': '검토' | '결재'}
+  /// - 순서 규칙: 먼저 누른 검토자들이 위에서 아래로 순서대로 쌓이고,
+  ///   '소장'이 포함된 결재자는 항상 맨 밑(최종 결재 위치)에 위치합니다!
+  static List<Map<String, String>> parseApprovalEntriesFromRaw(String? rawJson) {
+    if (rawJson == null || rawJson.trim().isEmpty) return [];
+    try {
+      final decoded = jsonDecode(rawJson);
+      if (decoded is List) {
+        final reviewers = <Map<String, String>>[];
+        final directors = <Map<String, String>>[];
+        for (final item in decoded) {
+          if (item is Map) {
+            final name = (item['name']?.toString() ?? '').trim();
+            final date = formatDotDate(item['date']?.toString() ?? '');
+            if (name.isEmpty) continue;
+            final isDir = isDirectorName(name) || item['role'] == '결재';
+            final entry = <String, String>{
+              'name': name,
+              'date': date == '-' ? '' : date,
+              'role': isDir ? '결재' : '검토',
+            };
+            if (isDir) {
+              directors.add(entry);
+            } else {
+              reviewers.add(entry);
+            }
+          }
+        }
+        // 일반 검토자는 위에서 아래로, 소장(최종 결재자)은 항상 맨 밑에 배치!
+        return [...reviewers, ...directors];
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  List<Map<String, String>> get approvalEntries =>
+      parseApprovalEntriesFromRaw(fields['approvalsJson']);
+
+  /// ★ 결재자 중 '소장' 글자가 포함된 결재자가 있으면 최종 [결재완료]!
+  bool get isDirectorApprovalCompleted =>
+      approvalEntries.any((e) => isDirectorName(e['name']) || e['role'] == '결재');
+
+  /// ★ 표의 [결재] 열 버튼에 표시할 텍스트:
+  /// - 소장이 결재했으면: '결재완료' (하단에 총 인원 표시)
+  /// - 일반 사용자가 1명 이상 눌렀으면: '검토 (N명)'
+  /// - 아직 아무도 안 눌렀으면: '결재'
+  String get approvalCellPrimaryText {
+    final list = approvalEntries;
+    if (list.isEmpty) return '결재';
+    if (isDirectorApprovalCompleted) return '결재완료';
+    return '검토';
+  }
+
+  String get approvalCellSubText {
+    final list = approvalEntries;
+    if (list.isEmpty) return '터치하여 결재';
+    final last = list.last;
+    return '${last['name']}(${list.length}명)';
+  }
+
+  /// ★ 새 결재자(userName, dateStr)를 추가한 뒤 정렬된 결재 리스트 JSON 문자열 반환
+  /// - 이미 같은 이름(userName)으로 결재/검토한 기록이 있으면 날짜를 최신으로 갱신하거나 유지하고,
+  /// - 새로운 사람이면 추가하되, '소장'이 들어간 사용자는 무조건 맨 밑에 위치하도록 정렬!
+  static String addApproverToRawJson(
+    String? existingRawJson,
+    String userName,
+    String dateStr,
+  ) {
+    final cleanName = userName.trim();
+    if (cleanName.isEmpty) return existingRawJson ?? '';
+    final current = parseApprovalEntriesFromRaw(existingRawJson);
+    final isDir = isDirectorName(cleanName);
+    final formattedDate = formatDotDate(dateStr);
+
+    // 같은 이름이 이미 있으면 제거 후 새로 추가(순서 및 최신 날짜 반영)
+    current.removeWhere((e) => e['name'] == cleanName);
+    current.add({
+      'name': cleanName,
+      'date': formattedDate == '-' ? dateStr : formattedDate,
+      'role': isDir ? '결재' : '검토',
+    });
+
+    final reviewers = current
+        .where((e) => !isDirectorName(e['name']) && e['role'] != '결재')
+        .toList();
+    final directors = current
+        .where((e) => isDirectorName(e['name']) || e['role'] == '결재')
+        .toList();
+    final ordered = [...reviewers, ...directors];
+    return jsonEncode(ordered);
+  }
+
+  /// ★ 현장공유방 동기화 시 원격(공유방) 기록과 내 로컬 기록의 결재 이력을 누락 없이 합치는 함수
+  /// - 어느 한쪽에서 추가된 검토자/결재자라도 절대 날아가지 않고 위에서 아래로 합쳐지며,
+  ///   소장 결재자는 항상 맨 밑에 위치합니다!
+  static String mergeApprovalsRawJson(String? rawA, String? rawB) {
+    final listA = parseApprovalEntriesFromRaw(rawA);
+    final listB = parseApprovalEntriesFromRaw(rawB);
+    if (listA.isEmpty && listB.isEmpty) return '';
+    if (listA.isEmpty) return jsonEncode(listB);
+    if (listB.isEmpty) return jsonEncode(listA);
+
+    final merged = <Map<String, String>>[];
+    final seenNames = <String>{};
+    for (final item in [...listA, ...listB]) {
+      final nm = (item['name'] ?? '').trim();
+      if (nm.isEmpty || seenNames.contains(nm)) continue;
+      seenNames.add(nm);
+      merged.add(item);
+    }
+    final reviewers = merged
+        .where((e) => !isDirectorName(e['name']) && e['role'] != '결재')
+        .toList();
+    final directors = merged
+        .where((e) => isDirectorName(e['name']) || e['role'] == '결재')
+        .toList();
+    return jsonEncode([...reviewers, ...directors]);
+  }
+
   factory DocRecord.fromJson(Map<String, dynamic> json) {
     final rawFields = json['fields'] as Map<String, dynamic>? ?? {};
     final fieldsMap = rawFields.map((k, v) {
@@ -1381,6 +1509,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final ImagePicker _picker = ImagePicker();
   final ScrollController _tableHorizontalScrollCtrl = ScrollController();
+  final TextEditingController _businessCardSearchCtrl = TextEditingController();
+  String _businessCardSearchQuery = '';
 
   bool _usesSubCategory(String cat) {
     return cat == DocCategory.travel || cat == DocCategory.medical;
@@ -1395,6 +1525,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _tableHorizontalScrollCtrl.dispose();
+    _businessCardSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -2597,6 +2728,8 @@ class _HomeScreenState extends State<HomeScreen> {
       raw = f['date'] ?? '';
     } else if (r.category == DocCategory.medical) {
       raw = f['issueDate'] ?? '';
+    } else if (r.category == DocCategory.businessCard) {
+      raw = f['cardDate'] ?? '';
     }
     final formatted = DocRecord.formatDotDate(raw);
     // ★ 주의: 기존 raw 문자열 내 `\$` 오타 때문에 정규식이 매칭되지 않아 createdAt으로 잘못 정렬되던 버그 수정!
@@ -2640,6 +2773,17 @@ class _HomeScreenState extends State<HomeScreen> {
         final ua = _resolveUploaderName(a);
         final ub = _resolveUploaderName(b);
         cmp = ua.compareTo(ub);
+      } else if (sortCol == 'approval') {
+        final int sa = a.isDirectorApprovalCompleted
+            ? 2
+            : (a.approvalEntries.isNotEmpty ? 1 : 0);
+        final int sb = b.isDirectorApprovalCompleted
+            ? 2
+            : (b.approvalEntries.isNotEmpty ? 1 : 0);
+        cmp = sa.compareTo(sb);
+        if (cmp == 0) {
+          cmp = a.approvalEntries.length.compareTo(b.approvalEntries.length);
+        }
       } else if (sortCol == 'subCategory') {
         final ca = a.subCategory.isNotEmpty ? a.subCategory : '미지정';
         final cb = b.subCategory.isNotEmpty ? b.subCategory : '미지정';
@@ -2746,6 +2890,18 @@ class _HomeScreenState extends State<HomeScreen> {
       base = subFiltered
           .where((r) => r.isMedicalClaimed == wantClaimed)
           .toList();
+    } else if (_selectedCategoryFilter == DocCategory.businessCard &&
+        _businessCardSearchQuery.trim().isNotEmpty) {
+      final q = _businessCardSearchQuery.trim().toLowerCase();
+      final qNoSpace = q.replaceAll(RegExp(r'\s+'), '');
+      base = subFiltered.where((r) {
+        final comp = (r.fields['companyName'] ?? '').toLowerCase();
+        final site = (r.fields['siteName'] ?? '').toLowerCase();
+        final name = (r.fields['personName'] ?? '').toLowerCase();
+        final combined = '$comp $site $name';
+        final combinedNoSpace = combined.replaceAll(RegExp(r'\s+'), '');
+        return combined.contains(q) || combinedNoSpace.contains(qNoSpace);
+      }).toList();
     }
     final repliedKeys = _computeRepliedDocNumKeys(_records);
     return _sortRecordsList(
@@ -5460,6 +5616,57 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ===========================================================================
+  // ★ 사진 EXIF 메타데이터(DateTimeOriginal / DateTimeDigitized / DateTime)에서
+  //   실제 찍은 날짜(YYYY.MM.DD)를 추출하고, 메타데이터가 없으면 등록일(오늘 날짜)을 반환!
+  // ===========================================================================
+  Future<String> _extractPhotoTakenDateOrToday(
+    Uint8List rawBytes,
+    XFile picked,
+  ) async {
+    final todayDot = DateFormat('yyyy.MM.dd').format(DateTime.now());
+    try {
+      // 1순위: JPEG/EXIF 바이너리 헤더 내 'YYYY:MM:DD HH:MM:SS' 또는 'YYYY-MM-DD HH:MM:SS' 날짜 문자열 직접 스캔
+      // (EXIF DateTimeOriginal 0x9003 / DateTimeDigitized 0x9004 / DateTime 0x0132 모두 ASCII 'YYYY:MM:DD HH:MM:SS' 포맷으로 헤더 상단에 기록됨)
+      final scanLen = math.min(rawBytes.length, 65536);
+      final headerAscii = String.fromCharCodes(
+        rawBytes.sublist(0, scanLen).map((b) => (b >= 32 && b <= 126) ? b : 32),
+      );
+      final exifDateMatches = RegExp(
+        r'(20[0-3]\d|19[89]\d)[:\-./](0[1-9]|1[0-2])[:\-./](0[1-9]|[12]\d|3[01])\s+[0-2]\d:[0-5]\d:[0-5]\d',
+      ).allMatches(headerAscii);
+      for (final m in exifDateMatches) {
+        final yr = m.group(1)!;
+        final mo = m.group(2)!;
+        final dy = m.group(3)!;
+        return '$yr.$mo.$dy';
+      }
+
+      // 2순위: package:image 디코더의 exif 데이터에서 DateTimeOriginal / DateTime 확인
+      final decoded = img.decodeImage(rawBytes);
+      if (decoded != null && decoded.exif.isNotEmpty) {
+        final exifStr = decoded.exif.toString();
+        final m = RegExp(
+          r'(20[0-3]\d|19[89]\d)[:\-./](0[1-9]|1[0-2])[:\-./](0[1-9]|[12]\d|3[01])',
+        ).firstMatch(exifStr);
+        if (m != null) {
+          return '${m.group(1)}.${m.group(2)}.${m.group(3)}';
+        }
+      }
+
+      // 3순위: 파일명(예: 20261103_083012.jpg, IMG_20261103_..., Screenshot_20261103-...)에 찍은 날짜가 있으면 추출
+      final baseName = p.basename(picked.path);
+      final fnMatch = RegExp(
+        r'(?<!\d)(20[0-3]\d)[-._]?(0[1-9]|1[0-2])[-._]?(0[1-9]|[12]\d|3[01])(?!\d)',
+      ).firstMatch(baseName);
+      if (fnMatch != null) {
+        return '${fnMatch.group(1)}.${fnMatch.group(2)}.${fnMatch.group(3)}';
+      }
+    } catch (_) {}
+    // 메타데이터가 없으면 명함관리에 올린 날짜(오늘 날짜) 반환
+    return todayDot;
+  }
+
+  // ===========================================================================
   // 사진 촬영 → 입력 다이얼로그
   // ===========================================================================
   Future<void> _addRecordDialog(ImageSource source) async {
@@ -5507,6 +5714,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final subCategoryCtrl = TextEditingController(text: initialSubCat);
       final todayDotStr = DateFormat('yyyy.MM.dd').format(DateTime.now());
+      final photoTakenDateDot =
+          await _extractPhotoTakenDateOrToday(rawBytes, picked);
 
       // 1. 공문(수신) / 공문(발신) 컨트롤러
       final docTitleCtrl = TextEditingController();
@@ -5574,7 +5783,8 @@ class _HomeScreenState extends State<HomeScreen> {
       final List<String> medicalProofBase64List = <String>[];
       final List<String> medicalProofPathList = <String>[];
 
-      // 5. 명함관리 컨트롤러 (회사명, 현장명, 이름, 휴대폰번호, 이메일주소)
+      // 5. 명함관리 컨트롤러 (날짜[찍은날짜 메타데이터 우선, 없으면 등록일], 회사명, 현장명, 이름, 휴대폰번호, 이메일주소)
+      final cardDateCtrl = TextEditingController(text: photoTakenDateDot);
       final companyNameCtrl = TextEditingController();
       final siteNameCtrl = TextEditingController();
       final personNameCtrl = TextEditingController();
@@ -6555,8 +6765,13 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ],
 
-                        // 5. 명함관리 입력 폼 (회사명, 현장명, 이름, 휴대폰번호, 이메일주소)
+                        // 5. 명함관리 입력 폼 (날짜, 회사명, 현장명, 이름, 휴대폰번호, 이메일주소)
                         if (chosenCategory == DocCategory.businessCard) ...[
+                          _buildField(
+                            cardDateCtrl,
+                            '날짜 (사진 찍은 날짜 메타데이터 자동 적용 · 없을 시 등록일)',
+                            '예: 2026.11.03',
+                          ),
                           _buildField(
                             companyNameCtrl,
                             '회사명',
@@ -6712,6 +6927,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 '첨부(${medicalProofPathList.length}장)';
           }
         } else if (chosenCategory == DocCategory.businessCard) {
+          final rawCardDate = cardDateCtrl.text.trim();
+          collectedFields['cardDate'] = rawCardDate.isNotEmpty
+              ? DocRecord.formatDotDate(rawCardDate)
+              : photoTakenDateDot;
           collectedFields['companyName'] = companyNameCtrl.text.trim();
           collectedFields['siteName'] = siteNameCtrl.text.trim();
           collectedFields['personName'] = personNameCtrl.text.trim();
@@ -6885,6 +7104,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // 5. 명함관리 컨트롤러
+    final cardDateCtrl = TextEditingController(
+      text: DocRecord.formatDotDate(
+        (f['cardDate'] ?? '').trim().isNotEmpty
+            ? f['cardDate']
+            : record.createdAt.split(' ').first,
+      ),
+    );
     final companyNameCtrl =
         TextEditingController(text: f['companyName'] ?? '');
     final siteNameCtrl = TextEditingController(text: f['siteName'] ?? '');
@@ -7381,6 +7607,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                       if (chosenCategory == DocCategory.businessCard) ...[
                         _buildField(
+                          cardDateCtrl,
+                          '날짜 (찍은 날짜 / 등록일)',
+                          '예: 2026.11.03',
+                        ),
+                        _buildField(
                           companyNameCtrl,
                           '회사명',
                           '예: 현대건설(주), 삼성물산',
@@ -7501,6 +7732,9 @@ class _HomeScreenState extends State<HomeScreen> {
         updatedFields['proofStatus'] = '첨부(${editProofPathList.length}장)';
       }
     } else if (chosenCategory == DocCategory.businessCard) {
+      updatedFields['cardDate'] = cardDateCtrl.text.trim().isNotEmpty
+          ? DocRecord.formatDotDate(cardDateCtrl.text.trim())
+          : DocRecord.formatDotDate(record.createdAt.split(' ').first);
       updatedFields['companyName'] = companyNameCtrl.text.trim();
       updatedFields['siteName'] = siteNameCtrl.text.trim();
       updatedFields['personName'] = personNameCtrl.text.trim();
@@ -8246,10 +8480,33 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       int uploadedNewCount = 0;
       for (final r in myTargetRecords) {
-        if (!mergedBySig.containsKey(r.contentSignature)) {
+        final existingRemote = mergedBySig[r.contentSignature];
+        if (existingRemote == null) {
           uploadedNewCount++;
+          mergedBySig[r.contentSignature] = r;
+        } else {
+          // ★ 공유방에 이미 있는 서류와 내 로컬 서류를 병합할 때, 결재 이력(approvalsJson)과 올린사람 정보가 절대 유실되지 않도록 합침!
+          final mergedApprovals = DocRecord.mergeApprovalsRawJson(
+            existingRemote.fields['approvalsJson'],
+            r.fields['approvalsJson'],
+          );
+          final nf = Map<String, String>.from(r.fields);
+          if (mergedApprovals.isNotEmpty) {
+            nf['approvalsJson'] = mergedApprovals;
+          }
+          if ((nf['uploaderName'] ?? '').trim().isEmpty &&
+              (existingRemote.fields['uploaderName'] ?? '').trim().isNotEmpty) {
+            nf['uploaderName'] = existingRemote.fields['uploaderName']!;
+          }
+          mergedBySig[r.contentSignature] = DocRecord(
+            id: existingRemote.id,
+            category: r.category,
+            createdAt: r.createdAt,
+            imagePath: r.imagePath.isNotEmpty ? r.imagePath : existingRemote.imagePath,
+            base64Image: r.base64Image.isNotEmpty ? r.base64Image : existingRemote.base64Image,
+            fields: nf,
+          );
         }
-        mergedBySig[r.contentSignature] = r;
       }
 
       final mergedRoomList = mergedBySig.values.toList()
@@ -8307,6 +8564,13 @@ class _HomeScreenState extends State<HomeScreen> {
           final existing = _ensureUploaderField(allAppMap[r.contentSignature]!);
           final nf = Map<String, String>.from(existing.fields);
           nf['remoteImagePath'] = 'photos/doc_${existing.id}.jpg';
+          final mergedApprovals = DocRecord.mergeApprovalsRawJson(
+            r.fields['approvalsJson'],
+            existing.fields['approvalsJson'],
+          );
+          if (mergedApprovals.isNotEmpty) {
+            nf['approvalsJson'] = mergedApprovals;
+          }
           allAppMap[r.contentSignature] = DocRecord(
             id: existing.id,
             category: existing.category,
@@ -8491,19 +8755,34 @@ class _HomeScreenState extends State<HomeScreen> {
       for (int i = 0; i < remoteRecords.length; i++) {
         final r = remoteRecords[i];
         final localMatch = allAppMap[r.contentSignature];
-        if (localMatch != null &&
-            localMatch.imagePath.trim().isNotEmpty &&
-            File(localMatch.imagePath).existsSync()) {
+        if (localMatch != null) {
           final nf = Map<String, String>.from(r.fields);
           nf['remoteImagePath'] = 'photos/doc_${r.id}.jpg';
-          remoteRecords[i] = DocRecord(
+          final mergedApprovals = DocRecord.mergeApprovalsRawJson(
+            r.fields['approvalsJson'],
+            localMatch.fields['approvalsJson'],
+          );
+          if (mergedApprovals.isNotEmpty) {
+            nf['approvalsJson'] = mergedApprovals;
+          }
+          final bestPath = (localMatch.imagePath.trim().isNotEmpty &&
+                  File(localMatch.imagePath).existsSync())
+              ? localMatch.imagePath
+              : r.imagePath;
+          final updatedRec = DocRecord(
             id: r.id,
             category: r.category,
             createdAt: r.createdAt,
-            imagePath: localMatch.imagePath,
-            base64Image: '',
+            imagePath: bestPath,
+            base64Image: bestPath.isNotEmpty ? '' : localMatch.base64Image,
             fields: nf,
           );
+          remoteRecords[i] = updatedRec;
+          if (allAppMap[r.contentSignature]?.fields['approvalsJson'] !=
+              nf['approvalsJson']) {
+            allAppMap[r.contentSignature] = updatedRec;
+            added++;
+          }
         } else if (!allAppMap.containsKey(r.contentSignature)) {
           final nf = Map<String, String>.from(r.fields);
           nf['remoteImagePath'] = 'photos/doc_${r.id}.jpg';
@@ -8589,6 +8868,510 @@ class _HomeScreenState extends State<HomeScreen> {
         htmlContent: htmlContent,
       );
     }
+  }
+
+  /// ★ 결재/검토 시 앱 사용자 이름(_exporterUserName)이 비어 있으면 즉시 입력받아 저장하는 헬퍼
+  Future<String?> _ensureUserNameForApproval(BuildContext dialogCtx) async {
+    if (_exporterUserName.trim().isNotEmpty) {
+      return _exporterUserName.trim();
+    }
+    final nameCtrl = TextEditingController();
+    final entered = await showDialog<String>(
+      context: dialogCtx,
+      builder: (pCtx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.badge_outlined, color: Color(0xFF1E3A8A)),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '결재/검토자 이름 입력',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '결재 및 검토 기록에 표시할 앱 사용자 이름을 입력해 주세요.\n'
+              '(이름에 "소장"이 포함되면 결재 시 [결재완료]로 최종 승인됩니다)',
+              style: TextStyle(fontSize: 12.5, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: '내 이름 / 직함 (예: 이경훈, 김철수 소장)',
+                hintText: '한 번 입력하면 설정에 자동 저장됩니다',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(pCtx),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(pCtx, nameCtrl.text.trim()),
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
+    if (entered != null && entered.trim().isNotEmpty) {
+      final clean = entered.trim();
+      setState(() {
+        _exporterUserName = clean;
+      });
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsExporterNameKey, clean);
+      return clean;
+    }
+    return null;
+  }
+
+  /// ★ 특정 서류(rec)에 현재 앱 사용자의 결재/검토를 1건 추가하고 로컬 + 현장공유방에 즉시 반영!
+  Future<DocRecord?> _applyUserApprovalToRecord({
+    required BuildContext dialogCtx,
+    required DocRecord rec,
+    List<DocRecord>? shareRoomRecords,
+    bool? isOfficialRoom,
+    VoidCallback? onStateUpdated,
+  }) async {
+    final userName = await _ensureUserNameForApproval(dialogCtx);
+    if (userName == null || userName.isEmpty) return null;
+
+    final todayDot = DateFormat('yyyy.MM.dd').format(DateTime.now());
+    final newApprovalsJson = DocRecord.addApproverToRawJson(
+      rec.fields['approvalsJson'],
+      userName,
+      todayDot,
+    );
+    final updatedFields = Map<String, String>.from(rec.fields);
+    updatedFields['approvalsJson'] = newApprovalsJson;
+
+    final updatedRec = DocRecord(
+      id: rec.id,
+      category: rec.category,
+      createdAt: rec.createdAt,
+      imagePath: rec.imagePath,
+      base64Image: rec.base64Image,
+      fields: updatedFields,
+    );
+
+    // 1) 내 로컬 _records 업데이트
+    setState(() {
+      final idx = _records.indexWhere(
+        (r) => r.id == rec.id || r.contentSignature == rec.contentSignature,
+      );
+      if (idx != -1) {
+        final localImgPath = _records[idx].imagePath.trim().isNotEmpty
+            ? _records[idx].imagePath
+            : updatedRec.imagePath;
+        _records[idx] = DocRecord(
+          id: _records[idx].id,
+          category: updatedRec.category,
+          createdAt: updatedRec.createdAt,
+          imagePath: localImgPath,
+          base64Image: updatedRec.base64Image,
+          fields: updatedFields,
+        );
+        if (_selectedRecord?.id == _records[idx].id) {
+          _selectedRecord = _records[idx];
+        }
+      } else {
+        _records.insert(0, updatedRec);
+      }
+    });
+    await _saveLocalRecords();
+
+    // 2) 현장공유방 열람창 리스트가 열려 있으면 즉시 갱신 후 GitHub/OneDrive 통합 HTML에도 반영
+    if (shareRoomRecords != null) {
+      final rIdx = shareRoomRecords.indexWhere(
+        (r) => r.id == rec.id || r.contentSignature == rec.contentSignature,
+      );
+      if (rIdx != -1) {
+        shareRoomRecords[rIdx] = updatedRec;
+      }
+      if (onStateUpdated != null) onStateUpdated();
+      if (isOfficialRoom != null) {
+        await _pushUpdatedShareRoomList(
+          isOfficialRoom: isOfficialRoom,
+          updatedRoomRecords: shareRoomRecords,
+        );
+      }
+    } else if (DocCategory.isOfficial(rec.category) ||
+        rec.category == DocCategory.invoice) {
+      // 메인 화면에서 결재를 눌렀을 때도 공유방 설정이 되어 있으면 공유방 파일에 함께 반영 시도
+      if (onStateUpdated != null) onStateUpdated();
+    }
+
+    final bool isDirector = DocRecord.isDirectorName(userName);
+    _showSnack(
+      isDirector
+          ? '✅ [$userName] ($todayDot) 최종 결재가 완료되어 [결재완료]로 변경되었습니다!'
+          : '✅ [$userName] ($todayDot) 검토/결재 내역이 추가되었습니다.',
+    );
+    return updatedRec;
+  }
+
+  /// ★ 표의 [결재] 열을 눌렀을 때 동작:
+  /// - 아직 아무도 결재하지 않은 서류('[결재]' 상태): 누르는 즉시 앱 사용자 이름과 오늘 날짜가 추가됨!
+  ///   (만약 이름에 '소장'이 포함되어 있으면 즉시 '결재완료'로 변경되고 맨 밑에 추가됨)
+  /// - 이미 1명 이상 검토/결재한 서류('[검토]' 또는 '[결재완료]' 상태):
+  ///   누구누구가 언제 검토했고 결재했는지 위에서 아래로 한눈에 확인 가능한 전용 창이 뜨며,
+  ///   아직 내가 결재하지 않았다면 창 하단 버튼으로 내 이름과 날짜를 바로 추가할 수 있습니다!
+  Future<void> _onTapApprovalCell({
+    required BuildContext dialogCtx,
+    required DocRecord rec,
+    List<DocRecord>? shareRoomRecords,
+    bool? isOfficialRoom,
+    VoidCallback? onStateUpdated,
+  }) async {
+    final entries = rec.approvalEntries;
+    if (entries.isEmpty) {
+      // 아직 아무도 결재하지 않은 상태에서 처음 [결재]를 누르면 즉시 내 이름+날짜 추가!
+      await _applyUserApprovalToRecord(
+        dialogCtx: dialogCtx,
+        rec: rec,
+        shareRoomRecords: shareRoomRecords,
+        isOfficialRoom: isOfficialRoom,
+        onStateUpdated: onStateUpdated,
+      );
+      return;
+    }
+
+    // 이미 1명 이상 검토/결재가 있는 경우 -> 위에서 아래로 검토/결재 이력을 확인하는 창 오픈
+    DocRecord currentRec = rec;
+    await showDialog<void>(
+      context: dialogCtx,
+      builder: (hCtx) => StatefulBuilder(
+        builder: (hCtx, setHistState) {
+          final list = currentRec.approvalEntries;
+          final bool isCompleted = currentRec.isDirectorApprovalCompleted;
+          final String myName = _exporterUserName.trim();
+          final bool alreadySignedByMe = myName.isNotEmpty &&
+              list.any((e) => (e['name'] ?? '').trim() == myName);
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            titlePadding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
+            contentPadding: const EdgeInsets.fromLTRB(18, 6, 18, 12),
+            title: Row(
+              children: [
+                Icon(
+                  isCompleted ? Icons.verified : Icons.fact_check_outlined,
+                  color: isCompleted
+                      ? const Color(0xFF15803D)
+                      : const Color(0xFF1D4ED8),
+                  size: 22,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isCompleted ? '결재완료 확인 (검토·결재 이력)' : '검토 및 결재 현황 확인',
+                    style: const TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isCompleted
+                        ? const Color(0xFFDCFCE7)
+                        : const Color(0xFFDBEAFE),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: isCompleted
+                          ? const Color(0xFF16A34A)
+                          : const Color(0xFF2563EB),
+                    ),
+                  ),
+                  child: Text(
+                    isCompleted ? '결재완료' : '검토중 (${list.length}명)',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: isCompleted
+                          ? const Color(0xFF166534)
+                          : const Color(0xFF1E3A8A),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 360,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Text(
+                      currentRec.displayTitle,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E293B),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    '▼ 위에서 아래로 검토한 사람과 날짜가 순서대로 표시되며,\n'
+                    '   "소장"이 포함된 결재자는 맨 아래(최종 결재)에 표시됩니다.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF475569),
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 260),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: list.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 6),
+                      itemBuilder: (_, i) {
+                        final item = list[i];
+                        final name = item['name'] ?? '-';
+                        final date = item['date'] ?? '-';
+                        final isDir =
+                            DocRecord.isDirectorName(name) || item['role'] == '결재';
+                        return Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 11,
+                            vertical: 9,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isDir
+                                ? const Color(0xFFF0FDF4)
+                                : const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isDir
+                                  ? const Color(0xFF86EFAC)
+                                  : const Color(0xFFBFDBFE),
+                              width: isDir ? 1.4 : 1.0,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isDir
+                                      ? const Color(0xFF15803D)
+                                      : const Color(0xFF1E3A8A),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  isDir ? '최종결재' : '검토 ${i + 1}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 9),
+                              Expanded(
+                                child: Text(
+                                  name,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                    color: isDir
+                                        ? const Color(0xFF14532D)
+                                        : const Color(0xFF0F172A),
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                date,
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: isDir
+                                      ? const Color(0xFF166534)
+                                      : const Color(0xFF334155),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(hCtx),
+                child: const Text('닫기'),
+              ),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: DocRecord.isDirectorName(myName)
+                      ? const Color(0xFF15803D)
+                      : const Color(0xFF1E3A8A),
+                ),
+                icon: Icon(
+                  DocRecord.isDirectorName(myName)
+                      ? Icons.verified_outlined
+                      : Icons.add_task,
+                  size: 16,
+                ),
+                label: Text(
+                  myName.isEmpty
+                      ? '내 결재/검토 추가'
+                      : (alreadySignedByMe
+                          ? '$myName 결재일 오늘로 갱신'
+                          : (DocRecord.isDirectorName(myName)
+                              ? '$myName 최종 결재하기'
+                              : '$myName 검토/결재 추가')),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                onPressed: () async {
+                  final updated = await _applyUserApprovalToRecord(
+                    dialogCtx: hCtx,
+                    rec: currentRec,
+                    shareRoomRecords: shareRoomRecords,
+                    isOfficialRoom: isOfficialRoom,
+                    onStateUpdated: onStateUpdated,
+                  );
+                  if (updated != null) {
+                    setHistState(() {
+                      currentRec = updated;
+                    });
+                  }
+                },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// ★ 표의 [올린사람] 바로 우측에 들어가는 [결재] 열 전용 셀 위젯
+  Widget _buildApprovalDataCell({
+    required BuildContext dialogCtx,
+    required DocRecord rec,
+    required double width,
+    List<DocRecord>? shareRoomRecords,
+    bool? isOfficialRoom,
+    VoidCallback? onStateUpdated,
+  }) {
+    final entries = rec.approvalEntries;
+    final bool isCompleted = rec.isDirectorApprovalCompleted;
+    final bool hasReviewers = entries.isNotEmpty;
+
+    final Color bgColor = isCompleted
+        ? const Color(0xFFDCFCE7)
+        : (hasReviewers ? const Color(0xFFDBEAFE) : const Color(0xFFF8FAFC));
+    final Color borderColor = isCompleted
+        ? const Color(0xFF22C55E)
+        : (hasReviewers ? const Color(0xFF3B82F6) : const Color(0xFF94A3B8));
+    final Color textColor = isCompleted
+        ? const Color(0xFF166534)
+        : (hasReviewers ? const Color(0xFF1E3A8A) : const Color(0xFF334155));
+
+    final String primaryLabel = isCompleted
+        ? '결재완료'
+        : (hasReviewers ? '검토(${entries.length})' : '결재');
+    final String subLabel = hasReviewers
+        ? '${entries.last['name']} ${entries.last['date'] != null && entries.last['date']!.length >= 5 ? entries.last['date']!.substring(5) : ''}'
+        : '터치';
+
+    return InkWell(
+      onTap: () => _onTapApprovalCell(
+        dialogCtx: dialogCtx,
+        rec: rec,
+        shareRoomRecords: shareRoomRecords,
+        isOfficialRoom: isOfficialRoom,
+        onStateUpdated: onStateUpdated,
+      ),
+      child: Container(
+        width: width,
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 3),
+        decoration: const BoxDecoration(
+          border: Border(
+            right: BorderSide(color: Color(0xFFCBD5E1), width: 1),
+          ),
+        ),
+        alignment: Alignment.center,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: borderColor, width: 1),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                primaryLabel,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                  color: textColor,
+                  height: 1.15,
+                ),
+              ),
+              if (hasReviewers) ...[
+                const SizedBox(height: 1),
+                Text(
+                  subLabel.trim(),
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 9.2,
+                    fontWeight: FontWeight.w600,
+                    color: textColor.withOpacity(0.85),
+                    height: 1.1,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   /// ★ 현장 공유방에 들어와서 `공문_통합.html`(수신/발신) 또는 `자재송장_통합.html`을
@@ -8769,7 +9552,7 @@ class _HomeScreenState extends State<HomeScreen> {
             return SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: SizedBox(
-                width: isOfficialRoom ? (isOutTab ? 750 : 730) : 706,
+                width: isOfficialRoom ? (isOutTab ? 824 : 804) : 780,
                 child: Column(
                   children: [
                     Container(
@@ -8789,6 +9572,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   if (!isOutTab)
                                     _buildFixedHeaderCell('회신완료', width: 56, sortKey: 'replied', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('replied')),
                                   _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('uploader')),
+                                  _buildFixedHeaderCell('결재', width: 74, sortKey: 'approval', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('approval')),
                                   _buildFixedHeaderCell('수정/삭제', width: 68),
                                 ]
                               : [
@@ -8801,6 +9585,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   _buildFixedHeaderCell('공급자', width: 78),
                                   _buildFixedHeaderCell('주문송장번호', width: 122),
                                   _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('uploader')),
+                                  _buildFixedHeaderCell('결재', width: 74, sortKey: 'approval', currentSortCol: modalSortCol, currentSortAsc: modalSortAsc, onSortTap: () => toggleModalSort('approval')),
                                   _buildFixedHeaderCell('수정/삭제', width: 68),
                                 ],
                         ),
@@ -8863,6 +9648,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                         textColor: const Color(0xFF1E3A8A),
                                         forceBold: true,
                                       ),
+                                      _buildApprovalDataCell(
+                                        dialogCtx: ctx,
+                                        rec: rec,
+                                        width: 74,
+                                        shareRoomRecords: records,
+                                        isOfficialRoom: isOfficialRoom,
+                                        onStateUpdated: () => setModalState(() {}),
+                                      ),
                                       buildModalRowActionButtons(rec),
                                     ],
                                   ),
@@ -8893,6 +9686,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                       _buildFixedDataCell(f['supplierName'] ?? '-', width: 78, isSelected: isSel),
                                       _buildFixedDataCell(f['orderNumber'] ?? '-', width: 122, isSelected: isSel),
                                       _buildFixedDataCell(uploader, width: 64, isSelected: isSel, textColor: const Color(0xFF1E3A8A), forceBold: true),
+                                      _buildApprovalDataCell(
+                                        dialogCtx: ctx,
+                                        rec: rec,
+                                        width: 74,
+                                        shareRoomRecords: records,
+                                        isOfficialRoom: isOfficialRoom,
+                                        onStateUpdated: () => setModalState(() {}),
+                                      ),
                                       buildModalRowActionButtons(rec),
                                     ],
                                   ),
@@ -10172,7 +10973,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final isOutTab = majorCat == DocCategory.officialOut ||
           records.every((r) => r.category == DocCategory.officialOut);
       final partyHeader = isOutTab ? '받는사람' : '보낸사람';
-      final tableWidth = isOutTab ? 750 : 730;
+      final tableWidth = isOutTab ? 824 : 804;
       sb.write('<table class="app-fixed-table" style="width:${tableWidth}px;"><thead><tr>');
       sb.write('<th style="width:64px;">날짜</th>');
       sb.write('<th style="width:76px;">공문번호</th>');
@@ -10183,6 +10984,7 @@ class _HomeScreenState extends State<HomeScreen> {
       sb.write('<th style="width:64px;">회신요청일</th>');
       if (!isOutTab) sb.write('<th style="width:56px;">회신완료</th>');
       sb.write('<th style="width:64px;">올린사람</th>');
+      sb.write('<th style="width:74px;">결재</th>');
       sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
 
@@ -10203,6 +11005,11 @@ class _HomeScreenState extends State<HomeScreen> {
         final isReplied = myKey.isNotEmpty && repliedKeys.contains(myKey);
         final cls = item.id == firstId ? 'active' : '';
         final safeId = _escapeHtmlText(item.id);
+        final appEntries = item.approvalEntries;
+        final isAppComp = item.isDirectorApprovalCompleted;
+        final appLabel = isAppComp
+            ? '결재완료'
+            : (appEntries.isNotEmpty ? '검토(${appEntries.length})' : '결재');
         sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
         sb.write('<td style="width:64px;">${_escapeHtmlText(DocRecord.formatDotDate(f['sentDate']))}</td>');
         sb.write('<td style="width:76px;">${_escapeHtmlText(f['docNumber'] ?? '-')}</td>');
@@ -10217,13 +11024,14 @@ class _HomeScreenState extends State<HomeScreen> {
           sb.write('<td style="width:56px; color:#16a34a; font-weight:700; font-size:14px;">${isReplied ? '○' : ''}</td>');
         }
         sb.write('<td style="width:64px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(uploaderVal)}</td>');
+        sb.write('<td style="width:74px; font-weight:700;" onclick="event.stopPropagation(); onTapApprovalCellInHtml(\'$safeId\')">${_escapeHtmlText(appLabel)}</td>');
         sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.invoice || allInvoice) {
-      sb.write('<table class="app-fixed-table" style="width:706px;"><thead><tr>');
+      sb.write('<table class="app-fixed-table" style="width:780px;"><thead><tr>');
       sb.write('<th style="width:64px;">날짜</th>');
       sb.write('<th style="width:72px;">제품명</th>');
       sb.write('<th style="width:62px;">규격명</th>');
@@ -10233,6 +11041,7 @@ class _HomeScreenState extends State<HomeScreen> {
       sb.write('<th style="width:78px;">공급자</th>');
       sb.write('<th style="width:122px;">주문송장번호</th>');
       sb.write('<th style="width:64px;">올린사람</th>');
+      sb.write('<th style="width:74px;">결재</th>');
       sb.write('<th style="width:68px;">수정/삭제</th>');
       sb.write('</tr></thead><tbody>');
       for (final item in records) {
@@ -10241,6 +11050,11 @@ class _HomeScreenState extends State<HomeScreen> {
         final cumVal = cumMap[item.id] ?? f['quantity'] ?? '-';
         final uploaderVal = _resolveUploaderName(item);
         final safeId = _escapeHtmlText(item.id);
+        final appEntries = item.approvalEntries;
+        final isAppComp = item.isDirectorApprovalCompleted;
+        final appLabel = isAppComp
+            ? '결재완료'
+            : (appEntries.isNotEmpty ? '검토(${appEntries.length})' : '결재');
         sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
         sb.write('<td style="width:64px;">${_escapeHtmlText(DocRecord.formatDotDate(f['arrivalDate']))}</td>');
         sb.write('<td style="width:72px;">${_escapeHtmlText(f['productName'] ?? '-')}</td>');
@@ -10251,6 +11065,7 @@ class _HomeScreenState extends State<HomeScreen> {
         sb.write('<td style="width:78px;">${_escapeHtmlText(f['supplierName'] ?? '-')}</td>');
         sb.write('<td style="width:122px;">${_escapeHtmlText(f['orderNumber'] ?? '-')}</td>');
         sb.write('<td style="width:64px; color:#1e3a8a; font-weight:700;">${_escapeHtmlText(uploaderVal)}</td>');
+        sb.write('<td style="width:74px; font-weight:700;" onclick="event.stopPropagation(); onTapApprovalCellInHtml(\'$safeId\')">${_escapeHtmlText(appLabel)}</td>');
         sb.write('<td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'$safeId\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'$safeId\')">🗑️</button></td>');
         sb.write('</tr>');
       }
@@ -10338,7 +11153,8 @@ class _HomeScreenState extends State<HomeScreen> {
       sb.write('</tbody></table>');
       return sb.toString();
     } else if (majorCat == DocCategory.businessCard || allBusinessCard) {
-      sb.write('<table class="app-fixed-table" style="width:636px;"><thead><tr>');
+      sb.write('<table class="app-fixed-table" style="width:704px;"><thead><tr>');
+      sb.write('<th style="width:68px;">날짜</th>');
       sb.write('<th style="width:108px;">회사명</th>');
       sb.write('<th style="width:108px;">현장명</th>');
       sb.write('<th style="width:68px;">이름</th>');
@@ -10349,6 +11165,11 @@ class _HomeScreenState extends State<HomeScreen> {
       for (final item in records) {
         final f = item.fields;
         final cls = item.id == firstId ? 'active' : '';
+        final dateStr = DocRecord.formatDotDate(
+          (f['cardDate'] ?? '').trim().isNotEmpty
+              ? f['cardDate']
+              : item.createdAt.split(' ').first,
+        );
         final comp = (f['companyName'] ?? '-').trim().isNotEmpty ? f['companyName']!.trim() : '-';
         final site = (f['siteName'] ?? '-').trim().isNotEmpty ? f['siteName']!.trim() : '-';
         final name = (f['personName'] ?? '-').trim().isNotEmpty ? f['personName']!.trim() : '-';
@@ -10363,6 +11184,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ? '<a href="mailto:${_escapeHtmlText(email)}" onclick="event.stopPropagation();" style="color:#1d4ed8; font-weight:700; text-decoration:underline;">✉️ ${_escapeHtmlText(email)}</a>'
             : '-';
         sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
+        sb.write('<td style="width:68px;">${_escapeHtmlText(dateStr)}</td>');
         sb.write('<td style="width:108px; font-weight:700;">${_escapeHtmlText(comp)}</td>');
         sb.write('<td style="width:108px;">${_escapeHtmlText(site)}</td>');
         sb.write('<td style="width:68px; font-weight:700;">${_escapeHtmlText(name)}</td>');
@@ -10389,6 +11211,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 f['arrivalDate'] ??
                 f['date'] ??
                 f['issueDate'] ??
+                f['cardDate'] ??
                 item.createdAt.split(' ').first);
         final safeId = _escapeHtmlText(item.id);
         sb.write('<tr class="$cls" data-id="$safeId" onclick="selectRow(\'$safeId\')">');
@@ -10421,6 +11244,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final cumMap = _computeInvoiceCumulativeMap(records);
     final cumMapJson = jsonEncode(cumMap);
     final repliedListJson = jsonEncode(repliedKeys.toList());
+    final exporterUserJson = jsonEncode(_exporterUserName.trim());
 
     final bool isAllOfficial = records.isNotEmpty &&
         records.every((r) => DocCategory.isOfficial(r.category));
@@ -11039,8 +11863,24 @@ class _HomeScreenState extends State<HomeScreen> {
     </div>
   </div>
 
+  <!-- 5) 앱과 동일한 검토·결재 이력 확인 및 결재 추가 모달 -->
+  <div id="approval-modal-backdrop" onclick="if(event.target===this) closeApprovalModal()" style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.55); z-index:950; align-items:center; justify-content:center; padding:14px;">
+    <div style="background:#ffffff; width:100%; max-width:380px; border-radius:14px; overflow:hidden; box-shadow:0 20px 35px rgba(0,0,0,0.3); display:flex; flex-direction:column;">
+      <div id="approval-modal-header" style="background:#1e3a8a; color:#fff; padding:12px 15px; display:flex; align-items:center; justify-content:space-between; font-weight:700; font-size:14px;">
+        <span id="approval-modal-title">검토 및 결재 현황 확인</span>
+        <button onclick="closeApprovalModal()" style="background:none; border:none; color:#fff; font-size:16px; cursor:pointer;">✕</button>
+      </div>
+      <div id="approval-modal-body" style="padding:14px; max-height:68vh; overflow-y:auto; display:flex; flex-direction:column; gap:8px;"></div>
+      <div id="approval-modal-footer" style="padding:10px 14px; border-top:1px solid #e2e8f0; display:flex; justify-content:flex-end; gap:8px; background:#f8fafc;">
+        <button class="chip-btn" onclick="closeApprovalModal()">닫기</button>
+        <button id="approval-sign-btn" class="app-btn merge" style="background:#1e3a8a; color:#fff; padding:6px 14px;" onclick="signCurrentModalRecordInHtml()">＋ 내 결재/검토 추가</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const archiveRecords = /*ARCHIVE_DATA_START*/ $recordsJson /*ARCHIVE_DATA_END*/;
+    let currentAppUserName = localStorage.getItem('doc_snap_user_name') || $exporterUserJson || '';
     const ALL_TABS = $allowedTabsJson;
     const TRAVEL_DIVS = ['전체', '자차', '택시', '기차', '식대', '통행료'];
     const IS_ALL_OFFICIAL_DOC = archiveRecords.length > 0 && archiveRecords.every(function(r) {
@@ -11057,6 +11897,7 @@ class _HomeScreenState extends State<HomeScreen> {
     let selectedSubCategoryFilter = '전체';
     let selectedTravelDivisionFilter = '전체';
     let selectedInvoiceProductFilter = '전체';
+    let businessCardSearchQuery = '';
     let selectedMedicalClaimFilter = '전체'; // '전체' | '미청구' | '청구완료'
 
     // ★ 병원비(카테고리 / 환자성명 / 청구여부) & 자재송장(제품명 / 규격명) 열 제목 클릭 합산 기준 상태
@@ -11065,6 +11906,168 @@ class _HomeScreenState extends State<HomeScreen> {
     let medSumByClaim = false;
     let invSumByProduct = true;
     let invSumBySpec = false;
+
+    function isDirectorUserName(name) {
+      if (!name) return false;
+      return String(name).indexOf('소장') !== -1;
+    }
+
+    function parseApprovalEntries(item) {
+      const f = (item && item.fields) || {};
+      const raw = f.approvalsJson || '';
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        const reviewers = [];
+        const directors = [];
+        arr.forEach(function(e) {
+          if (!e || typeof e !== 'object') return;
+          const nm = String(e.name || '').trim();
+          if (!nm) return;
+          const dt = dotDate(e.date || '');
+          const isDir = isDirectorUserName(nm) || e.role === '결재';
+          const entry = {
+            name: nm,
+            date: dt === '-' ? '' : dt,
+            role: isDir ? '결재' : '검토'
+          };
+          if (isDir) directors.push(entry);
+          else reviewers.push(entry);
+        });
+        return reviewers.concat(directors);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function isDirectorApproved(item) {
+      const list = parseApprovalEntries(item);
+      return list.some(function(e) { return isDirectorUserName(e.name) || e.role === '결재'; });
+    }
+
+    function buildApprovalCellHtml(item) {
+      const list = parseApprovalEntries(item);
+      const isComp = isDirectorApproved(item);
+      const hasRev = list.length > 0;
+      const bg = isComp ? '#dcfce7' : (hasRev ? '#dbeafe' : '#f8fafc');
+      const bd = isComp ? '#22c55e' : (hasRev ? '#3b82f6' : '#94a3b8');
+      const col = isComp ? '#166534' : (hasRev ? '#1e3a8a' : '#334155');
+      const primary = isComp ? '결재완료' : (hasRev ? ('검토(' + list.length + ')') : '결재');
+      let sub = '';
+      if (hasRev) {
+        const last = list[list.length - 1];
+        const shortDt = (last.date && last.date.length >= 5) ? last.date.substring(5) : '';
+        sub = last.name + (shortDt ? (' ' + shortDt) : '');
+      }
+      const sid = escapeHtml(item.id);
+      return '<td onclick="event.stopPropagation(); onTapApprovalCellInHtml(\\'' + sid + '\\')" style="cursor:pointer; padding:4px 3px;">' +
+        '<div style="background:' + bg + '; border:1px solid ' + bd + '; color:' + col + '; border-radius:6px; padding:3px 4px; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.15;">' +
+        '<span style="font-size:10.5px; font-weight:700;">' + escapeHtml(primary) + '</span>' +
+        (hasRev ? ('<span style="font-size:9px; font-weight:600; opacity:0.88; margin-top:1px; max-width:66px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(sub) + '</span>') : '') +
+        '</div></td>';
+    }
+
+    let currentApprovalModalRecordId = null;
+
+    function ensureHtmlUserName() {
+      let nm = (currentAppUserName || '').trim();
+      if (!nm) {
+        const entered = prompt('결재/검토에 표시할 사용자 이름을 입력해 주세요.\\n(이름에 "소장"이 포함되면 결재 시 [결재완료]로 최종 승인됩니다)', '');
+        if (!entered || !entered.trim()) return null;
+        nm = entered.trim();
+        currentAppUserName = nm;
+        try { localStorage.setItem('doc_snap_user_name', nm); } catch (_) {}
+      }
+      return nm;
+    }
+
+    function applyApprovalToRecordInHtml(rec, userName) {
+      if (!rec) return;
+      if (!rec.fields) rec.fields = {};
+      const cleanName = String(userName || '').trim();
+      if (!cleanName) return;
+      const now = new Date();
+      const todayStr = now.getFullYear() + '.' + String(now.getMonth() + 1).padStart(2, '0') + '.' + String(now.getDate()).padStart(2, '0');
+      const current = parseApprovalEntries(rec).filter(function(e) { return e.name !== cleanName; });
+      const isDir = isDirectorUserName(cleanName);
+      current.push({
+        name: cleanName,
+        date: todayStr,
+        role: isDir ? '결재' : '검토'
+      });
+      const reviewers = current.filter(function(e) { return !isDirectorUserName(e.name) && e.role !== '결재'; });
+      const directors = current.filter(function(e) { return isDirectorUserName(e.name) || e.role === '결재'; });
+      rec.fields.approvalsJson = JSON.stringify(reviewers.concat(directors));
+    }
+
+    function onTapApprovalCellInHtml(id) {
+      const rec = archiveRecords.find(function(r) { return r.id === id; });
+      if (!rec) return;
+      const list = parseApprovalEntries(rec);
+      if (list.length === 0) {
+        const nm = ensureHtmlUserName();
+        if (!nm) return;
+        applyApprovalToRecordInHtml(rec, nm);
+        render();
+        return;
+      }
+      openApprovalModalInHtml(id);
+    }
+
+    function openApprovalModalInHtml(id) {
+      const rec = archiveRecords.find(function(r) { return r.id === id; });
+      if (!rec) return;
+      currentApprovalModalRecordId = id;
+      const list = parseApprovalEntries(rec);
+      const isComp = isDirectorApproved(rec);
+      const titleEl = document.getElementById('approval-modal-title');
+      if (titleEl) {
+        titleEl.textContent = isComp ? '✅ 결재완료 확인 (검토·결재 이력)' : ('📋 검토 및 결재 현황 (' + list.length + '명)');
+      }
+      const bodyEl = document.getElementById('approval-modal-body');
+      let bHtml = '<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:7px 10px; font-size:12px; font-weight:700; color:#1e293b;">' +
+        escapeHtml(getDisplayTitle(rec)) + '</div>';
+      bHtml += '<div style="font-size:11px; color:#475569; line-height:1.35;">▼ 위에서 아래로 검토한 사람과 날짜가 순서대로 표시되며, <b>"소장"</b>이 포함된 결재자는 맨 아래(최종 결재)에 표시됩니다.</div>';
+      list.forEach(function(e, idx) {
+        const isDir = isDirectorUserName(e.name) || e.role === '결재';
+        const rowBg = isDir ? '#f0fdf4' : '#eff6ff';
+        const rowBd = isDir ? '#86efac' : '#bfdbfe';
+        const badgeBg = isDir ? '#15803d' : '#1e3a8a';
+        const badgeTxt = isDir ? '최종결재' : ('검토 ' + (idx + 1));
+        bHtml += '<div style="display:flex; align-items:center; gap:8px; background:' + rowBg + '; border:1.2px solid ' + rowBd + '; border-radius:8px; padding:8px 10px;">' +
+          '<span style="background:' + badgeBg + '; color:#fff; font-size:10.5px; font-weight:700; padding:3px 7px; border-radius:6px;">' + badgeTxt + '</span>' +
+          '<span style="flex:1; font-size:13px; font-weight:700; color:#0f172a;">' + escapeHtml(e.name) + '</span>' +
+          '<span style="font-size:11.5px; font-weight:600; color:#334155;">' + escapeHtml(e.date || '-') + '</span>' +
+          '</div>';
+      });
+      bHtml += '<div style="margin-top:4px; padding-top:8px; border-top:1px dashed #cbd5e1; display:flex; align-items:center; gap:6px;">' +
+        '<span style="font-size:11.5px; font-weight:700; color:#334155;">내 이름:</span>' +
+        '<input id="html-approver-name-input" type="text" placeholder="예: 이경훈, 김철수 소장" value="' + escapeHtml(currentAppUserName) + '" style="flex:1; border:1px solid #93c5fd; border-radius:6px; padding:5px 8px; font-size:12px; font-weight:600;" />' +
+        '</div>';
+      bodyEl.innerHTML = bHtml;
+      document.getElementById('approval-modal-backdrop').style.display = 'flex';
+    }
+
+    function closeApprovalModal() {
+      currentApprovalModalRecordId = null;
+      document.getElementById('approval-modal-backdrop').style.display = 'none';
+    }
+
+    function signCurrentModalRecordInHtml() {
+      if (!currentApprovalModalRecordId) return;
+      const rec = archiveRecords.find(function(r) { return r.id === currentApprovalModalRecordId; });
+      if (!rec) return;
+      const inp = document.getElementById('html-approver-name-input');
+      let nm = inp ? inp.value.trim() : '';
+      if (!nm) nm = ensureHtmlUserName() || '';
+      if (!nm) return;
+      currentAppUserName = nm;
+      try { localStorage.setItem('doc_snap_user_name', nm); } catch (_) {}
+      applyApprovalToRecordInHtml(rec, nm);
+      render();
+      openApprovalModalInHtml(currentApprovalModalRecordId);
+    }
 
     function isRecordMedicalClaimed(item) {
       const f = (item && item.fields) || {};
@@ -11471,6 +12474,7 @@ class _HomeScreenState extends State<HomeScreen> {
       else if (item.category === '자재송장') raw = f.arrivalDate || '';
       else if (item.category === '출장비') raw = f.date || '';
       else if (item.category === '병원비') raw = f.issueDate || '';
+      else if (item.category === '명함관리') raw = f.cardDate || '';
       if (!raw && item.createdAt) raw = String(item.createdAt).split(' ')[0];
       const m = String(raw).match(/(\\d{4})\\s*[-./년]\\s*(\\d{1,2})\\s*[-./월]\\s*(\\d{1,2})/);
       if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
@@ -11603,6 +12607,7 @@ class _HomeScreenState extends State<HomeScreen> {
       else if (item.category === '자재송장') raw = f.arrivalDate || '';
       else if (item.category === '출장비') raw = f.date || '';
       else if (item.category === '병원비') raw = f.issueDate || '';
+      else if (item.category === '명함관리') raw = f.cardDate || '';
       const d = dotDate(raw);
       if (/^\\d{4}\\.\\d{2}\\.\\d{2}\$/.test(d)) return d;
       return dotDate((item.createdAt || '').split(' ')[0]);
@@ -11641,6 +12646,16 @@ class _HomeScreenState extends State<HomeScreen> {
         if (selectedCategoryFilter === '자재송장' && selectedInvoiceProductFilter !== '전체') {
           if (getInvoiceGroupKey(r) !== selectedInvoiceProductFilter) return false;
         }
+        if (selectedCategoryFilter === '명함관리' && businessCardSearchQuery.trim() !== '') {
+          const q = businessCardSearchQuery.trim().toLowerCase();
+          const qNoSpace = q.replace(/\s+/g, '');
+          const comp = String(f.companyName || '').toLowerCase();
+          const site = String(f.siteName || '').toLowerCase();
+          const name = String(f.personName || '').toLowerCase();
+          const comb = comp + ' ' + site + ' ' + name;
+          const combNoSpace = comb.replace(/\s+/g, '');
+          if (comb.indexOf(q) === -1 && combNoSpace.indexOf(qNoSpace) === -1) return false;
+        }
         return true;
       });
 
@@ -11659,6 +12674,11 @@ class _HomeScreenState extends State<HomeScreen> {
           cmp = ra - rb;
         } else if (sortColumn === 'uploader') {
           cmp = String(fa.uploaderName || '-').trim().localeCompare(String(fb.uploaderName || '-').trim(), 'ko');
+        } else if (sortColumn === 'approval') {
+          const sa = isDirectorApproved(a) ? 2 : (parseApprovalEntries(a).length > 0 ? 1 : 0);
+          const sb = isDirectorApproved(b) ? 2 : (parseApprovalEntries(b).length > 0 ? 1 : 0);
+          cmp = sa - sb;
+          if (cmp === 0) cmp = parseApprovalEntries(a).length - parseApprovalEntries(b).length;
         } else if (sortColumn === 'subCategory') {
           const ca = (fa.subCategory || '').trim() || '미지정';
           const cb = (fb.subCategory || '').trim() || '미지정';
@@ -11692,10 +12712,10 @@ class _HomeScreenState extends State<HomeScreen> {
         } else if (sortColumn === 'email') {
           cmp = String(fa.email || '').trim().localeCompare(String(fb.email || '').trim(), 'ko');
         } else {
-          cmp = extractSortableDateStr(a).localeCompare(extractSortableDateStr(b));
+          cmp = extractSortableDateKey(a).localeCompare(extractSortableDateKey(b));
         }
         if (cmp === 0) {
-          cmp = extractSortableDateStr(a).localeCompare(extractSortableDateStr(b));
+          cmp = extractSortableDateKey(a).localeCompare(extractSortableDateKey(b));
         }
         if (cmp === 0) {
           cmp = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
@@ -11905,7 +12925,41 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
+      // 4) 명함관리: 회사명 · 현장명 · 이름 실시간 검색 바
+      if (cat === '명함관리') {
+        const curItems = getFilteredRecords();
+        const existingInput = document.getElementById('bizcard-search-input');
+        const wasFocused = existingInput && (document.activeElement === existingInput);
+        html += '<div style="display:flex; align-items:center; gap:6px; width:100%;">' +
+          '<input id="bizcard-search-input" type="text" placeholder="🔍 회사명, 현장명, 이름으로 명함 검색..." value="' + escapeHtml(businessCardSearchQuery) + '" ' +
+          'oninput="onBizCardSearchInput(this.value)" ' +
+          'style="flex:1; height:32px; padding:0 10px; border:1px solid #93c5fd; border-radius:7px; font-size:12px; font-weight:600; outline:none;" />' +
+          (businessCardSearchQuery.trim() !== ''
+            ? '<button class="period-nav-btn" style="color:#dc2626; border-color:#fca5a5;" onclick="onBizCardSearchInput(\\x27\\x27)">지우기 ✕</button>'
+            : '') +
+          '<span class="period-badge" style="padding:5px 9px;">' +
+          (businessCardSearchQuery.trim() === ''
+            ? ('총 ' + curItems.length + '명')
+            : ('검색 ' + curItems.length + '명 / 전체 ' + majorList.length + '명')) +
+          '</span></div>';
+        bar.innerHTML = html;
+        if (wasFocused) {
+          const newInp = document.getElementById('bizcard-search-input');
+          if (newInp) {
+            newInp.focus();
+            const len = newInp.value.length;
+            newInp.setSelectionRange(len, len);
+          }
+        }
+        return;
+      }
+
       bar.innerHTML = html;
+    }
+
+    function onBizCardSearchInput(val) {
+      businessCardSearchQuery = val || '';
+      render();
     }
 
     function getDisplayTitle(item) {
@@ -12069,8 +13123,8 @@ class _HomeScreenState extends State<HomeScreen> {
         const isOutTab = (cat === '공문(발신)');
         const partyHeader = (cat === '전체') ? '보낸/받는사람' : (isOutTab ? '받는사람' : '보낸사람');
         const defaultWidths = isOutTab
-          ? [64, 76, 68, 76, 118, 152, 64, 64, 68]
-          : [64, 76, 68, 118, 152, 64, 56, 64, 68];
+          ? [64, 76, 68, 76, 118, 152, 64, 64, 74, 68]
+          : [64, 76, 68, 118, 152, 64, 56, 64, 74, 68];
         const cg = buildTableColGroup(defaultWidths);
         html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>';
         if (isOutTab) {
@@ -12082,7 +13136,8 @@ class _HomeScreenState extends State<HomeScreen> {
             buildHeaderCell('내용', 152, 5, null) +
             buildHeaderCell('회신요청일', 64, 6, null) +
             buildHeaderCell('올린사람', 64, 7, 'uploader') +
-            buildHeaderCell('수정/삭제', 68, 8, null);
+            buildHeaderCell('결재', 74, 8, 'approval') +
+            buildHeaderCell('수정/삭제', 68, 9, null);
         } else {
           html += buildHeaderCell('날짜', 64, 0, 'date') +
             buildHeaderCell('공문번호', 76, 1, 'docNumber') +
@@ -12092,7 +13147,8 @@ class _HomeScreenState extends State<HomeScreen> {
             buildHeaderCell('회신요청일', 64, 5, null) +
             buildHeaderCell('회신완료', 56, 6, 'replied') +
             buildHeaderCell('올린사람', 64, 7, 'uploader') +
-            buildHeaderCell('수정/삭제', 68, 8, null);
+            buildHeaderCell('결재', 74, 8, 'approval') +
+            buildHeaderCell('수정/삭제', 68, 9, null);
         }
         html += '</tr></thead><tbody>';
         items.forEach(function(item) {
@@ -12115,12 +13171,13 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
             (!isOutTab ? '<td style="color:#16a34a; font-weight:700; font-size:14px;">' + (isReplied ? '○' : '') + '</td>' : '') +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
+            buildApprovalCellHtml(item) +
             '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
         html += '</tbody></table>';
       } else if (cat === '자재송장') {
-        const defaultWidths = [64, 72, 62, 44, 64, 68, 78, 122, 64, 68];
+        const defaultWidths = [64, 72, 62, 44, 64, 68, 78, 122, 64, 74, 68];
         const cg = buildTableColGroup(defaultWidths);
         html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
           buildHeaderCell('날짜', 64, 0, 'date') +
@@ -12132,7 +13189,8 @@ class _HomeScreenState extends State<HomeScreen> {
           buildHeaderCell('공급자', 78, 6, null) +
           buildHeaderCell('주문송장번호', 122, 7, null) +
           buildHeaderCell('올린사람', 64, 8, 'uploader') +
-          buildHeaderCell('수정/삭제', 68, 9, null) +
+          buildHeaderCell('결재', 74, 9, 'approval') +
+          buildHeaderCell('수정/삭제', 68, 10, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
@@ -12150,6 +13208,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(f.supplierName || '-') + '</td>' +
             '<td>' + escapeHtml(f.orderNumber || '-') + '</td>' +
             '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
+            buildApprovalCellHtml(item) +
             '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\\'' + sid + '\\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\\'' + sid + '\\')">🗑️</button></td>' +
             '</tr>';
         });
@@ -12239,20 +13298,22 @@ class _HomeScreenState extends State<HomeScreen> {
             '</tr>';
         });
         html += '</tbody></table>';
-      } else  if (cat === '명함관리') {
-        const defaultWidths = [108, 108, 68, 124, 160, 68];
+      } else if (cat === '명함관리') {
+        const defaultWidths = [68, 108, 108, 68, 124, 160, 68];
         const cg = buildTableColGroup(defaultWidths);
         html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('회사명', 108, 0, 'companyName') +
-          buildHeaderCell('현장명', 108, 1, 'siteName') +
-          buildHeaderCell('이름', 68, 2, 'personName') +
-          buildHeaderCell('휴대폰번호 (📞전화)', 124, 3, 'mobilePhone') +
-          buildHeaderCell('이메일주소 (✉️메일)', 160, 4, 'email') +
-          buildHeaderCell('수정/삭제', 68, 5, null) +
+          buildHeaderCell('날짜', 68, 0, 'date') +
+          buildHeaderCell('회사명', 108, 1, 'companyName') +
+          buildHeaderCell('현장명', 108, 2, 'siteName') +
+          buildHeaderCell('이름', 68, 3, 'personName') +
+          buildHeaderCell('휴대폰번호 (📞전화)', 124, 4, 'mobilePhone') +
+          buildHeaderCell('이메일주소 (✉️메일)', 160, 5, 'email') +
+          buildHeaderCell('수정/삭제', 68, 6, null) +
           '</tr></thead><tbody>';
         items.forEach(function(item) {
           const f = item.fields || {};
           const cls = item.id === selectedId ? 'active' : '';
+          const dateStr = dotDate(f.cardDate || (item.createdAt || '').split(' ')[0]);
           const comp = (f.companyName || '').trim() || '-';
           const site = (f.siteName || '').trim() || '-';
           const name = (f.personName || '').trim() || '-';
@@ -12267,6 +13328,7 @@ class _HomeScreenState extends State<HomeScreen> {
             : '-';
           const sid = escapeHtml(item.id);
           html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
+            '<td>' + escapeHtml(dateStr) + '</td>' +
             '<td style="font-weight:700;">' + escapeHtml(comp) + '</td>' +
             '<td>' + escapeHtml(site) + '</td>' +
             '<td style="font-weight:700;">' + escapeHtml(name) + '</td>' +
@@ -12294,6 +13356,7 @@ class _HomeScreenState extends State<HomeScreen> {
           else if (item.category === '자재송장') dateStr = dotDate(f.arrivalDate);
           else if (item.category === '출장비') dateStr = dotDate(f.date);
           else if (item.category === '병원비') dateStr = dotDate(f.issueDate);
+          else if (item.category === '명함관리') dateStr = dotDate(f.cardDate || (item.createdAt || '').split(' ')[0]);
           const sid = escapeHtml(item.id);
           html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\\'' + sid + '\\')">' +
             '<td>' + escapeHtml(item.category) + '</td>' +
@@ -12569,6 +13632,7 @@ class _HomeScreenState extends State<HomeScreen> {
         html += fieldInput('totalPaid', '수납 금액 (숫자만)', f.totalPaid);
         html += fieldInput('bizRegNumber', '사업자등록번호', f.bizRegNumber);
       } else if (rec.category === '명함관리') {
+        html += fieldInput('cardDate', '날짜 (YYYY.MM.DD)', dotDate(f.cardDate || (rec.createdAt || '').split(' ')[0]));
         html += fieldInput('companyName', '회사명', f.companyName);
         html += fieldInput('siteName', '현장명 (또는 부서명)', f.siteName);
         html += fieldInput('personName', '이름', f.personName);
@@ -12888,6 +13952,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ];
       case DocCategory.businessCard:
         return [
+          MapEntry(
+            '날짜',
+            DocRecord.formatDotDate(
+              (f['cardDate'] ?? '').trim().isNotEmpty
+                  ? f['cardDate']
+                  : r.createdAt.split(' ').first,
+            ),
+          ),
           MapEntry('회사명', f['companyName'] ?? '-'),
           MapEntry('현장명', f['siteName'] ?? '-'),
           MapEntry('이름', f['personName'] ?? '-'),
@@ -12955,7 +14027,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 706,
+            width: 780,
             child: Column(
               children: [
                 Container(
@@ -12984,6 +14056,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildFixedHeaderCell('공급자', width: 78, sortKey: 'merchant'),
                         _buildFixedHeaderCell('주문송장번호', width: 122),
                         _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader'),
+                        _buildFixedHeaderCell('결재', width: 74, sortKey: 'approval'),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
@@ -13063,6 +14136,12 @@ class _HomeScreenState extends State<HomeScreen> {
                                   textColor: const Color(0xFF1E3A8A),
                                   forceBold: true,
                                 ),
+                                _buildApprovalDataCell(
+                                  dialogCtx: context,
+                                  rec: rec,
+                                  width: 74,
+                                  onStateUpdated: () => setState(() {}),
+                                ),
                                 _buildRowActionButtons(rec),
                               ],
                             ),
@@ -13084,7 +14163,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (DocCategory.isOfficial(_selectedCategoryFilter)) {
       final bool isOutTab = _selectedCategoryFilter == DocCategory.officialOut;
       final String partyHeader = isOutTab ? '받는사람' : '보낸사람';
-      final double tableTotalWidth = isOutTab ? 750 : 730;
+      final double tableTotalWidth = isOutTab ? 824 : 804;
 
       return ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
@@ -13111,6 +14190,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         if (!isOutTab)
                           _buildFixedHeaderCell('회신완료', width: 56, sortKey: 'replied'),
                         _buildFixedHeaderCell('올린사람', width: 64, sortKey: 'uploader'),
+                        _buildFixedHeaderCell('결재', width: 74, sortKey: 'approval'),
                         _buildFixedHeaderCell('수정/삭제', width: 68),
                       ],
                     ),
@@ -13198,6 +14278,12 @@ class _HomeScreenState extends State<HomeScreen> {
                                   isSelected: isSelected,
                                   textColor: const Color(0xFF1E3A8A),
                                   forceBold: true,
+                                ),
+                                _buildApprovalDataCell(
+                                  dialogCtx: context,
+                                  rec: rec,
+                                  width: 74,
+                                  onStateUpdated: () => setState(() {}),
                                 ),
                                 _buildRowActionButtons(rec),
                               ],
@@ -13652,7 +14738,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    // ★ 5) 명함관리: 회사명 - 현장명 - 이름 - 휴대폰번호(클릭 시 전화연결) - 이메일주소(클릭 시 메일보내기) + 수정/삭제
+    // ★ 5) 명함관리: 날짜(맨앞) - 회사명 - 현장명 - 이름 - 휴대폰번호(클릭 시 전화연결) - 이메일주소(클릭 시 메일보내기) + 수정/삭제
     if (_selectedCategoryFilter == DocCategory.businessCard) {
       return ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
@@ -13660,7 +14746,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _tableHorizontalScrollCtrl,
           scrollDirection: Axis.horizontal,
           child: SizedBox(
-            width: 636,
+            width: 704,
             child: Column(
               children: [
                 Container(
@@ -13668,6 +14754,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: IntrinsicHeight(
                     child: Row(
                       children: [
+                        _buildFixedHeaderCell('날짜', width: 68, sortKey: 'date'),
                         _buildFixedHeaderCell('회사명', width: 108, sortKey: 'companyName'),
                         _buildFixedHeaderCell('현장명', width: 108, sortKey: 'siteName'),
                         _buildFixedHeaderCell('이름', width: 68, sortKey: 'personName'),
@@ -13685,6 +14772,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       final rec = items[idx];
                       final f = rec.fields;
                       final isSelected = _selectedRecord?.id == rec.id;
+                      final dateStr = DocRecord.formatDotDate(
+                        (f['cardDate'] ?? '').trim().isNotEmpty
+                            ? f['cardDate']
+                            : rec.createdAt.split(' ').first,
+                      );
                       final compStr = (f['companyName'] ?? '').trim().isNotEmpty
                           ? f['companyName']!.trim()
                           : '-';
@@ -13713,6 +14805,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: IntrinsicHeight(
                             child: Row(
                               children: [
+                                _buildFixedDataCell(
+                                  dateStr,
+                                  width: 68,
+                                  isSelected: isSelected,
+                                ),
                                 _buildFixedDataCell(
                                   compStr,
                                   width: 108,
@@ -13899,6 +14996,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       dateStr = DocRecord.formatDotDate(f['date']);
                     } else if (rec.category == DocCategory.medical) {
                       dateStr = DocRecord.formatDotDate(f['issueDate']);
+                    } else if (rec.category == DocCategory.businessCard) {
+                      dateStr = DocRecord.formatDotDate(
+                        (f['cardDate'] ?? '').trim().isNotEmpty
+                            ? f['cardDate']
+                            : rec.createdAt.split(' ').first,
+                      );
                     }
 
                     return InkWell(
@@ -14269,9 +15372,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ★ 2) 자재송장 / 출장비 / 병원비 / 전체 상단 요약 & 기간·품목·카테고리 필터 영역
+              // ★ 2) 자재송장 / 출장비 / 병원비 / 명함관리 / 전체 상단 요약 & 기간·품목·카테고리·명함검색 필터 영역
               if (_selectedCategoryFilter == DocCategory.invoice ||
                   _usesSubCategory(_selectedCategoryFilter) ||
+                  _selectedCategoryFilter == DocCategory.businessCard ||
                   _selectedCategoryFilter == DocCategory.all)
                 Container(
                   width: double.infinity,
@@ -14751,6 +15855,123 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                         ],
+                      ],
+
+                      // ★ 명함관리 전용 상단 실시간 검색 바 (회사명 · 현장명 · 이름 통합 검색)
+                      if (_selectedCategoryFilter ==
+                          DocCategory.businessCard) ...[
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SizedBox(
+                                height: 36,
+                                child: TextField(
+                                  controller: _businessCardSearchCtrl,
+                                  onChanged: (v) {
+                                    setState(() {
+                                      _businessCardSearchQuery = v;
+                                      final cur = _filteredRecords;
+                                      if (!cur.any(
+                                          (r) => r.id == _selectedRecord?.id)) {
+                                        _selectedRecord =
+                                            cur.isNotEmpty ? cur.first : null;
+                                      }
+                                    });
+                                  },
+                                  style: const TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  decoration: InputDecoration(
+                                    hintText: '회사명, 현장명, 이름으로 명함 검색...',
+                                    hintStyle: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.blueGrey.shade400,
+                                      fontWeight: FontWeight.normal,
+                                    ),
+                                    prefixIcon: const Icon(
+                                      Icons.search,
+                                      size: 18,
+                                      color: Color(0xFF1E3A8A),
+                                    ),
+                                    suffixIcon: _businessCardSearchQuery
+                                            .trim()
+                                            .isNotEmpty
+                                        ? IconButton(
+                                            padding: EdgeInsets.zero,
+                                            icon: const Icon(
+                                              Icons.clear,
+                                              size: 17,
+                                              color: Colors.redAccent,
+                                            ),
+                                            tooltip: '검색어 지우기',
+                                            onPressed: () {
+                                              setState(() {
+                                                _businessCardSearchCtrl.clear();
+                                                _businessCardSearchQuery = '';
+                                                final cur = _filteredRecords;
+                                                if (!cur.any((r) =>
+                                                    r.id ==
+                                                    _selectedRecord?.id)) {
+                                                  _selectedRecord =
+                                                      cur.isNotEmpty
+                                                          ? cur.first
+                                                          : null;
+                                                }
+                                              });
+                                            },
+                                          )
+                                        : null,
+                                    filled: true,
+                                    fillColor: Colors.white,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 0,
+                                    ),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide(
+                                          color: Colors.blue.shade200),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: BorderSide(
+                                          color: Colors.blue.shade200),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      borderSide: const BorderSide(
+                                        color: Color(0xFF1E3A8A),
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 9,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1E3A8A),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                _businessCardSearchQuery.trim().isEmpty
+                                    ? '총 ${items.length}명'
+                                    : '검색 ${items.length}명 / 전체 ${_recordsInSelectedMajorCategory.length}명',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ],
                   ),
