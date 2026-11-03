@@ -1363,6 +1363,25 @@ class DocRecord {
     return jsonEncode(ordered);
   }
 
+  /// ★ 특정 결재자(userName)의 결재/검토 기록을 취소(제거)한 뒤 정렬된 JSON 문자열 반환
+  static String removeApproverFromRawJson(
+    String? existingRawJson,
+    String userName,
+  ) {
+    final cleanName = userName.trim();
+    if (cleanName.isEmpty) return existingRawJson ?? '';
+    final current = parseApprovalEntriesFromRaw(existingRawJson);
+    current.removeWhere((e) => (e['name'] ?? '').trim() == cleanName);
+    if (current.isEmpty) return '';
+    final reviewers = current
+        .where((e) => !isDirectorName(e['name']) && e['role'] != '결재')
+        .toList();
+    final directors = current
+        .where((e) => isDirectorName(e['name']) || e['role'] == '결재')
+        .toList();
+    return jsonEncode([...reviewers, ...directors]);
+  }
+
   /// ★ 현장공유방 동기화 시 원격(공유방) 기록과 내 로컬 기록의 결재 이력을 누락 없이 합치는 함수
   /// - 어느 한쪽에서 추가된 검토자/결재자라도 절대 날아가지 않고 위에서 아래로 합쳐지며,
   ///   소장 결재자는 항상 맨 밑에 위치합니다!
@@ -9022,6 +9041,84 @@ class _HomeScreenState extends State<HomeScreen> {
     return updatedRec;
   }
 
+  /// ★ 특정 서류(rec)에서 결재/검토자(targetUserName)의 결재를 취소(제거)하고 로컬 + 현장공유방에 즉시 반영!
+  Future<DocRecord?> _cancelUserApprovalFromRecord({
+    required DocRecord rec,
+    required String targetUserName,
+    List<DocRecord>? shareRoomRecords,
+    bool? isOfficialRoom,
+    VoidCallback? onStateUpdated,
+  }) async {
+    final cleanName = targetUserName.trim();
+    if (cleanName.isEmpty) return null;
+
+    final newApprovalsJson = DocRecord.removeApproverFromRawJson(
+      rec.fields['approvalsJson'],
+      cleanName,
+    );
+    final updatedFields = Map<String, String>.from(rec.fields);
+    if (newApprovalsJson.isEmpty) {
+      updatedFields.remove('approvalsJson');
+    } else {
+      updatedFields['approvalsJson'] = newApprovalsJson;
+    }
+
+    final updatedRec = DocRecord(
+      id: rec.id,
+      category: rec.category,
+      createdAt: rec.createdAt,
+      imagePath: rec.imagePath,
+      base64Image: rec.base64Image,
+      fields: updatedFields,
+    );
+
+    // 1) 내 로컬 _records 업데이트
+    setState(() {
+      final idx = _records.indexWhere(
+        (r) => r.id == rec.id || r.contentSignature == rec.contentSignature,
+      );
+      if (idx != -1) {
+        final localImgPath = _records[idx].imagePath.trim().isNotEmpty
+            ? _records[idx].imagePath
+            : updatedRec.imagePath;
+        _records[idx] = DocRecord(
+          id: _records[idx].id,
+          category: updatedRec.category,
+          createdAt: updatedRec.createdAt,
+          imagePath: localImgPath,
+          base64Image: updatedRec.base64Image,
+          fields: updatedFields,
+        );
+        if (_selectedRecord?.id == _records[idx].id) {
+          _selectedRecord = _records[idx];
+        }
+      }
+    });
+    await _saveLocalRecords();
+
+    // 2) 현장공유방 열람창 리스트가 열려 있으면 즉시 갱신 후 GitHub/OneDrive 통합 HTML에도 반영
+    if (shareRoomRecords != null) {
+      final rIdx = shareRoomRecords.indexWhere(
+        (r) => r.id == rec.id || r.contentSignature == rec.contentSignature,
+      );
+      if (rIdx != -1) {
+        shareRoomRecords[rIdx] = updatedRec;
+      }
+      if (onStateUpdated != null) onStateUpdated();
+      if (isOfficialRoom != null) {
+        await _pushUpdatedShareRoomList(
+          isOfficialRoom: isOfficialRoom,
+          updatedRoomRecords: shareRoomRecords,
+        );
+      }
+    } else {
+      if (onStateUpdated != null) onStateUpdated();
+    }
+
+    _showSnack('↩️ [$cleanName] 결재/검토 내역이 취소되었습니다.');
+    return updatedRec;
+  }
+
   /// ★ 표의 [결재] 열을 눌렀을 때 동작:
   /// - 아직 아무도 결재하지 않은 서류('[결재]' 상태): 누르는 즉시 앱 사용자 이름과 오늘 날짜가 추가됨!
   ///   (만약 이름에 '소장'이 포함되어 있으면 즉시 '결재완료'로 변경되고 맨 밑에 추가됨)
@@ -9224,6 +9321,51 @@ class _HomeScreenState extends State<HomeScreen> {
                                       : const Color(0xFF334155),
                                 ),
                               ),
+                              const SizedBox(width: 6),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(5),
+                                onTap: () async {
+                                  final updated =
+                                      await _cancelUserApprovalFromRecord(
+                                    rec: currentRec,
+                                    targetUserName: name,
+                                    shareRoomRecords: shareRoomRecords,
+                                    isOfficialRoom: isOfficialRoom,
+                                    onStateUpdated: onStateUpdated,
+                                  );
+                                  if (updated != null) {
+                                    if (updated.approvalEntries.isEmpty &&
+                                        hCtx.mounted) {
+                                      Navigator.pop(hCtx);
+                                    } else {
+                                      setHistState(() {
+                                        currentRec = updated;
+                                      });
+                                    }
+                                  }
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFEE2E2),
+                                    borderRadius: BorderRadius.circular(5),
+                                    border: Border.all(
+                                      color: const Color(0xFFFCA5A5),
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    '결재취소',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFFB91C1C),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
                         );
@@ -9238,46 +9380,78 @@ class _HomeScreenState extends State<HomeScreen> {
                 onPressed: () => Navigator.pop(hCtx),
                 child: const Text('닫기'),
               ),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: DocRecord.isDirectorName(myName)
-                      ? const Color(0xFF15803D)
-                      : const Color(0xFF1E3A8A),
-                ),
-                icon: Icon(
-                  DocRecord.isDirectorName(myName)
-                      ? Icons.verified_outlined
-                      : Icons.add_task,
-                  size: 16,
-                ),
-                label: Text(
-                  myName.isEmpty
-                      ? '내 결재/검토 추가'
-                      : (alreadySignedByMe
-                          ? '$myName 결재일 오늘로 갱신'
-                          : (DocRecord.isDirectorName(myName)
-                              ? '$myName 최종 결재하기'
-                              : '$myName 검토/결재 추가')),
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
+              if (alreadySignedByMe)
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFB91C1C),
+                    side: const BorderSide(color: Color(0xFFEF4444)),
                   ),
+                  icon: const Icon(Icons.undo, size: 15),
+                  label: Text(
+                    '$myName 결재취소',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  onPressed: () async {
+                    final updated = await _cancelUserApprovalFromRecord(
+                      rec: currentRec,
+                      targetUserName: myName,
+                      shareRoomRecords: shareRoomRecords,
+                      isOfficialRoom: isOfficialRoom,
+                      onStateUpdated: onStateUpdated,
+                    );
+                    if (updated != null) {
+                      if (updated.approvalEntries.isEmpty && hCtx.mounted) {
+                        Navigator.pop(hCtx);
+                      } else {
+                        setHistState(() {
+                          currentRec = updated;
+                        });
+                      }
+                    }
+                  },
+                )
+              else
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: DocRecord.isDirectorName(myName)
+                        ? const Color(0xFF15803D)
+                        : const Color(0xFF1E3A8A),
+                  ),
+                  icon: Icon(
+                    DocRecord.isDirectorName(myName)
+                        ? Icons.verified_outlined
+                        : Icons.add_task,
+                    size: 16,
+                  ),
+                  label: Text(
+                    myName.isEmpty
+                        ? '내 결재/검토 추가'
+                        : (DocRecord.isDirectorName(myName)
+                            ? '$myName 최종 결재하기'
+                            : '$myName 검토/결재 추가'),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  onPressed: () async {
+                    final updated = await _applyUserApprovalToRecord(
+                      dialogCtx: hCtx,
+                      rec: currentRec,
+                      shareRoomRecords: shareRoomRecords,
+                      isOfficialRoom: isOfficialRoom,
+                      onStateUpdated: onStateUpdated,
+                    );
+                    if (updated != null) {
+                      setHistState(() {
+                        currentRec = updated;
+                      });
+                    }
+                  },
                 ),
-                onPressed: () async {
-                  final updated = await _applyUserApprovalToRecord(
-                    dialogCtx: hCtx,
-                    rec: currentRec,
-                    shareRoomRecords: shareRoomRecords,
-                    isOfficialRoom: isOfficialRoom,
-                    onStateUpdated: onStateUpdated,
-                  );
-                  if (updated != null) {
-                    setHistState(() {
-                      currentRec = updated;
-                    });
-                  }
-                },
-              ),
             ],
           );
         },
@@ -10176,6 +10350,35 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ],
                         ),
+                        if (isGithub) ...[
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                backgroundColor: Colors.white,
+                                side: const BorderSide(color: Color(0xFF3B82F6)),
+                              ),
+                              onPressed: () async {
+                                final repo = _normalizeGithubRepo(_githubRepo);
+                                final parts = repo.split('/');
+                                if (parts.length == 2 && _githubFolder.trim().isNotEmpty) {
+                                  final url = 'https://${parts[0]}.github.io/${parts[1]}/$_resolvedShareRoomFolder/$_shareOfficialFileName';
+                                  await Clipboard.setData(ClipboardData(text: url));
+                                  _showSnack('💻 PC 웹 접속 주소가 복사되었습니다! (GitHub Pages 활성화 시 PC 브라우저에서 바로 열람 가능)');
+                                } else {
+                                  _showSnack('먼저 설정에서 GitHub 저장소와 현장명을 입력해 주세요.');
+                                }
+                              },
+                              icon: const Icon(Icons.computer, size: 15, color: Color(0xFF1D4ED8)),
+                              label: const Text(
+                                '💻 PC에서 바로 보는 웹 주소(URL) 복사',
+                                style: TextStyle(fontSize: 11.2, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -10268,6 +10471,35 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ],
                         ),
+                        if (isGithub) ...[
+                          const SizedBox(height: 6),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                backgroundColor: Colors.white,
+                                side: BorderSide(color: Colors.brown.shade600),
+                              ),
+                              onPressed: () async {
+                                final repo = _normalizeGithubRepo(_githubRepo);
+                                final parts = repo.split('/');
+                                if (parts.length == 2 && _githubFolder.trim().isNotEmpty) {
+                                  final url = 'https://${parts[0]}.github.io/${parts[1]}/$_resolvedShareRoomFolder/$_shareInvoiceFileName';
+                                  await Clipboard.setData(ClipboardData(text: url));
+                                  _showSnack('💻 PC 웹 접속 주소가 복사되었습니다! (GitHub Pages 활성화 시 PC 브라우저에서 바로 열람 가능)');
+                                } else {
+                                  _showSnack('먼저 설정에서 GitHub 저장소와 현장명을 입력해 주세요.');
+                                }
+                              },
+                              icon: Icon(Icons.computer, size: 15, color: Colors.brown.shade800),
+                              label: Text(
+                                '💻 PC에서 바로 보는 웹 주소(URL) 복사',
+                                style: TextStyle(fontSize: 11.2, fontWeight: FontWeight.bold, color: Colors.brown.shade900),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -11864,7 +12096,7 @@ class _HomeScreenState extends State<HomeScreen> {
     </div>
   </div>
 
-  <!-- 5) 앱과 동일한 검토·결재 이력 확인 및 결재 추가 모달 -->
+  <!-- 5) 검토·결재 이력 전용 열람 모달 (HTML 내보내기 파일에서는 결재자 이름을 임의로 수정할 수 없도록 읽기 전용으로 표시) -->
   <div id="approval-modal-backdrop" onclick="if(event.target===this) closeApprovalModal()" style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.55); z-index:950; align-items:center; justify-content:center; padding:14px;">
     <div style="background:#ffffff; width:100%; max-width:380px; border-radius:14px; overflow:hidden; box-shadow:0 20px 35px rgba(0,0,0,0.3); display:flex; flex-direction:column;">
       <div id="approval-modal-header" style="background:#1e3a8a; color:#fff; padding:12px 15px; display:flex; align-items:center; justify-content:space-between; font-weight:700; font-size:14px;">
@@ -11874,7 +12106,6 @@ class _HomeScreenState extends State<HomeScreen> {
       <div id="approval-modal-body" style="padding:14px; max-height:68vh; overflow-y:auto; display:flex; flex-direction:column; gap:8px;"></div>
       <div id="approval-modal-footer" style="padding:10px 14px; border-top:1px solid #e2e8f0; display:flex; justify-content:flex-end; gap:8px; background:#f8fafc;">
         <button class="chip-btn" onclick="closeApprovalModal()">닫기</button>
-        <button id="approval-sign-btn" class="app-btn merge" style="background:#1e3a8a; color:#fff; padding:6px 14px;" onclick="signCurrentModalRecordInHtml()">＋ 내 결재/검토 추가</button>
       </div>
     </div>
   </div>
@@ -11971,48 +12202,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     let currentApprovalModalRecordId = null;
 
-    function ensureHtmlUserName() {
-      let nm = (currentAppUserName || '').trim();
-      if (!nm) {
-        const entered = prompt('결재/검토에 표시할 사용자 이름을 입력해 주세요.\\n(이름에 "소장"이 포함되면 결재 시 [결재완료]로 최종 승인됩니다)', '');
-        if (!entered || !entered.trim()) return null;
-        nm = entered.trim();
-        currentAppUserName = nm;
-        try { localStorage.setItem('doc_snap_user_name', nm); } catch (_) {}
-      }
-      return nm;
-    }
-
-    function applyApprovalToRecordInHtml(rec, userName) {
-      if (!rec) return;
-      if (!rec.fields) rec.fields = {};
-      const cleanName = String(userName || '').trim();
-      if (!cleanName) return;
-      const now = new Date();
-      const todayStr = now.getFullYear() + '.' + String(now.getMonth() + 1).padStart(2, '0') + '.' + String(now.getDate()).padStart(2, '0');
-      const current = parseApprovalEntries(rec).filter(function(e) { return e.name !== cleanName; });
-      const isDir = isDirectorUserName(cleanName);
-      current.push({
-        name: cleanName,
-        date: todayStr,
-        role: isDir ? '결재' : '검토'
-      });
-      const reviewers = current.filter(function(e) { return !isDirectorUserName(e.name) && e.role !== '결재'; });
-      const directors = current.filter(function(e) { return isDirectorUserName(e.name) || e.role === '결재'; });
-      rec.fields.approvalsJson = JSON.stringify(reviewers.concat(directors));
-    }
-
     function onTapApprovalCellInHtml(id) {
-      const rec = archiveRecords.find(function(r) { return r.id === id; });
-      if (!rec) return;
-      const list = parseApprovalEntries(rec);
-      if (list.length === 0) {
-        const nm = ensureHtmlUserName();
-        if (!nm) return;
-        applyApprovalToRecordInHtml(rec, nm);
-        render();
-        return;
-      }
       openApprovalModalInHtml(id);
     }
 
@@ -12024,28 +12214,31 @@ class _HomeScreenState extends State<HomeScreen> {
       const isComp = isDirectorApproved(rec);
       const titleEl = document.getElementById('approval-modal-title');
       if (titleEl) {
-        titleEl.textContent = isComp ? '✅ 결재완료 확인 (검토·결재 이력)' : ('📋 검토 및 결재 현황 (' + list.length + '명)');
+        titleEl.textContent = isComp
+          ? '✅ 결재완료 확인 (검토·결재 이력)'
+          : (list.length > 0 ? ('📋 검토 및 결재 현황 (' + list.length + '명)') : '📋 결재 대기 중 (미결재)');
       }
       const bodyEl = document.getElementById('approval-modal-body');
       let bHtml = '<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:7px 10px; font-size:12px; font-weight:700; color:#1e293b;">' +
         escapeHtml(getDisplayTitle(rec)) + '</div>';
       bHtml += '<div style="font-size:11px; color:#475569; line-height:1.35;">▼ 위에서 아래로 검토한 사람과 날짜가 순서대로 표시되며, <b>"소장"</b>이 포함된 결재자는 맨 아래(최종 결재)에 표시됩니다.</div>';
-      list.forEach(function(e, idx) {
-        const isDir = isDirectorUserName(e.name) || e.role === '결재';
-        const rowBg = isDir ? '#f0fdf4' : '#eff6ff';
-        const rowBd = isDir ? '#86efac' : '#bfdbfe';
-        const badgeBg = isDir ? '#15803d' : '#1e3a8a';
-        const badgeTxt = isDir ? '최종결재' : ('검토 ' + (idx + 1));
-        bHtml += '<div style="display:flex; align-items:center; gap:8px; background:' + rowBg + '; border:1.2px solid ' + rowBd + '; border-radius:8px; padding:8px 10px;">' +
-          '<span style="background:' + badgeBg + '; color:#fff; font-size:10.5px; font-weight:700; padding:3px 7px; border-radius:6px;">' + badgeTxt + '</span>' +
-          '<span style="flex:1; font-size:13px; font-weight:700; color:#0f172a;">' + escapeHtml(e.name) + '</span>' +
-          '<span style="font-size:11.5px; font-weight:600; color:#334155;">' + escapeHtml(e.date || '-') + '</span>' +
-          '</div>';
-      });
-      bHtml += '<div style="margin-top:4px; padding-top:8px; border-top:1px dashed #cbd5e1; display:flex; align-items:center; gap:6px;">' +
-        '<span style="font-size:11.5px; font-weight:700; color:#334155;">내 이름:</span>' +
-        '<input id="html-approver-name-input" type="text" placeholder="예: 이경훈, 김철수 소장" value="' + escapeHtml(currentAppUserName) + '" style="flex:1; border:1px solid #93c5fd; border-radius:6px; padding:5px 8px; font-size:12px; font-weight:600;" />' +
-        '</div>';
+      if (list.length === 0) {
+        bHtml += '<div style="padding:18px 10px; text-align:center; color:#64748b; font-size:12px; background:#f8fafc; border-radius:8px; border:1px dashed #cbd5e1;">아직 검토 또는 결재한 내역이 없습니다.<br/>(결재 및 결재취소는 앱에서 진행해 주세요)</div>';
+      } else {
+        list.forEach(function(e, idx) {
+          const isDir = isDirectorUserName(e.name) || e.role === '결재';
+          const rowBg = isDir ? '#f0fdf4' : '#eff6ff';
+          const rowBd = isDir ? '#86efac' : '#bfdbfe';
+          const badgeBg = isDir ? '#15803d' : '#1e3a8a';
+          const badgeTxt = isDir ? '최종결재' : ('검토 ' + (idx + 1));
+          bHtml += '<div style="display:flex; align-items:center; gap:8px; background:' + rowBg + '; border:1.2px solid ' + rowBd + '; border-radius:8px; padding:8px 10px;">' +
+            '<span style="background:' + badgeBg + '; color:#fff; font-size:10.5px; font-weight:700; padding:3px 7px; border-radius:6px;">' + badgeTxt + '</span>' +
+            '<span style="flex:1; font-size:13px; font-weight:700; color:#0f172a; user-select:none;">🔒 ' + escapeHtml(e.name) + '</span>' +
+            '<span style="font-size:11.5px; font-weight:600; color:#334155;">' + escapeHtml(e.date || '-') + '</span>' +
+            '</div>';
+        });
+      }
+      bHtml += '<div style="margin-top:4px; padding:7px 9px; background:#fffbeb; border:1px solid #fde68a; border-radius:7px; font-size:11px; color:#92400e; font-weight:600;">🔒 보안 안내: HTML 내보내기 파일에서는 결재자 이름을 고치거나 임의로 수정할 수 없습니다.</div>';
       bodyEl.innerHTML = bHtml;
       document.getElementById('approval-modal-backdrop').style.display = 'flex';
     }
@@ -12053,21 +12246,6 @@ class _HomeScreenState extends State<HomeScreen> {
     function closeApprovalModal() {
       currentApprovalModalRecordId = null;
       document.getElementById('approval-modal-backdrop').style.display = 'none';
-    }
-
-    function signCurrentModalRecordInHtml() {
-      if (!currentApprovalModalRecordId) return;
-      const rec = archiveRecords.find(function(r) { return r.id === currentApprovalModalRecordId; });
-      if (!rec) return;
-      const inp = document.getElementById('html-approver-name-input');
-      let nm = inp ? inp.value.trim() : '';
-      if (!nm) nm = ensureHtmlUserName() || '';
-      if (!nm) return;
-      currentAppUserName = nm;
-      try { localStorage.setItem('doc_snap_user_name', nm); } catch (_) {}
-      applyApprovalToRecordInHtml(rec, nm);
-      render();
-      openApprovalModalInHtml(currentApprovalModalRecordId);
     }
 
     function isRecordMedicalClaimed(item) {
