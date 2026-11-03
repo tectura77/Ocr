@@ -5643,7 +5643,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       // 2순위: package:image 디코더의 exif 데이터에서 DateTimeOriginal / DateTime 확인
       final decoded = img.decodeImage(rawBytes);
-      if (decoded != null && decoded.exif.isNotEmpty) {
+      if (decoded != null && !decoded.exif.isEmpty) {
         final exifStr = decoded.exif.toString();
         final m = RegExp(
           r'(20[0-3]\d|19[89]\d)[:\-./](0[1-9]|1[0-2])[:\-./](0[1-9]|[12]\d|3[01])',
@@ -5925,6 +5925,7 @@ class _HomeScreenState extends State<HomeScreen> {
       bool isAiAnalyzing = true;
       bool initialAutoRunTriggered = false;
 
+      if (!mounted) return;
       final confirmed = await showDialog<bool>(
         context: context,
         barrierDismissible: false,
@@ -8930,7 +8931,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _exporterUserName = clean;
       });
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefsExporterNameKey, clean);
+      await prefs.setString(_prefsUserNameKey, clean);
       return clean;
     }
     return null;
@@ -13957,7 +13958,7 @@ class _HomeScreenState extends State<HomeScreen> {
             DocRecord.formatDotDate(
               (f['cardDate'] ?? '').trim().isNotEmpty
                   ? f['cardDate']
-                  : r.createdAt.split(' ').first,
+                  : rec.createdAt.split(' ').first,
             ),
           ),
           MapEntry('회사명', f['companyName'] ?? '-'),
