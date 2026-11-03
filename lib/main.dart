@@ -8056,6 +8056,305 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
+  /// ★ GitHub Pages가 꺼져 있어 404가 뜨지 않도록 API로 자동 활성화 시도 (저장소가 Public이거나 Pro 계정일 때 즉시 활성화)
+  Future<void> _ensureGithubPagesEnabled(String repo, String token) async {
+    try {
+      final pagesUri = Uri.parse('https://api.github.com/repos/$repo/pages');
+      final getResp = await http.get(
+        pagesUri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      ).timeout(const Duration(seconds: 6));
+      if (getResp.statusCode == 404) {
+        await http.post(
+          pagesUri,
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          body: jsonEncode({
+            'source': {'branch': 'main', 'path': '/'},
+          }),
+        ).timeout(const Duration(seconds: 8));
+      }
+    } catch (_) {}
+  }
+
+  /// ★ PC 바탕화면에서 더블클릭만 하면(링크 주소 노출 전혀 없이, 404 에러 없이!)
+  /// GitHub 현장공유방의 최신 `공문_통합.html` 및 `자재송장_통합.html`과 원본 사진을
+  /// 실시간으로 불러와 보여주는 초경량 [💻 현장공유방_PC바로가기.html] 생성 및 공유!
+  Future<void> _sharePcLiveShareRoomLauncher({
+    required bool isOfficialInitial,
+  }) async {
+    final repo = _normalizeGithubRepo(_githubRepo);
+    final token = _githubToken.trim();
+    final siteFolder = _githubFolder.trim();
+    if (repo.isEmpty || token.isEmpty || siteFolder.isEmpty) {
+      _showSnack('먼저 설정(⚙️)에서 [GitHub 저장소 · 토큰 · 현장명]을 입력해 주세요!');
+      await _openSettingsDialog();
+      return;
+    }
+
+    final resolvedFolder = _resolvedShareRoomFolder;
+    final cleanSite = siteFolder.replaceAll(RegExp(r'[\/:*?"<>|]'), '_');
+    final launcherFileName = '현장공유방_${cleanSite}_PC바로가기.html';
+
+    // 토큰과 저장소 정보를 간단히 난독화(base64)하여 주소창이나 화면에 URL이 전혀 보이지 않도록 내장
+    final encodedCfg = base64Encode(utf8.encode(jsonEncode({
+      'r': repo,
+      't': token,
+      'f': resolvedFolder,
+      'u': _exporterUserName.trim(),
+      'init': isOfficialInitial ? 'official' : 'invoice',
+    })));
+
+    final launcherHtml = '''<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>☁️ [$siteFolder] 현장공유방 (PC 실시간 열람)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", sans-serif;
+      background: #0f172a; color: #f8fafc;
+      display: flex; flex-direction: column;
+    }
+    .top-hub-bar {
+      height: 46px; background: #1e293b; border-bottom: 1px solid #334155;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 14px; flex-shrink: 0;
+    }
+    .hub-left { display: flex; align-items: center; gap: 8px; }
+    .hub-badge {
+      background: #1e3a8a; color: #fde047; font-weight: 800; font-size: 13px;
+      padding: 5px 11px; border-radius: 7px; border: 1px solid #3b82f6;
+    }
+    .room-tab-btn {
+      padding: 6px 14px; border-radius: 7px; border: 1px solid #475569;
+      background: #0f172a; color: #cbd5e1; font-size: 12.5px; font-weight: 700;
+      cursor: pointer; transition: 0.15s;
+    }
+    .room-tab-btn.active {
+      background: #2563eb; color: #ffffff; border-color: #60a5fa;
+    }
+    .refresh-btn {
+      padding: 6px 12px; border-radius: 7px; border: 1px solid #22c55e;
+      background: #14532d; color: #dcfce7; font-size: 12px; font-weight: 700;
+      cursor: pointer;
+    }
+    #viewer-frame {
+      flex: 1; width: 100%; height: 100%; border: none; background: #f1f5f9;
+    }
+    #loading-overlay {
+      position: fixed; top: 46px; left: 0; right: 0; bottom: 0;
+      background: rgba(15, 23, 42, 0.88);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 999; gap: 12px;
+    }
+    .spinner {
+      width: 38px; height: 38px; border: 4px solid rgba(253, 224, 71, 0.25);
+      border-top-color: #fde047; border-radius: 50%;
+      animation: spin 0.85s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="top-hub-bar">
+    <div class="hub-left">
+      <span class="hub-badge">☁️ 현장공유방 [$siteFolder]</span>
+      <button id="btn-official" class="room-tab-btn" onclick="loadRoom('official')">📄 공문 (수신·발신 통합)</button>
+      <button id="btn-invoice" class="room-tab-btn" onclick="loadRoom('invoice')">📦 자재송장 통합</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <span id="sync-time-label" style="font-size:11.5px; color:#94a3b8;"></span>
+      <button class="refresh-btn" onclick="loadRoom(currentRoomType)">🔄 최신 데이터 새로고침</button>
+    </div>
+  </div>
+  <div id="loading-overlay">
+    <div class="spinner"></div>
+    <div id="loading-msg" style="font-size:13.5px; font-weight:700; color:#fde047;">현장공유방 최신 데이터를 불러오는 중...</div>
+  </div>
+  <iframe id="viewer-frame"></iframe>
+
+  <script>
+    const CFG = JSON.parse(decodeURIComponent(escape(atob("$encodedCfg"))));
+    let currentRoomType = CFG.init || 'official';
+    const photoBlobCache = {};
+
+    async function fetchGithubFileText(relPath) {
+      const encPath = relPath.split('/').map(encodeURIComponent).join('/');
+      const url = 'https://api.github.com/repos/' + CFG.r + '/contents/' + encPath + '?t=' + Date.now();
+      const resp = await fetch(url, {
+        headers: {
+          'Authorization': 'Bearer ' + CFG.t,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        },
+        cache: 'no-store'
+      });
+      if (!resp.ok) throw new Error('아직 공유방에 파일이 없습니다 (' + resp.status + ')');
+      const data = await resp.json();
+      if (data.content) {
+        const b64 = data.content.replace(/\s+/g, '');
+        const binStr = atob(b64);
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+        return new TextDecoder('utf-8').decode(bytes);
+      }
+      if (data.sha) {
+        const bResp = await fetch('https://api.github.com/repos/' + CFG.r + '/git/blobs/' + data.sha, {
+          headers: {
+            'Authorization': 'Bearer ' + CFG.t,
+            'Accept': 'application/vnd.github+json'
+          }
+        });
+        if (bResp.ok) {
+          const bData = await bResp.json();
+          const b64 = (bData.content || '').replace(/\s+/g, '');
+          const binStr = atob(b64);
+          const bytes = new Uint8Array(binStr.length);
+          for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+          return new TextDecoder('utf-8').decode(bytes);
+        }
+      }
+      throw new Error('내용을 읽을 수 없습니다.');
+    }
+
+    async function fetchGithubPhotoDataUrl(relPhotoPath) {
+      if (photoBlobCache[relPhotoPath]) return photoBlobCache[relPhotoPath];
+      const fullPath = relPhotoPath.startsWith(CFG.f + '/') ? relPhotoPath : (CFG.f + '/' + relPhotoPath);
+      const encPath = fullPath.split('/').map(encodeURIComponent).join('/');
+      const url = 'https://api.github.com/repos/' + CFG.r + '/contents/' + encPath;
+      const resp = await fetch(url, {
+        headers: {
+          'Authorization': 'Bearer ' + CFG.t,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        }
+      });
+      if (!resp.ok) return '';
+      const data = await resp.json();
+      let b64 = (data.content || '').replace(/\s+/g, '');
+      if (!b64 && data.sha) {
+        const bResp = await fetch('https://api.github.com/repos/' + CFG.r + '/git/blobs/' + data.sha, {
+          headers: {
+            'Authorization': 'Bearer ' + CFG.t,
+            'Accept': 'application/vnd.github+json'
+          }
+        });
+        if (bResp.ok) {
+          const bData = await bResp.json();
+          b64 = (bData.content || '').replace(/\s+/g, '');
+        }
+      }
+      if (!b64) return '';
+      const dataUrl = 'data:image/jpeg;base64,' + b64;
+      photoBlobCache[relPhotoPath] = dataUrl;
+      return dataUrl;
+    }
+
+    window.addEventListener('message', async function(ev) {
+      if (!ev.data || ev.data.type !== 'REQ_GITHUB_PHOTO') return;
+      const relPath = ev.data.relPath;
+      const reqId = ev.data.reqId;
+      const dataUrl = await fetchGithubPhotoDataUrl(relPath);
+      const frame = document.getElementById('viewer-frame');
+      if (frame && frame.contentWindow) {
+        frame.contentWindow.postMessage({
+          type: 'RES_GITHUB_PHOTO',
+          reqId: reqId,
+          relPath: relPath,
+          dataUrl: dataUrl
+        }, '*');
+      }
+    });
+
+    async function loadRoom(roomType) {
+      currentRoomType = roomType;
+      document.getElementById('btn-official').className = 'room-tab-btn' + (roomType === 'official' ? ' active' : '');
+      document.getElementById('btn-invoice').className = 'room-tab-btn' + (roomType === 'invoice' ? ' active' : '');
+      const overlay = document.getElementById('loading-overlay');
+      const msgEl = document.getElementById('loading-msg');
+      overlay.style.display = 'flex';
+      const fileName = roomType === 'official' ? '공문_통합.html' : '자재송장_통합.html';
+      msgEl.textContent = '☁️ [' + CFG.f + '/' + fileName + '] 실시간 데이터를 불러오는 중...';
+
+      try {
+        let htmlText = await fetchGithubFileText(CFG.f + '/' + fileName);
+        // iframe 내부에서 상대경로 사진(photos/doc_xxx.jpg)을 선택할 때 부모 창을 통해 GitHub API로 즉시 가져오도록 브릿지 주입
+        const bridgeScript = `<script>
+          window.__PC_LIVE_LAUNCHER__ = true;
+          window.addEventListener('message', function(ev) {
+            if (!ev.data || ev.data.type !== 'RES_GITHUB_PHOTO') return;
+            const imgEl = document.getElementById('preview-img');
+            const emptyMsg = document.getElementById('empty-photo-msg');
+            if (imgEl && ev.data.dataUrl) {
+              imgEl.src = ev.data.dataUrl;
+              imgEl.style.display = 'block';
+              if (emptyMsg) emptyMsg.style.display = 'none';
+            }
+          });
+          const _origUpdatePhoto = typeof updatePhotoViewerForCurrent === 'function' ? updatePhotoViewerForCurrent : null;
+          if (_origUpdatePhoto) {
+            updatePhotoViewerForCurrent = function() {
+              _origUpdatePhoto();
+              const current = archiveRecords.find(function(r) { return r.id === selectedId; });
+              if (!current) return;
+              const activeB64 = current.base64Image || '';
+              const remoteRel = current.remoteImagePath || (current.fields && current.fields.remoteImagePath) || '';
+              if (!activeB64 && remoteRel && window.parent) {
+                const imgEl = document.getElementById('preview-img');
+                const emptyMsg = document.getElementById('empty-photo-msg');
+                if (emptyMsg) {
+                  emptyMsg.innerHTML = '☁️ 공유방(photos 폴더)에서 원본 사진을 불러오는 중...';
+                  emptyMsg.style.display = 'block';
+                }
+                if (imgEl) imgEl.style.display = 'none';
+                window.parent.postMessage({
+                  type: 'REQ_GITHUB_PHOTO',
+                  relPath: remoteRel,
+                  reqId: current.id
+                }, '*');
+              }
+            };
+            updatePhotoViewerForCurrent();
+          }
+        <\/script>`;
+        htmlText = htmlText.replace('</body>', bridgeScript + '</body>');
+        const frame = document.getElementById('viewer-frame');
+        frame.srcdoc = htmlText;
+        const now = new Date();
+        document.getElementById('sync-time-label').textContent =
+          '최근 동기화: ' + String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0') + ':' + String(now.getSeconds()).padStart(2,'0');
+        overlay.style.display = 'none';
+      } catch (err) {
+        msgEl.innerHTML = '⚠️ ' + err.message + '<br/><span style="font-size:12px; color:#cbd5e1; font-weight:400;">먼저 스마트폰 앱에서 [올려서 합치기]를 한 번 실행해 주세요.</span>';
+      }
+    }
+
+    loadRoom(currentRoomType);
+  </script>
+</body>
+</html>''';
+
+    final tempDir = await getTemporaryDirectory();
+    final outFile = File(p.join(tempDir.path, launcherFileName));
+    await outFile.writeAsBytes(utf8.encode(launcherHtml), flush: true);
+    await Share.shareXFiles(
+      [XFile(outFile.path, mimeType: 'text/html')],
+      subject: launcherFileName,
+    );
+  }
+
   Future<bool> _putGithubFileContent({
     required String fileName,
     required String htmlContent,
@@ -8101,6 +8400,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (ok) {
       // 혹시라도 트리거된 워크플로우가 있으면 백그라운드에서 즉시 취소하여 GitHub Actions 시간 절약
       _cancelRunningGithubWorkflowsIfAny(repo, token);
+      _ensureGithubPagesEnabled(repo, token);
     }
     return ok;
   }
@@ -9042,6 +9342,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// ★ 특정 서류(rec)에서 결재/검토자(targetUserName)의 결재를 취소(제거)하고 로컬 + 현장공유방에 즉시 반영!
+  /// - 오직 결재를 올린 본인(_exporterUserName)만 자신의 결재를 취소할 수 있도록 보호!
   Future<DocRecord?> _cancelUserApprovalFromRecord({
     required DocRecord rec,
     required String targetUserName,
@@ -9050,7 +9351,12 @@ class _HomeScreenState extends State<HomeScreen> {
     VoidCallback? onStateUpdated,
   }) async {
     final cleanName = targetUserName.trim();
+    final myName = _exporterUserName.trim();
     if (cleanName.isEmpty) return null;
+    if (myName.isEmpty || cleanName != myName) {
+      _showSnack('⚠️ 결재취소는 결재한 본인($cleanName)만 할 수 있습니다.');
+      return null;
+    }
 
     final newApprovalsJson = DocRecord.removeApproverFromRawJson(
       rec.fields['approvalsJson'],
@@ -9321,51 +9627,53 @@ class _HomeScreenState extends State<HomeScreen> {
                                       : const Color(0xFF334155),
                                 ),
                               ),
-                              const SizedBox(width: 6),
-                              InkWell(
-                                borderRadius: BorderRadius.circular(5),
-                                onTap: () async {
-                                  final updated =
-                                      await _cancelUserApprovalFromRecord(
-                                    rec: currentRec,
-                                    targetUserName: name,
-                                    shareRoomRecords: shareRoomRecords,
-                                    isOfficialRoom: isOfficialRoom,
-                                    onStateUpdated: onStateUpdated,
-                                  );
-                                  if (updated != null) {
-                                    if (updated.approvalEntries.isEmpty &&
-                                        hCtx.mounted) {
-                                      Navigator.pop(hCtx);
-                                    } else {
-                                      setHistState(() {
-                                        currentRec = updated;
-                                      });
+                              if (myName.isNotEmpty && name.trim() == myName) ...[
+                                const SizedBox(width: 6),
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(5),
+                                  onTap: () async {
+                                    final updated =
+                                        await _cancelUserApprovalFromRecord(
+                                      rec: currentRec,
+                                      targetUserName: name,
+                                      shareRoomRecords: shareRoomRecords,
+                                      isOfficialRoom: isOfficialRoom,
+                                      onStateUpdated: onStateUpdated,
+                                    );
+                                    if (updated != null) {
+                                      if (updated.approvalEntries.isEmpty &&
+                                          hCtx.mounted) {
+                                        Navigator.pop(hCtx);
+                                      } else {
+                                        setHistState(() {
+                                          currentRec = updated;
+                                        });
+                                      }
                                     }
-                                  }
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 3,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFFEE2E2),
-                                    borderRadius: BorderRadius.circular(5),
-                                    border: Border.all(
-                                      color: const Color(0xFFFCA5A5),
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 3,
                                     ),
-                                  ),
-                                  child: const Text(
-                                    '결재취소',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFFB91C1C),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFEE2E2),
+                                      borderRadius: BorderRadius.circular(5),
+                                      border: Border.all(
+                                        color: const Color(0xFFFCA5A5),
+                                      ),
+                                    ),
+                                    child: const Text(
+                                      '결재취소',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFFB91C1C),
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
+                              ],
                             ],
                           ),
                         );
@@ -10360,20 +10668,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                 backgroundColor: Colors.white,
                                 side: const BorderSide(color: Color(0xFF3B82F6)),
                               ),
-                              onPressed: () async {
-                                final repo = _normalizeGithubRepo(_githubRepo);
-                                final parts = repo.split('/');
-                                if (parts.length == 2 && _githubFolder.trim().isNotEmpty) {
-                                  final url = 'https://${parts[0]}.github.io/${parts[1]}/$_resolvedShareRoomFolder/$_shareOfficialFileName';
-                                  await Clipboard.setData(ClipboardData(text: url));
-                                  _showSnack('💻 PC 웹 접속 주소가 복사되었습니다! (GitHub Pages 활성화 시 PC 브라우저에서 바로 열람 가능)');
-                                } else {
-                                  _showSnack('먼저 설정에서 GitHub 저장소와 현장명을 입력해 주세요.');
-                                }
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                _sharePcLiveShareRoomLauncher(isOfficialInitial: true);
                               },
-                              icon: const Icon(Icons.computer, size: 15, color: Color(0xFF1D4ED8)),
+                              icon: const Icon(Icons.desktop_windows_outlined, size: 15, color: Color(0xFF1D4ED8)),
                               label: const Text(
-                                '💻 PC에서 바로 보는 웹 주소(URL) 복사',
+                                '💻 PC용 현장공유방 바로가기(1회 설치용) 보내기',
                                 style: TextStyle(fontSize: 11.2, fontWeight: FontWeight.bold, color: Color(0xFF1D4ED8)),
                               ),
                             ),
@@ -10481,20 +10782,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                 backgroundColor: Colors.white,
                                 side: BorderSide(color: Colors.brown.shade600),
                               ),
-                              onPressed: () async {
-                                final repo = _normalizeGithubRepo(_githubRepo);
-                                final parts = repo.split('/');
-                                if (parts.length == 2 && _githubFolder.trim().isNotEmpty) {
-                                  final url = 'https://${parts[0]}.github.io/${parts[1]}/$_resolvedShareRoomFolder/$_shareInvoiceFileName';
-                                  await Clipboard.setData(ClipboardData(text: url));
-                                  _showSnack('💻 PC 웹 접속 주소가 복사되었습니다! (GitHub Pages 활성화 시 PC 브라우저에서 바로 열람 가능)');
-                                } else {
-                                  _showSnack('먼저 설정에서 GitHub 저장소와 현장명을 입력해 주세요.');
-                                }
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                _sharePcLiveShareRoomLauncher(isOfficialInitial: false);
                               },
-                              icon: Icon(Icons.computer, size: 15, color: Colors.brown.shade800),
+                              icon: Icon(Icons.desktop_windows_outlined, size: 15, color: Colors.brown.shade800),
                               label: Text(
-                                '💻 PC에서 바로 보는 웹 주소(URL) 복사',
+                                '💻 PC용 현장공유방 바로가기(1회 설치용) 보내기',
                                 style: TextStyle(fontSize: 11.2, fontWeight: FontWeight.bold, color: Colors.brown.shade900),
                               ),
                             ),
