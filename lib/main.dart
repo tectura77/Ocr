@@ -2688,14 +2688,22 @@ class _HomeScreenState extends State<HomeScreen> {
             r.category == DocCategory.invoice && _matchesCurrentPeriodFilter(r))
         .toList();
     if (groupKey == '전체') {
-      double totalQty = 0.0;
-      String unit = 'ton';
+      final Map<String, double> sumByUnit = {};
       for (final r in periodInvoices) {
-        totalQty += r.numericInvoiceQuantity;
-        final u = (r.fields['unit'] ?? '').trim();
-        if (u.isNotEmpty) unit = u;
+        final prod = (r.fields['productName'] ?? '').trim();
+        final rawU = (r.fields['unit'] ?? '').trim();
+        final u = rawU.isNotEmpty
+            ? rawU
+            : (prod.contains('철근') ? 'ton' : '매');
+        sumByUnit[u] = (sumByUnit[u] ?? 0.0) + r.numericInvoiceQuantity;
       }
-      return '전체 (${periodInvoices.length}건 · ${_formatQtyClean(totalQty)}$unit)';
+      if (sumByUnit.isEmpty) {
+        return '전체 (0건)';
+      }
+      final unitParts = sumByUnit.entries
+          .map((e) => '${_formatQtyClean(e.value)}${e.key}')
+          .join(' / ');
+      return '전체 (${periodInvoices.length}건 · $unitParts)';
     }
     final matching = periodInvoices
         .where((r) => _invoiceGroupKeyOf(r) == groupKey)
@@ -4291,7 +4299,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return result;
   }
 
-  /// [자재송장] 3중 완벽 해결 파서
+  /// [자재송장] 3중 완벽 해결 파서 (철근 ton 중량 파서 + PC기둥/PC부재 매수·사이즈(가로×세로×길이) 파서 통합)
   Map<String, String> _parseInvoiceText(
     String fullText,
     List<String> lines,
@@ -4299,34 +4307,52 @@ class _HomeScreenState extends State<HomeScreen> {
   ) {
     final result = <String, String>{};
 
-    final dateMatch = RegExp(r'(\d{4})\s*[-./]\s*(\d{2})\s*[-./]\s*(\d{2})')
-        .firstMatch(fullText);
+    // 1) 날짜 추출: '2026.06.25' 또는 '2026년 6월 25일' 모두 지원
+    final dateMatch = RegExp(
+      r'(\d{4})\s*(?:[-./]|년)\s*(\d{1,2})\s*(?:[-./]|월)\s*(\d{1,2})',
+    ).firstMatch(fullText);
     if (dateMatch != null) {
-      result['arrivalDate'] =
-          '${dateMatch.group(1)}.${dateMatch.group(2)}.${dateMatch.group(3)}';
+      final y = dateMatch.group(1)!;
+      final m = dateMatch.group(2)!.padLeft(2, '0');
+      final d = dateMatch.group(3)!.padLeft(2, '0');
+      result['arrivalDate'] = '$y.$m.$d';
     }
 
+    // 2) 주문/송장/제품번호 추출 (예: A-1-20210908-0001, 10~14자리 숫자, 또는 PC부재 제품번호 13-211-0100 등)
     final orderMatch = RegExp(
-      r'([A-Z]-\d-\d{8}-\d{4,6}|\b\d{10,14}\b)',
+      r'([A-Z]-\d-\d{8}-\d{4,6}|\b\d{10,14}\b|\b\d{2}-\d{3}-\d{4}\b)',
     ).firstMatch(fullText);
     if (orderMatch != null) {
       result['orderNumber'] = orderMatch.group(1)!;
     }
 
+    // 3) 공급자 상호 추출 ((주)창영..., 현대제철 등 앞뒤 (주)/㈜ 모두 지원)
     if (fullText.toUpperCase().contains('HYUNDAI STEEL') ||
         fullText.contains('현대제철')) {
       result['supplierName'] = '현대제철';
     } else {
       final supplierMatch = RegExp(
-        r'([가-힣A-Za-z0-9]+(?:제철|철강|자재|산업|건업|물산|상사|테크|금속|시멘트|레미콘)(?:\(주\)|주식회사)?)',
+        r'((?:\(주\)|주식회사|㈜)\s*[가-힣A-Za-z0-9]{2,12}|[가-힣A-Za-z0-9]{2,12}(?:제철|철강|자재|산업|건업|물산|상사|테크|금속|시멘트|레미콘|피씨|PC|콘크리트|기업|개발|이엔지|ENG)(?:\(주\)|주식회사|㈜)?)',
       ).firstMatch(fullText);
       if (supplierMatch != null) {
-        result['supplierName'] = supplierMatch.group(1)!;
+        result['supplierName'] = supplierMatch.group(1)!.trim();
       }
     }
 
+    // 4) 제품명 판별 (PC기둥 / PC보 / PC슬래브 / 고장력철근 등)
     String detectedProduct = '';
-    if (RegExp(r'고\s*장\s*력\s*철\s*근').hasMatch(fullText) ||
+    final pcMatch = RegExp(
+      r'(PC\s*(?:기둥|보|슬래브|거더|벽체|패널|계단|암거|부재)|피씨\s*(?:기둥|보|슬래브|부재))',
+      caseSensitive: false,
+    ).firstMatch(fullText);
+
+    if (pcMatch != null) {
+      detectedProduct = pcMatch
+          .group(1)!
+          .replaceAll(RegExp(r'\s+'), '')
+          .toUpperCase()
+          .replaceFirst('피씨', 'PC');
+    } else if (RegExp(r'고\s*장\s*력\s*철\s*근').hasMatch(fullText) ||
         fullText.toUpperCase().contains('HYUNDAI STEEL') ||
         RegExp(r'\bD\d{2}\s*MM\b', caseSensitive: false).hasMatch(fullText) ||
         RegExp(r'\b(?:SD\s*[3456]00|SHD|UHD)\b', caseSensitive: false)
@@ -4334,13 +4360,17 @@ class _HomeScreenState extends State<HomeScreen> {
       detectedProduct = '고장력철근';
     } else if (fullText.contains('철근') || fullText.contains('이형봉강')) {
       detectedProduct = '고장력철근';
+    } else if (RegExp(r'매\s*수').hasMatch(fullText) &&
+        RegExp(r'가\s*로').hasMatch(fullText) &&
+        RegExp(r'세\s*로').hasMatch(fullText)) {
+      detectedProduct = 'PC기둥';
     } else {
       for (final line in lines) {
         if (RegExp(r'착지|운송|주소|Page|공장|주문번호|청구번호|규격명').hasMatch(line)) {
           continue;
         }
         final prodMatch = RegExp(
-                r'([가-힣A-Za-z0-9]+(?:시멘트|레미콘|몰탈|파이프|강관|합판|목재|벽돌|타일|석고보드|단열재|철근|형강))')
+                r'([가-힣A-Za-z0-9]+(?:기둥|시멘트|레미콘|몰탈|파이프|강관|합판|목재|벽돌|타일|석고보드|단열재|철근|형강))')
             .firstMatch(line);
         if (prodMatch != null) {
           detectedProduct = prodMatch.group(1)!;
@@ -4352,6 +4382,90 @@ class _HomeScreenState extends State<HomeScreen> {
     result['productName'] = detectedProduct;
 
     final bool isRebar = detectedProduct.contains('철근');
+
+    // ★ [PC기둥 / PC부재 / 가로·세로·길이·매수 표 양식 송장] 전용 정밀 추출!
+    // 예: 제품번호 13-211-0100 | 매수 5 | 중량(TON) 24.000 | 가로 800 | 세로 300 | 길이 6,750
+    // -> 제품명: PC기둥, 규격명: 800×300×6750 (사이즈), 단위: 매, 수량: 5
+    final bool isPcOrDimensionTable = !isRebar &&
+        (detectedProduct.toUpperCase().contains('PC') ||
+            detectedProduct.contains('기둥') ||
+            (RegExp(r'가\s*로').hasMatch(fullText) &&
+                RegExp(r'세\s*로').hasMatch(fullText)));
+
+    if (isPcOrDimensionTable) {
+      final List<Map<String, String>> pcRows = [];
+      for (final line in lines) {
+        if (RegExp(r'제\s*품\s*번\s*호|출\s*하\s*일\s*자|하\s*차\s*시\s*간|합\s*계')
+            .hasMatch(line)) {
+          continue;
+        }
+        // 패턴 A: 한 줄에 [제품번호(선택)] [매수] [중량(소수점3자리)] [가로] [세로] [길이] 가 있는 경우
+        final rowMatch = RegExp(
+          r'(?:\b(\d{2,3}-\d{2,4}-\d{3,5})\b\s+)?(\d{1,3})\s+\d{1,3}[.,]\d{3}\s+(\d{2,4})\s+(\d{2,4})\s+(\d{1,2},?\d{3}|\d{3,5})',
+        ).firstMatch(line);
+        if (rowMatch != null) {
+          final prodCode = (rowMatch.group(1) ?? '').trim();
+          if (prodCode.isNotEmpty && (result['orderNumber'] ?? '').isEmpty) {
+            result['orderNumber'] = prodCode;
+          }
+          final qtyStr = rowMatch.group(2)!.trim();
+          final w = rowMatch.group(3)!.replaceAll(',', '').trim();
+          final d = rowMatch.group(4)!.replaceAll(',', '').trim();
+          final len = rowMatch.group(5)!.replaceAll(',', '').trim();
+          pcRows.add({
+            'productName': detectedProduct,
+            'specName': '$w×$d×$len',
+            'unit': '매',
+            'quantity': qtyStr,
+          });
+        }
+      }
+
+      // 패턴 B: 셀이 분리되어 줄 단위로 한 번에 안 잡혔을 때 전체 텍스트에서 추출
+      if (pcRows.isEmpty) {
+        final fullRowMatch = RegExp(
+          r'(\d{1,3})\s+\d{1,3}[.,]\d{3}\s+(\d{2,4})\s+(\d{2,4})\s+(\d{1,2},?\d{3}|\d{3,5})',
+        ).firstMatch(fullText);
+        if (fullRowMatch != null) {
+          final qtyStr = fullRowMatch.group(1)!.trim();
+          final w = fullRowMatch.group(2)!.replaceAll(',', '').trim();
+          final d = fullRowMatch.group(3)!.replaceAll(',', '').trim();
+          final len = fullRowMatch.group(4)!.replaceAll(',', '').trim();
+          pcRows.add({
+            'productName': detectedProduct,
+            'specName': '$w×$d×$len',
+            'unit': '매',
+            'quantity': qtyStr,
+          });
+        } else {
+          // 패턴 C: 800×300×6750 또는 800*300*6750 직접 표기 탐색
+          final dimMatch = RegExp(
+            r'(\d{2,4})\s*[xX×*]\s*(\d{2,4})\s*[xX×*]\s*(\d{1,2},?\d{3}|\d{3,5})',
+          ).firstMatch(fullText);
+          final maesuMatch =
+              RegExp(r'(\d{1,3})\s*매').firstMatch(fullText);
+          if (dimMatch != null) {
+            final w = dimMatch.group(1)!.replaceAll(',', '');
+            final d = dimMatch.group(2)!.replaceAll(',', '');
+            final len = dimMatch.group(3)!.replaceAll(',', '');
+            pcRows.add({
+              'productName': detectedProduct,
+              'specName': '$w×$d×$len',
+              'unit': '매',
+              'quantity': maesuMatch?.group(1) ?? '1',
+            });
+          }
+        }
+      }
+
+      if (pcRows.isNotEmpty) {
+        result['itemsJson'] = jsonEncode(pcRows);
+        result['specName'] = pcRows.first['specName'] ?? '';
+        result['unit'] = pcRows.first['unit'] ?? '매';
+        result['quantity'] = pcRows.first['quantity'] ?? '';
+        return result;
+      }
+    }
 
     final allLinesElements = <TextLine>[];
     for (final b in recognized.blocks) {
@@ -5151,14 +5265,21 @@ class _HomeScreenState extends State<HomeScreen> {
 ''';
     } else if (category == DocCategory.invoice) {
       prompt = '''
-이 자재송장/거래명세서 이미지를 읽고 순수 JSON으로 응답해줘 (합계 19.696은 제외하고 각 규격별 중량 3.744, 15.952만 넣을 것):
+이 자재송장/거래명세서/출하전표 이미지를 읽고 실제 적힌 값만 순수 JSON으로 정확히 응답해줘.
+★ 핵심 규칙 (절대 예시 숫자를 그대로 베끼지 말고 이미지의 실제 값만 추출할 것!):
+1) [철근류(고장력철근 등)인 경우]:
+   - unit(단위)은 반드시 "ton"으로 하고, quantity(수량)에는 각 규격(예: D16MM, D32MM)별 중량(톤)을 넣을 것 (하단 합계 중량은 제외).
+2) [철근이 아닌 자재(예: PC기둥, PC보, PC슬래브 등 PC부재 및 일반 자재)인 경우]:
+   - productName: 문서 상단 현장명 옆이나 품목란에 적힌 실제 품목명 (예: "PC기둥")
+   - specName(규격명): 절대 제품번호(예: 13-211-0100)를 규격에 넣지 말고, 부재의 실제 치수/사이즈인 가로×세로×길이(쉼표 제거, 예: 가로 800, 세로 300, 길이 6,750이면 "800×300×6750")를 넣을 것! (제품번호 13-211-0100 등은 orderNumber에 넣을 것)
+   - unit(단위): 철근이 아니므로 중량(ton)이 아니라 수량 단위인 "매"(매수 칸이 있을 때) 또는 "EA"/"개"/"m3" 등을 넣을 것!
+   - quantity(수량): 중량(예: 24.000)이 아니라 실제 수량/매수(예: 매수 칸에 5가 적혀 있으면 "5")를 넣을 것! (하단 '계' 합계 행은 중복 추가하지 말 것)
 {
-  "arrivalDate": "2021.09.08",
-  "supplierName": "현대제철",
-  "orderNumber": "송장번호",
+  "arrivalDate": "YYYY.MM.DD (출하일자 또는 발행일)",
+  "supplierName": "공급자 상호명",
+  "orderNumber": "송장번호 또는 제품번호",
   "items": [
-    {"productName": "고장력철근", "specName": "D32MM", "unit": "ton", "quantity": "3.744"},
-    {"productName": "고장력철근", "specName": "D16MM", "unit": "ton", "quantity": "15.952"}
+    {"productName": "실제품목명", "specName": "실제규격(PC부재는 가로×세로×길이 예: 800×300×6750)", "unit": "매 또는 ton 또는 EA", "quantity": "실제수량(PC부재는 매수 예: 5, 철근은 중량)"}
   ]
 }''';
     } else if (category == DocCategory.travel) {
@@ -5758,8 +5879,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
       void enforceRebarRuleOnRows() {
         for (final row in invoiceRows) {
-          if (row.productCtrl.text.contains('철근')) {
+          final pText = row.productCtrl.text.trim();
+          if (pText.contains('철근')) {
             row.unitCtrl.text = 'ton';
+          } else if (pText.toUpperCase().contains('PC') ||
+              pText.contains('기둥') ||
+              pText.contains('슬래브') ||
+              pText.contains('패널')) {
+            if (row.unitCtrl.text.trim().isEmpty ||
+                row.unitCtrl.text.trim().toLowerCase() == 'ton') {
+              row.unitCtrl.text = '매';
+            }
           }
         }
       }
@@ -5859,15 +5989,32 @@ class _HomeScreenState extends State<HomeScreen> {
                   final m = item as Map<String, dynamic>;
                   final prod = (m['productName']?.toString() ?? '고장력철근').trim();
                   final isRebar = prod.contains('철근');
+                  final isPc = prod.toUpperCase().contains('PC') ||
+                      prod.contains('기둥') ||
+                      prod.contains('슬래브');
+                  final rawUnit = (m['unit']?.toString() ?? '').trim();
+                  final resolvedUnit = isRebar
+                      ? 'ton'
+                      : (isPc && (rawUnit.isEmpty || rawUnit.toLowerCase() == 'ton')
+                          ? '매'
+                          : (rawUnit.isNotEmpty ? rawUnit : '매'));
+                  String rawSpec = (m['specName']?.toString() ?? '').trim();
+                  // 규격명의 곱셈 기호를 '×'로 통일 (예: 800*300*6750, 800x300x6,750 -> 800×300×6750)
+                  if (!isRebar &&
+                      RegExp(r'^\d+\s*[xX×*]\s*\d+').hasMatch(rawSpec)) {
+                    rawSpec = rawSpec
+                        .replaceAll(',', '')
+                        .replaceAll(RegExp(r'\s*[xX×*]\s*'), '×');
+                  }
+                  String rawQty = (m['quantity']?.toString() ?? '').trim();
+                  if (!isRebar) {
+                    rawQty = rawQty.replaceAll(RegExp(r'(?:매|EA|개|본)\$', caseSensitive: false), '').trim();
+                  }
                   return InvoiceSpecRow(
                     product: prod,
-                    spec: m['specName']?.toString() ?? '',
-                    unit: isRebar
-                        ? 'ton'
-                        : (m['unit']?.toString().isNotEmpty == true
-                            ? m['unit'].toString()
-                            : 'EA'),
-                    qty: m['quantity']?.toString() ?? '',
+                    spec: rawSpec,
+                    unit: resolvedUnit,
+                    qty: rawQty,
                   );
                 }).toList();
               }
@@ -5875,12 +6022,33 @@ class _HomeScreenState extends State<HomeScreen> {
           } else {
             final prod = extracted['productName'] ?? '고장력철근';
             final isRebar = prod.contains('철근');
+            final isPc = prod.toUpperCase().contains('PC') ||
+                prod.contains('기둥') ||
+                prod.contains('슬래브');
+            final rawUnit = (extracted['unit'] ?? '').trim();
+            final resolvedUnit = isRebar
+                ? 'ton'
+                : (isPc && (rawUnit.isEmpty || rawUnit.toLowerCase() == 'ton')
+                    ? '매'
+                    : (rawUnit.isNotEmpty ? rawUnit : '매'));
+            String rawSpec = (extracted['specName'] ?? '').trim();
+            if (!isRebar &&
+                RegExp(r'^\d+\s*[xX×*]\s*\d+').hasMatch(rawSpec)) {
+              rawSpec = rawSpec
+                  .replaceAll(',', '')
+                  .replaceAll(RegExp(r'\s*[xX×*]\s*'), '×');
+            }
+            String rawQty =
+                (extracted['quantity'] ?? extracted['weight'] ?? '').trim();
+            if (!isRebar) {
+              rawQty = rawQty.replaceAll(RegExp(r'(?:매|EA|개|본)\$', caseSensitive: false), '').trim();
+            }
             invoiceRows = [
               InvoiceSpecRow(
                 product: prod,
-                spec: extracted['specName'] ?? '',
-                unit: isRebar ? 'ton' : (extracted['unit'] ?? 'EA'),
-                qty: extracted['quantity'] ?? extracted['weight'] ?? '',
+                spec: rawSpec,
+                unit: resolvedUnit,
+                qty: rawQty,
               ),
             ];
           }
@@ -6335,6 +6503,15 @@ class _HomeScreenState extends State<HomeScreen> {
                                                   invoiceRows[idx]
                                                       .unitCtrl
                                                       .text = 'ton';
+                                                });
+                                              } else if (val
+                                                      .toUpperCase()
+                                                      .contains('PC') ||
+                                                  val.contains('기둥')) {
+                                                setDialogState(() {
+                                                  invoiceRows[idx]
+                                                      .unitCtrl
+                                                      .text = '매';
                                                 });
                                               }
                                             },
@@ -7291,6 +7468,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           onChanged: (v) {
                             if (v.contains('철근')) {
                               setDialogState(() => unitCtrl.text = 'ton');
+                            } else if (v.toUpperCase().contains('PC') ||
+                                v.contains('기둥')) {
+                              setDialogState(() => unitCtrl.text = '매');
                             }
                           },
                         ),
@@ -13284,15 +13464,17 @@ class _HomeScreenState extends State<HomeScreen> {
           const matched = majorList.filter(function(r) {
             return p === '전체' || getInvoiceGroupKey(r) === p;
           });
-          let sumQty = 0;
-          let unit = 'ton';
+          const sumByUnit = {};
           matched.forEach(function(r) {
-            sumQty += getNumericQty(r);
-            if (r.fields && r.fields.unit) unit = r.fields.unit;
+            const q = getNumericQty(r);
+            const prod = (r.fields && r.fields.productName) ? r.fields.productName : '';
+            const u = (r.fields && r.fields.unit) ? r.fields.unit : (prod.indexOf('철근') !== -1 ? 'ton' : '매');
+            sumByUnit[u] = (sumByUnit[u] || 0) + q;
           });
+          const unitParts = Object.keys(sumByUnit).map(function(u) { return formatQtyNum(sumByUnit[u]) + u; }).join(' / ') || '0';
           const label = p === '전체'
-            ? ('전체 (' + matched.length + '건 · ' + formatQtyNum(sumQty) + unit + ')')
-            : (p + '(' + formatQtyNum(sumQty) + unit + ')');
+            ? ('전체 (' + matched.length + '건 · ' + unitParts + ')')
+            : (p + '(' + unitParts + ')');
           const cls = (selectedInvoiceProductFilter === p) ? 'active' : '';
           html += '<button class="amber-chip ' + cls + '" onclick="selectedInvoiceProductFilter=\\'' + escapeHtml(p) + '\\'; render();">' + escapeHtml(label) + '</button>';
         });
