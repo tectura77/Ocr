@@ -227,48 +227,134 @@ class DocRecord {
     return id;
   }
 
-  /// 병원비 및 PDF변환 탭에서 사용하는 추가 페이지(증빙첨부) 이미지 Base64 리스트
-  List<String> get extraProofImages {
-    final raw = (fields['proofImagesJson'] ?? '').trim();
-    if (raw.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is List) {
-          return decoded
-              .map((e) => e.toString())
-              .where((s) => s.isNotEmpty)
-              .toList();
+  static List<String> _parseStringListFlexible(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return const <String>[];
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is List) {
+        final List<String> res = <String>[];
+        for (final item in decoded) {
+          if (item == null) continue;
+          if (item is String && item.trim().isNotEmpty) {
+            res.add(item.trim());
+          } else if (item is Map) {
+            final cand = (item['base64'] ??
+                    item['base64Image'] ??
+                    item['data'] ??
+                    item['src'] ??
+                    item['image'] ??
+                    '')
+                .toString()
+                .trim();
+            if (cand.isNotEmpty) res.add(cand);
+          }
         }
-      } catch (_) {}
+        if (res.isNotEmpty) return res;
+      } else if (decoded is String && decoded.trim().isNotEmpty) {
+        return _parseStringListFlexible(decoded);
+      }
+    } catch (_) {}
+    if (trimmed.contains('|||')) {
+      return trimmed
+          .split('|||')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
     }
+    return const <String>[];
+  }
+
+  /// 병원비 및 PDF변환 탭에서 사용하는 추가 페이지(증빙첨부) 이미지 Base64 리스트
+  /// (구버전 HTML의 모든 필드 키 포맷 완벽 호환!)
+  List<String> get extraProofImages {
+    const candidateKeys = <String>[
+      'proofImagesJson',
+      'extraProofImagesJson',
+      'extraImagesJson',
+      'proofBase64ListJson',
+      'proofImages',
+      'extraProofImages',
+      'extraImages',
+      'attachmentsJson',
+      'pagesJson',
+    ];
+    for (final k in candidateKeys) {
+      final raw = (fields[k] ?? '').trim();
+      if (raw.isNotEmpty) {
+        final parsed = _parseStringListFlexible(raw);
+        if (parsed.isNotEmpty) return parsed;
+      }
+    }
+    final List<String> numbered = <String>[];
+    for (int i = 1; i <= 20; i++) {
+      final v = (fields['proofImage$i'] ??
+              fields['proofBase64_$i'] ??
+              fields['extraImage$i'] ??
+              '')
+          .trim();
+      if (v.isNotEmpty) numbered.add(v);
+    }
+    if (numbered.isNotEmpty) return numbered;
     return const <String>[];
   }
 
   /// 병원비 및 PDF변환 탭에서 사용하는 추가 페이지 로컬 파일 경로 리스트
   List<String> get extraProofImagePaths {
-    final raw = (fields['proofPathsJson'] ?? '').trim();
-    if (raw.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(raw);
-        if (decoded is List) {
-          return decoded
-              .map((e) => e.toString())
-              .where((s) => s.isNotEmpty)
-              .toList();
-        }
-      } catch (_) {}
+    const candidateKeys = <String>[
+      'proofPathsJson',
+      'extraProofPathsJson',
+      'extraImagePathsJson',
+      'proofPaths',
+      'extraProofImagePaths',
+    ];
+    for (final k in candidateKeys) {
+      final raw = (fields[k] ?? '').trim();
+      if (raw.isNotEmpty) {
+        final parsed = _parseStringListFlexible(raw);
+        if (parsed.isNotEmpty) return parsed;
+      }
     }
     return const <String>[];
   }
 
-  int get proofAttachmentCount {
-    final pathsLen = extraProofImagePaths.length;
-    final b64Len = extraProofImages.length;
-    if (pathsLen > 0 || b64Len > 0) {
-      return math.max(pathsLen, b64Len);
+  static Uint8List? decodeBase64Flexible(String? rawInput) {
+    if (rawInput == null) return null;
+    String s = rawInput.trim();
+    if (s.isEmpty) return null;
+    if (s.contains(',')) {
+      s = s.split(',').last.trim();
     }
+    s = s.replaceAll(RegExp(r'\s+'), '');
+    if (s.isEmpty) return null;
+    try {
+      return base64Decode(s);
+    } catch (_) {
+      try {
+        String norm = s.replaceAll('-', '+').replaceAll('_', '/');
+        while (norm.length % 4 != 0) {
+          norm += '=';
+        }
+        return base64Decode(norm);
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  int get proofAttachmentCount {
+    final actualResolved = resolveAllProofImageBytes().length;
+    if (actualResolved > 0) return actualResolved;
+    final b64Len = extraProofImages.length;
+    if (b64Len > 0) return b64Len;
+    final validPathsLen = extraProofImagePaths
+        .where((pStr) =>
+            pStr.trim().isNotEmpty &&
+            !pStr.startsWith('photos/') &&
+            File(pStr).existsSync())
+        .length;
+    if (validPathsLen > 0) return validPathsLen;
     final statusStr = (fields['proofStatus'] ?? '').trim();
-    final m = RegExp(r'\((\d+)장\)').firstMatch(statusStr);
+    final m = RegExp(r'\((\d+)\s*장?\)').firstMatch(statusStr);
     if (m != null) {
       return int.tryParse(m.group(1)!) ?? 0;
     }
@@ -287,15 +373,7 @@ class DocRecord {
         }
       } catch (_) {}
     }
-    if (base64Image.trim().isNotEmpty) {
-      try {
-        final clean = base64Image.contains(',')
-            ? base64Image.split(',').last
-            : base64Image;
-        return base64Decode(clean.replaceAll(RegExp(r'\s+'), ''));
-      } catch (_) {}
-    }
-    return null;
+    return decodeBase64Flexible(base64Image);
   }
 
   List<Uint8List> resolveAllProofImageBytes() {
@@ -305,7 +383,9 @@ class DocRecord {
     final cnt = math.max(paths.length, b64s.length);
     for (int i = 0; i < cnt; i++) {
       Uint8List? bytes;
-      if (i < paths.length && paths[i].trim().isNotEmpty) {
+      if (i < paths.length &&
+          paths[i].trim().isNotEmpty &&
+          !paths[i].startsWith('photos/')) {
         try {
           final pf = File(paths[i]);
           if (pf.existsSync()) {
@@ -313,13 +393,10 @@ class DocRecord {
           }
         } catch (_) {}
       }
-      if (bytes == null && i < b64s.length && b64s[i].trim().isNotEmpty) {
-        try {
-          final raw = b64s[i].contains(',')
-              ? b64s[i].split(',').last
-              : b64s[i];
-          bytes = base64Decode(raw.replaceAll(RegExp(r'\s+'), ''));
-        } catch (_) {}
+      if ((bytes == null || bytes.isEmpty) &&
+          i < b64s.length &&
+          b64s[i].trim().isNotEmpty) {
+        bytes = decodeBase64Flexible(b64s[i]);
       }
       if (bytes != null && bytes.isNotEmpty) {
         out.add(bytes);
@@ -602,8 +679,57 @@ class DocRecord {
 
   factory DocRecord.fromJson(Map<String, dynamic> json) {
     final rawFields = json['fields'] as Map<String, dynamic>? ?? {};
-    final cleanFields =
-        rawFields.map((k, v) => MapEntry(k, v?.toString() ?? ''));
+    final Map<String, String> cleanFields = <String, String>{};
+    rawFields.forEach((k, v) {
+      if (v == null) {
+        cleanFields[k] = '';
+      } else if (v is List || v is Map) {
+        cleanFields[k] = jsonEncode(v);
+      } else {
+        cleanFields[k] = v.toString();
+      }
+    });
+    // 만약 구버전 HTML/JSON 최상위에 증빙첨부 배열이 들어있는 경우까지 자동 흡수
+    const topExtraKeys = <String>[
+      'proofImages',
+      'extraProofImages',
+      'extraImages',
+      'proofImagesJson',
+      'attachments',
+    ];
+    if ((cleanFields['proofImagesJson'] ?? '').trim().isEmpty) {
+      for (final tk in topExtraKeys) {
+        final topVal = json[tk];
+        if (topVal != null) {
+          if (topVal is List && topVal.isNotEmpty) {
+            cleanFields['proofImagesJson'] = jsonEncode(topVal);
+            break;
+          } else if (topVal is String && topVal.trim().isNotEmpty) {
+            cleanFields['proofImagesJson'] = topVal.trim();
+            break;
+          }
+        }
+      }
+    }
+    const topPathKeys = <String>[
+      'proofPaths',
+      'extraProofImagePaths',
+      'proofPathsJson',
+    ];
+    if ((cleanFields['proofPathsJson'] ?? '').trim().isEmpty) {
+      for (final pk in topPathKeys) {
+        final topVal = json[pk];
+        if (topVal != null) {
+          if (topVal is List && topVal.isNotEmpty) {
+            cleanFields['proofPathsJson'] = jsonEncode(topVal);
+            break;
+          } else if (topVal is String && topVal.trim().isNotEmpty) {
+            cleanFields['proofPathsJson'] = topVal.trim();
+            break;
+          }
+        }
+      }
+    }
     if (cleanFields.containsKey('docNumber')) {
       cleanFields['docNumber'] = stripDocNumSpaces(cleanFields['docNumber']);
     }
@@ -1489,36 +1615,62 @@ class _HomeScreenState extends State<HomeScreen> {
     for (int i = 0; i < _records.length; i++) {
       DocRecord r = _records[i];
       String imgPath = r.imagePath;
-      if ((imgPath.isEmpty || !File(imgPath).existsSync()) &&
+      if ((imgPath.isEmpty ||
+              imgPath.startsWith('photos/') ||
+              !File(imgPath).existsSync()) &&
           r.base64Image.trim().isNotEmpty) {
         try {
-          final bytes = base64Decode(r.base64Image);
-          final restoredFile = File(p.join(appDir.path, 'doc_${r.id}.jpg'));
-          await restoredFile.writeAsBytes(bytes, flush: true);
-          imgPath = restoredFile.path;
+          final bytes = DocRecord.decodeBase64Flexible(r.base64Image);
+          if (bytes != null && bytes.isNotEmpty) {
+            final restoredFile = File(p.join(appDir.path, 'doc_${r.id}.jpg'));
+            await restoredFile.writeAsBytes(bytes, flush: true);
+            imgPath = restoredFile.path;
+          }
         } catch (_) {}
       }
 
       Map<String, String> cleanFields = Map<String, String>.from(r.fields);
-      if (cleanFields.containsKey('proofImagesJson')) {
-        final rawB64s = r.extraProofImages;
-        final existingPaths = r.extraProofImagePaths;
-        if (rawB64s.isNotEmpty && existingPaths.length < rawB64s.length) {
-          final List<String> newPaths = <String>[];
-          for (int pIdx = 0; pIdx < rawB64s.length; pIdx++) {
-            try {
-              final pBytes = base64Decode(rawB64s[pIdx]);
+      final rawB64s = r.extraProofImages;
+      final existingPaths = r.extraProofImagePaths;
+      final validExistingPaths = existingPaths
+          .where((pStr) =>
+              pStr.trim().isNotEmpty &&
+              !pStr.startsWith('photos/') &&
+              File(pStr).existsSync())
+          .toList();
+
+      if (rawB64s.isNotEmpty && validExistingPaths.length < rawB64s.length) {
+        final List<String> newPaths = <String>[];
+        for (int pIdx = 0; pIdx < rawB64s.length; pIdx++) {
+          try {
+            Uint8List? pBytes;
+            if (pIdx < existingPaths.length &&
+                existingPaths[pIdx].trim().isNotEmpty &&
+                !existingPaths[pIdx].startsWith('photos/') &&
+                File(existingPaths[pIdx]).existsSync()) {
+              pBytes = File(existingPaths[pIdx]).readAsBytesSync();
+            }
+            pBytes ??= DocRecord.decodeBase64Flexible(rawB64s[pIdx]);
+            if (pBytes != null && pBytes.isNotEmpty) {
               final pf =
                   File(p.join(appDir.path, 'proof_${r.id}_$pIdx.jpg'));
               await pf.writeAsBytes(pBytes, flush: true);
               newPaths.add(pf.path);
-            } catch (_) {}
-          }
-          if (newPaths.isNotEmpty) {
-            cleanFields['proofPathsJson'] = jsonEncode(newPaths);
-            cleanFields['proofStatus'] = '첨부(${newPaths.length}장)';
-          }
+            }
+          } catch (_) {}
         }
+        if (newPaths.isNotEmpty) {
+          cleanFields['proofPathsJson'] = jsonEncode(newPaths);
+          cleanFields['proofStatus'] = '첨부(${newPaths.length}장)';
+          cleanFields.remove('proofImagesJson');
+          cleanFields.remove('extraProofImagesJson');
+          cleanFields.remove('extraImagesJson');
+          cleanFields.remove('proofImages');
+          cleanFields.remove('extraProofImages');
+        }
+      } else if (validExistingPaths.isNotEmpty) {
+        cleanFields['proofPathsJson'] = jsonEncode(validExistingPaths);
+        cleanFields['proofStatus'] = '첨부(${validExistingPaths.length}장)';
         cleanFields.remove('proofImagesJson');
       }
 
@@ -2271,6 +2423,30 @@ class _HomeScreenState extends State<HomeScreen> {
         final pa = (a.fields['personName'] ?? '').trim();
         final pb = (b.fields['personName'] ?? '').trim();
         cmp = pa.compareTo(pb);
+      } else if (col == 'title') {
+        cmp = (a.fields['title'] ?? '').trim().compareTo((b.fields['title'] ?? '').trim());
+      } else if (col == 'aiSummary') {
+        cmp = (a.fields['aiSummary'] ?? '').trim().compareTo((b.fields['aiSummary'] ?? '').trim());
+      } else if (col == 'replyDeadline') {
+        cmp = DocRecord.formatDotDate(a.fields['replyDeadline']).compareTo(DocRecord.formatDotDate(b.fields['replyDeadline']));
+      } else if (col == 'replyDocNumber') {
+        cmp = (a.fields['replyDocNumber'] ?? '').trim().compareTo((b.fields['replyDocNumber'] ?? '').trim());
+      } else if (col == 'unit') {
+        cmp = (a.fields['unit'] ?? '').trim().compareTo((b.fields['unit'] ?? '').trim());
+      } else if (col == 'quantity') {
+        cmp = a.numericInvoiceQuantity.compareTo(b.numericInvoiceQuantity);
+      } else if (col == 'orderNumber') {
+        cmp = (a.fields['orderNumber'] ?? '').trim().compareTo((b.fields['orderNumber'] ?? '').trim());
+      } else if (col == 'travelDivision') {
+        cmp = a.travelDivision.compareTo(b.travelDivision);
+      } else if (col == 'bizRegNumber') {
+        cmp = (a.fields['bizRegNumber'] ?? '').trim().compareTo((b.fields['bizRegNumber'] ?? '').trim());
+      } else if (col == 'mobilePhone') {
+        cmp = (a.fields['mobilePhone'] ?? '').trim().compareTo((b.fields['mobilePhone'] ?? '').trim());
+      } else if (col == 'email') {
+        cmp = (a.fields['email'] ?? '').trim().compareTo((b.fields['email'] ?? '').trim());
+      } else if (col == 'approval') {
+        cmp = a.approvalStatusLabel.compareTo(b.approvalStatusLabel);
       } else if (col == 'pdfFileName') {
         final fa = (a.fields['pdfFileName'] ?? '').trim();
         final fb = (b.fields['pdfFileName'] ?? '').trim();
@@ -5872,6 +6048,242 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveLocalRecords();
   }
 
+  /// ★ 전체 또는 대분류(탭)별 / 세부 카테고리별 / 현재 필터링된 목록 일괄 삭제 다이얼로그
+  Future<void> _openBulkDeleteDialog() async {
+    final curCat = _selectedCategoryFilter;
+    final curSub = _selectedSubCategoryFilter;
+    final bool hasSubFilter =
+        _usesSubCategory(curCat) && curSub != '전체' && curSub.trim().isNotEmpty;
+
+    final int totalAllCount = _records.length;
+    final int curCatCount =
+        _records.where((r) => r.category == curCat).length;
+    final int curFilteredCount = _filteredRecords.length;
+    final int curSubCount = hasSubFilter
+        ? _records
+            .where((r) =>
+                r.category == curCat &&
+                (curSub == '미지정'
+                    ? r.subCategory.isEmpty
+                    : r.subCategory == curSub))
+            .length
+        : 0;
+
+    final String? action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_sweep, color: Colors.red),
+            SizedBox(width: 8),
+            Text(
+              '데이터 일괄 삭제 (카테고리별 / 전체)',
+              style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 380,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  '삭제할 범위를 선택하세요. 삭제된 항목은 복구할 수 없으니 필요 시 먼저 HTML내보내기로 백업해 두세요.',
+                  style: TextStyle(fontSize: 12, color: Colors.black87),
+                ),
+                const SizedBox(height: 12),
+                if (hasSubFilter && curSubCount > 0) ...[
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.orange.shade50,
+                      foregroundColor: Colors.deepOrange.shade900,
+                      alignment: Alignment.centerLeft,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                    ),
+                    onPressed: () => Navigator.pop(ctx, 'sub'),
+                    icon: const Icon(Icons.folder_delete_outlined, size: 18),
+                    label: Text(
+                      '현재 세부 카테고리 [$curCat > $curSub] 삭제 (${curSubCount}건)',
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                if (curFilteredCount > 0 &&
+                    curFilteredCount != curCatCount) ...[
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.amber.shade50,
+                      foregroundColor: Colors.brown.shade900,
+                      alignment: Alignment.centerLeft,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                    ),
+                    onPressed: () => Navigator.pop(ctx, 'filtered'),
+                    icon: const Icon(Icons.filter_alt_off_outlined, size: 18),
+                    label: Text(
+                      '현재 화면에 필터링된 [$curCat] 목록만 삭제 (${curFilteredCount}건)',
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                FilledButton.tonalIcon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.red.shade50,
+                    foregroundColor: Colors.red.shade900,
+                    alignment: Alignment.centerLeft,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                  ),
+                  onPressed:
+                      curCatCount > 0 ? () => Navigator.pop(ctx, 'cat') : null,
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: Text(
+                    '현재 탭 [$curCat] 전체 삭제 (${curCatCount}건)',
+                    style: const TextStyle(
+                        fontSize: 12.5, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const Divider(height: 20),
+                const Text(
+                  '📂 다른 대분류(탭) 선택 삭제:',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1E3A8A),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: DocCategory.filterList.map((cName) {
+                    final cnt =
+                        _records.where((r) => r.category == cName).length;
+                    return ActionChip(
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor:
+                          cnt > 0 ? Colors.red.shade50 : Colors.grey.shade100,
+                      label: Text(
+                        '$cName (${cnt}건) 삭제',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: cnt > 0 ? Colors.red.shade800 : Colors.black38,
+                        ),
+                      ),
+                      onPressed: cnt > 0
+                          ? () => Navigator.pop(ctx, 'cat:$cName')
+                          : null,
+                    );
+                  }).toList(),
+                ),
+                const Divider(height: 20),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.red.shade700,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 11),
+                  ),
+                  onPressed:
+                      totalAllCount > 0 ? () => Navigator.pop(ctx, 'all') : null,
+                  icon: const Icon(Icons.warning_amber_rounded, size: 18),
+                  label: Text(
+                    '모든 탭 전체 데이터 초기화 (${totalAllCount}건 모두 삭제)',
+                    style: const TextStyle(
+                        fontSize: 12.5, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('닫기'),
+          ),
+        ],
+      ),
+    );
+
+    if (action == null || action.isEmpty) return;
+
+    String confirmMsg = '';
+    List<DocRecord> toDelete = <DocRecord>[];
+
+    if (action == 'sub') {
+      confirmMsg = '[$curCat > $curSub] 세부 카테고리의 ${curSubCount}건을 모두 삭제하시겠습니까?';
+      toDelete = _records
+          .where((r) =>
+              r.category == curCat &&
+              (curSub == '미지정'
+                  ? r.subCategory.isEmpty
+                  : r.subCategory == curSub))
+          .toList();
+    } else if (action == 'filtered') {
+      confirmMsg = '현재 화면에 필터링된 [$curCat] ${curFilteredCount}건을 모두 삭제하시겠습니까?';
+      toDelete = List<DocRecord>.from(_filteredRecords);
+    } else if (action == 'cat') {
+      confirmMsg = '[$curCat] 탭의 ${curCatCount}건을 모두 삭제하시겠습니까?';
+      toDelete = _records.where((r) => r.category == curCat).toList();
+    } else if (action.startsWith('cat:')) {
+      final targetCat = action.substring(4);
+      final cnt = _records.where((r) => r.category == targetCat).length;
+      confirmMsg = '[$targetCat] 탭의 ${cnt}건을 모두 삭제하시겠습니까?';
+      toDelete = _records.where((r) => r.category == targetCat).toList();
+    } else if (action == 'all') {
+      confirmMsg =
+          '정말로 모든 탭의 전체 데이터(${totalAllCount}건)를 완전히 삭제하시겠습니까?';
+      toDelete = List<DocRecord>.from(_records);
+    }
+
+    if (toDelete.isEmpty) return;
+
+    final bool? reallyDelete = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('⚠️ 일괄 삭제 최종 확인'),
+        content: Text('$confirmMsg\n\n이 작업은 되돌릴 수 없습니다.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('네, ${toDelete.length}건 삭제합니다'),
+          ),
+        ],
+      ),
+    );
+
+    if (reallyDelete != true) return;
+
+    final Set<String> delIds = toDelete.map((r) => r.id).toSet();
+    setState(() {
+      _records.removeWhere((r) => delIds.contains(r.id));
+      final cur = _filteredRecords;
+      _selectedRecord = cur.isNotEmpty ? cur.first : null;
+      _resetPhotoPageToZero();
+    });
+    await _saveLocalRecords();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('총 ${delIds.length}건의 데이터가 삭제되었습니다.')),
+      );
+    }
+  }
+
   Future<void> _deleteRecord(DocRecord rec) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -6661,11 +7073,32 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mergedApprovals.isNotEmpty) {
           mergedFields['approvalsJson'] = mergedApprovals;
         }
+        // ★ 증빙첨부 사진 보존: 새로 들어온 HTML(inc)에 증빙첨부 사진(Base64/경로)이 더 많거나 있으면 반드시 살림!
+        final oldProofBytes = old.resolveAllProofImageBytes();
+        final incProofBytes = inc.resolveAllProofImageBytes();
+        if (incProofBytes.length >= oldProofBytes.length &&
+            incProofBytes.isNotEmpty) {
+          mergedFields['proofImagesJson'] = jsonEncode(
+            incProofBytes.map((b) => base64Encode(b)).toList(),
+          );
+          mergedFields.remove('proofPathsJson');
+          mergedFields['proofStatus'] = '첨부(${incProofBytes.length}장)';
+        } else if (oldProofBytes.isNotEmpty) {
+          mergedFields['proofImagesJson'] = jsonEncode(
+            oldProofBytes.map((b) => base64Encode(b)).toList(),
+          );
+          mergedFields['proofStatus'] = '첨부(${oldProofBytes.length}장)';
+        }
+        final String bestImagePath = (old.imagePath.isNotEmpty &&
+                !old.imagePath.startsWith('photos/') &&
+                File(old.imagePath).existsSync())
+            ? old.imagePath
+            : inc.imagePath;
         byId[matchedId] = DocRecord(
           id: old.id,
           category: inc.category,
           createdAt: old.createdAt,
-          imagePath: inc.imagePath.isNotEmpty ? inc.imagePath : old.imagePath,
+          imagePath: bestImagePath,
           base64Image:
               inc.base64Image.isNotEmpty ? inc.base64Image : old.base64Image,
           fields: mergedFields,
@@ -6783,13 +7216,15 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
       final fieldsCopy = Map<String, String>.from(r.fields);
-      if (embedBase64Images &&
-          (r.category == DocCategory.medical ||
-              r.category == DocCategory.pdfConvert)) {
+      if (r.category == DocCategory.medical ||
+          r.category == DocCategory.pdfConvert) {
         final extraBytes = r.resolveAllProofImageBytes();
         if (extraBytes.isNotEmpty) {
-          fieldsCopy['proofImagesJson'] =
-              jsonEncode(extraBytes.map((b) => base64Encode(b)).toList());
+          if (embedBase64Images) {
+            fieldsCopy['proofImagesJson'] =
+                jsonEncode(extraBytes.map((b) => base64Encode(b)).toList());
+          }
+          fieldsCopy['proofStatus'] = '첨부(${extraBytes.length}장)';
         }
       }
       serialized.add({
@@ -6804,7 +7239,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final recordsJson = jsonEncode(serialized);
     final bool isOfficialGroup = DocCategory.isOfficial(majorCat) ||
-        records.every((r) => DocCategory.isOfficial(r.category));
+        (records.isNotEmpty &&
+            records.every((r) => DocCategory.isOfficial(r.category)));
     final List<String> allowedTabs = isOfficialGroup
         ? [DocCategory.officialIn, DocCategory.officialOut]
         : [majorCat];
@@ -6815,63 +7251,493 @@ class _HomeScreenState extends State<HomeScreen> {
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
-  <title>증빙서류 - $scopeTitle</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+  <title>증빙서류 스냅 - $scopeTitle</title>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif; background: #f1f5f9; color: #0f172a; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-    header { background: #1e3a8a; color: #fff; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
-    .chip-bar { background: #fff; padding: 6px 10px; border-bottom: 1px solid #cbd5e1; display: flex; gap: 6px; overflow-x: auto; flex-shrink: 0; }
-    .chip-btn { border: 1px solid #cbd5e1; background: #f8fafc; color: #334155; padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
-    .chip-btn.active { background: #1e3a8a; color: #fff; border-color: #1e3a8a; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif; background: #f8fafc; color: #0f172a; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    header { background: #1e3a8a; color: #fff; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-shrink: 0; }
+    .hdr-title { font-size: 14px; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hdr-btns { display: flex; gap: 5px; flex-shrink: 0; }
+    .hdr-btn { border: none; border-radius: 6px; padding: 6px 10px; font-size: 11.5px; font-weight: 800; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .hdr-btn.pdf { background: #f59e0b; color: #fff; }
+    .hdr-btn.save { background: #fff; color: #1e3a8a; }
+    .chip-bar { background: #fff; padding: 5px 8px; border-bottom: 1px solid #cbd5e1; display: flex; gap: 6px; overflow-x: auto; flex-shrink: 0; align-items: center; }
+    .chip-btn { border: 1px solid #94a3b8; background: #fff; color: #1e293b; padding: 4px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .chip-btn.active { background: #dbeafe; color: #1e3a8a; border-color: #1e3a8a; }
+    .summary-panel { background: #f8fafc; padding: 6px 10px; border-bottom: 1px solid #cbd5e1; flex-shrink: 0; display: flex; flex-direction: column; gap: 5px; }
+    .sum-title { font-size: 13px; font-weight: 900; color: #1e3a8a; }
+    .sum-sub { font-size: 11px; font-weight: 800; color: #92400e; }
+    .sub-row { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; align-items: center; }
     #workspace { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
     @media (orientation: landscape) { #workspace { flex-direction: row; } }
     #list-pane { flex: 0 0 46%; overflow: auto; background: #fff; }
-    #resizer-bar { background: #cbd5e1; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #1e3a8a; user-select: none; touch-action: none; flex-shrink: 0; }
-    @media (orientation: portrait) { #resizer-bar { height: 24px; cursor: row-resize; } }
-    @media (orientation: landscape) { #resizer-bar { width: 22px; writing-mode: vertical-rl; cursor: col-resize; } }
+    #resizer-bar { background: #cbd5e1; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 900; color: #1e3a8a; user-select: none; -webkit-user-select: none; touch-action: none; flex-shrink: 0; z-index: 10; border-top: 1px solid #94a3b8; border-bottom: 1px solid #94a3b8; }
+    @media (orientation: portrait) { #resizer-bar { height: 28px; cursor: row-resize; } }
+    @media (orientation: landscape) { #resizer-bar { width: 26px; writing-mode: vertical-rl; cursor: col-resize; } }
     #photo-pane { flex: 1; background: #0f172a; position: relative; overflow: hidden; display: flex; flex-direction: column; }
-    #photo-viewport { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; }
-    #preview-img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center center; }
+    #photo-page-bar { background: rgba(15,23,42,0.92); padding: 6px 8px; display: none; gap: 6px; overflow-x: auto; align-items: center; border-bottom: 1px solid #334155; z-index: 5; }
+    .page-tab { border: 1px solid #475569; background: #334155; color: #e2e8f0; padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 800; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .page-tab.active { background: #2563eb; color: #fff; border-color: #60a5fa; }
+    .page-del { background: #dc2626; color: #fff; border: none; border-radius: 4px; padding: 1px 5px; font-size: 10px; font-weight: 900; cursor: pointer; margin-left: 2px; }
+    .page-add { background: #f59e0b; color: #0f172a; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11.5px; font-weight: 900; cursor: pointer; white-space: nowrap; }
+    #photo-viewport { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; touch-action: none; user-select: none; -webkit-user-select: none; }
+    #preview-img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center center; will-change: transform; pointer-events: none; }
+    .zoom-box { position: absolute; right: 10px; bottom: 10px; background: rgba(15,23,42,0.85); border: 1px solid #334155; border-radius: 8px; padding: 4px; display: flex; gap: 4px; z-index: 6; }
+    .zoom-btn { background: #1e3a8a; color: #fff; border: none; border-radius: 5px; padding: 4px 8px; font-size: 11px; font-weight: 800; cursor: pointer; }
     table { width: max-content; min-width: 100%; border-collapse: collapse; table-layout: fixed; }
-    th { position: sticky; top: 0; background: #e2e8f0; color: #1e293b; font-size: 11px; font-weight: 800; border: 1px solid #cbd5e1; padding: 6px 4px; text-align: center; cursor: pointer; z-index: 2; }
-    td { border: 1px solid #e2e8f0; padding: 6px 5px; font-size: 11px; text-align: center; word-break: break-word; }
+    th { position: sticky; top: 0; background: #e2e8f0; color: #1e293b; font-size: 11.5px; font-weight: 900; border: 1px solid #cbd5e1; padding: 7px 4px; text-align: center; cursor: pointer; z-index: 2; user-select: none; }
+    th.hi-group { background: #fef3c7; color: #92400e; }
+    th.sorted-col { background: #dbeafe; color: #1e3a8a; }
+    td { border: 1px solid #e2e8f0; padding: 7px 6px; font-size: 11.5px; font-weight: 600; text-align: center; word-break: break-word; white-space: normal; line-height: 1.3; }
     tr.selected { background: #dbeafe !important; }
+    @media print {
+      header, .chip-bar, .summary-panel, #list-pane, #resizer-bar, #photo-page-bar, .zoom-box { display: none !important; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <div style="font-size:14px; font-weight:800;">📂 $scopeTitle</div>
-    <div id="major-tabs-bar" style="display:flex; gap:5px;"></div>
+    <div class="hdr-title">증빙서류 스냅 - $scopeTitle</div>
+    <div class="hdr-btns">
+      <button class="hdr-btn pdf" onclick="exportPdfPrint()">📄 PDF 내보내기</button>
+      <button class="hdr-btn save" onclick="downloadModifiedHtml()">💾 수정본 HTML 저장</button>
+    </div>
   </header>
+  <div id="major-tabs-bar" class="chip-bar"></div>
+  <div id="summary-bar" class="summary-panel" style="display:none;"></div>
   <div id="workspace">
     <div id="list-pane"><table id="doc-table"><thead id="doc-thead"></thead><tbody id="doc-tbody"></tbody></table></div>
-    <div id="resizer-bar">═ 화면 크기 조절</div>
+    <div id="resizer-bar">≡ 위아래로 끌어서 화면 크기 조절 (표는 좌우로 드래그 가능)</div>
     <div id="photo-pane">
-      <div id="photo-page-bar" style="background:#1e293b; padding:4px 8px; display:none; gap:5px; overflow-x:auto;"></div>
-      <div id="photo-viewport"><img id="preview-img" alt="미리보기" /></div>
+      <div id="photo-page-bar"></div>
+      <div id="photo-viewport">
+        <img id="preview-img" alt="미리보기" />
+      </div>
+      <div class="zoom-box">
+        <button class="zoom-btn" onclick="changeZoom(-0.3)">－ 축소</button>
+        <button class="zoom-btn" id="zoom-label" onclick="resetZoom()">100%</button>
+        <button class="zoom-btn" onclick="changeZoom(0.3)">＋ 확대</button>
+      </div>
     </div>
   </div>
+  <input type="file" id="extra-file-input" accept="image/*" multiple style="display:none;" onchange="handleExtraFilesSelected(event)" />
   <script>
     const archiveRecords = /*ARCHIVE_DATA_START*/ $recordsJson /*ARCHIVE_DATA_END*/;
     const ALL_TABS = $allowedTabsJson;
     const EXPORTER_USER = $exporterUserJson;
     let selectedCategoryFilter = ALL_TABS[0] || '$majorCat';
+    let selectedSubCat = '전체';
+    let selectedClaimFilter = '전체';
+    let selectedTravelDiv = '전체';
+    let selectedProductFilter = '전체';
+    let sortCol = 'date';
+    let sortAsc = false;
+    let medGroupMode = 'cat';
+    let invGroupProduct = true;
+    let invGroupSpec = false;
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
     let selectedPageIdx = 0;
+
+    // 줌 & 패닝 상태 (두 손가락 핀치 줌 + 한 손가락 이동 + 마우스 휠)
+    let currentZoom = 1.0;
+    let panX = 0;
+    let panY = 0;
 
     function escapeHtml(s) {
       return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function getFiltered() {
+    function fmtNum(n) {
+      const v = parseInt(String(n || '0').replace(/[^0-9-]/g, ''), 10) || 0;
+      return v.toLocaleString('ko-KR');
+    }
+
+    function fmtQty(val) {
+      const v = parseFloat(String(val || '0').replace(/[^0-9.-]/g, '')) || 0;
+      if (Math.abs(v - Math.round(v)) < 0.0005) return Math.round(v).toLocaleString('ko-KR');
+      return v.toFixed(3).replace(/0+$/, '').replace(/\\.$/, '');
+    }
+
+    function parseInvoiceQty(r) {
+      const f = r.fields || {};
+      return parseFloat(String(f.quantity || '0').replace(/,/g, '').replace(/[^0-9.-]/g, '')) || 0;
+    }
+
+    function getInvoiceGroupKey(r) {
+      const f = r.fields || {};
+      const prod = (f.productName || '').trim() || '기타자재';
+      const spec = (f.specName || '').trim();
+      if (invGroupProduct && invGroupSpec) {
+        return spec ? (prod + ' (' + spec + ')') : prod;
+      } else if (!invGroupProduct && invGroupSpec) {
+        return spec || '(규격미상)';
+      } else {
+        return prod;
+      }
+    }
+
+    function toggleInvoiceGroup(col) {
+      if (col === 'product') {
+        invGroupProduct = !invGroupProduct;
+        if (!invGroupProduct && !invGroupSpec) invGroupSpec = true;
+      } else if (col === 'spec') {
+        invGroupSpec = !invGroupSpec;
+        if (!invGroupProduct && !invGroupSpec) invGroupProduct = true;
+      }
+      selectedProductFilter = '전체';
+      toggleSort(col);
+    }
+
+    function computeInvoiceCumulativeMap() {
+      const invList = archiveRecords.filter(function(r) { return r.category === '자재송장'; }).slice();
+      invList.sort(function(a, b) {
+        const da = (a.fields && a.fields.arrivalDate) || a.createdAt || '';
+        const db = (b.fields && b.fields.arrivalDate) || b.createdAt || '';
+        const c = da.localeCompare(db);
+        return c !== 0 ? c : String(a.id).localeCompare(String(b.id));
+      });
+      const running = {};
+      const out = {};
+      invList.forEach(function(r) {
+        const key = getInvoiceGroupKey(r);
+        running[key] = (running[key] || 0) + parseInvoiceQty(r);
+        out[r.id] = fmtQty(running[key]);
+      });
+      return out;
+    }
+
+    function getExtraArray(r) {
+      const f = (r && r.fields) ? r.fields : {};
+      const keys = ['proofImagesJson', 'extraProofImagesJson', 'extraImagesJson', 'proofImages', 'extraProofImages'];
+      for (let i = 0; i < keys.length; i++) {
+        const raw = f[keys[i]];
+        if (!raw) continue;
+        try {
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        } catch (_) {}
+      }
+      return [];
+    }
+
+    function setExtraArray(r, arr) {
+      if (!r.fields) r.fields = {};
+      if (arr && arr.length > 0) {
+        r.fields.proofImagesJson = JSON.stringify(arr);
+        r.fields.proofStatus = '첨부(' + arr.length + '장)';
+      } else {
+        delete r.fields.proofImagesJson;
+        delete r.fields.proofPathsJson;
+        delete r.fields.proofStatus;
+      }
+    }
+
+    function getRecordAmount(r) {
+      const f = r.fields || {};
+      const raw = r.category === '병원비' ? (f.totalPaid || '0') : (f.totalAmount || f.amount || '0');
+      return parseInt(String(raw).replace(/[^0-9]/g, ''), 10) || 0;
+    }
+
+    function isClaimed(r) {
+      const f = r.fields || {};
+      const v = String(f.isClaimed || '').trim().toUpperCase();
+      return v === 'Y' || v === 'TRUE' || v === '1' || v === '청구완료';
+    }
+
+    function toggleClaimed(id, ev) {
+      if (ev) ev.stopPropagation();
+      const rec = archiveRecords.find(function(x) { return x.id === id; });
+      if (!rec) return;
+      if (!rec.fields) rec.fields = {};
+      rec.fields.isClaimed = isClaimed(rec) ? 'N' : 'Y';
+      render();
+    }
+
+    function toggleSort(col) {
+      if (sortCol === col) {
+        sortAsc = !sortAsc;
+      } else {
+        sortCol = col;
+        sortAsc = (col === 'date' || col === 'amount' || col === 'quantity' || col === 'pageCount' || col === 'claimed') ? false : true;
+      }
+      render();
+    }
+
+    function sortArrow(col) {
+      if (sortCol !== col) return ' ↕';
+      return sortAsc ? ' ▲' : ' ▼';
+    }
+
+    function thClass(col, isHi) {
+      const classes = [];
+      if (isHi) classes.push('hi-group');
+      if (sortCol === col) classes.push('sorted-col');
+      return classes.join(' ');
+    }
+
+    function getMajorRecords() {
       return archiveRecords.filter(function(r) { return r.category === selectedCategoryFilter; });
+    }
+
+    function getFiltered() {
+      let list = getMajorRecords();
+      if (selectedCategoryFilter === '병원비') {
+        if (selectedSubCat !== '전체') {
+          list = list.filter(function(r) {
+            const sc = ((r.fields && r.fields.subCategory) || '').trim() || '미지정';
+            const pat = ((r.fields && r.fields.patientName) || '').trim() || '미상';
+            return medGroupMode === 'patient' ? (pat === selectedSubCat) : (sc === selectedSubCat);
+          });
+        }
+        if (selectedClaimFilter === '미청구') {
+          list = list.filter(function(r) { return !isClaimed(r); });
+        } else if (selectedClaimFilter === '청구완료') {
+          list = list.filter(function(r) { return isClaimed(r); });
+        }
+      } else if (selectedCategoryFilter === '출장비') {
+        if (selectedSubCat !== '전체') {
+          list = list.filter(function(r) {
+            const sc = ((r.fields && r.fields.subCategory) || '').trim() || '미지정';
+            return sc === selectedSubCat;
+          });
+        }
+        if (selectedTravelDiv !== '전체') {
+          list = list.filter(function(r) {
+            return ((r.fields && r.fields.travelDivision) || '식대') === selectedTravelDiv;
+          });
+        }
+      } else if (selectedCategoryFilter === '자재송장') {
+        if (selectedProductFilter !== '전체') {
+          list = list.filter(function(r) {
+            return getInvoiceGroupKey(r) === selectedProductFilter;
+          });
+        }
+      }
+
+      list = list.slice().sort(function(a, b) {
+        const fa = a.fields || {};
+        const fb = b.fields || {};
+        let cmp = 0;
+        if (sortCol === 'amount') {
+          cmp = getRecordAmount(a) - getRecordAmount(b);
+        } else if (sortCol === 'quantity') {
+          cmp = parseInvoiceQty(a) - parseInvoiceQty(b);
+        } else if (sortCol === 'product') {
+          cmp = (fa.productName || '').localeCompare(fb.productName || '', 'ko');
+        } else if (sortCol === 'spec') {
+          cmp = (fa.specName || '').localeCompare(fb.specName || '', 'ko');
+        } else if (sortCol === 'unit') {
+          cmp = (fa.unit || '').localeCompare(fb.unit || '', 'ko');
+        } else if (sortCol === 'supplier') {
+          cmp = (fa.supplierName || '').localeCompare(fb.supplierName || '', 'ko');
+        } else if (sortCol === 'orderNumber') {
+          cmp = (fa.orderNumber || '').localeCompare(fb.orderNumber || '', 'ko');
+        } else if (sortCol === 'uploader') {
+          cmp = (fa.uploader || '').localeCompare(fb.uploader || '', 'ko');
+        } else if (sortCol === 'docNumber') {
+          cmp = (fa.docNumber || '').localeCompare(fb.docNumber || '', 'ko');
+        } else if (sortCol === 'replyDocNumber') {
+          cmp = (fa.replyDocNumber || '').localeCompare(fb.replyDocNumber || '', 'ko');
+        } else if (sortCol === 'title') {
+          cmp = (fa.title || '').localeCompare(fb.title || '', 'ko');
+        } else if (sortCol === 'aiSummary') {
+          cmp = (fa.aiSummary || '').localeCompare(fb.aiSummary || '', 'ko');
+        } else if (sortCol === 'replyDeadline') {
+          cmp = (fa.replyDeadline || '').localeCompare(fb.replyDeadline || '');
+        } else if (sortCol === 'clinic') {
+          const ca = fa.clinicName || fa.merchantName || fa.sender || fa.recipient || '';
+          const cb = fb.clinicName || fb.merchantName || fb.sender || fb.recipient || '';
+          cmp = ca.localeCompare(cb, 'ko');
+        } else if (sortCol === 'patient') {
+          cmp = (fa.patientName || '').localeCompare(fb.patientName || '', 'ko');
+        } else if (sortCol === 'subCategory') {
+          cmp = (fa.subCategory || '').localeCompare(fb.subCategory || '', 'ko');
+        } else if (sortCol === 'travelDivision') {
+          cmp = (fa.travelDivision || '').localeCompare(fb.travelDivision || '', 'ko');
+        } else if (sortCol === 'bizRegNumber') {
+          cmp = (fa.bizRegNumber || '').localeCompare(fb.bizRegNumber || '');
+        } else if (sortCol === 'claimed') {
+          cmp = (isClaimed(a) ? 1 : 0) - (isClaimed(b) ? 1 : 0);
+        } else if (sortCol === 'companyName') {
+          cmp = (fa.companyName || '').localeCompare(fb.companyName || '', 'ko');
+        } else if (sortCol === 'siteName') {
+          cmp = (fa.siteName || '').localeCompare(fb.siteName || '', 'ko');
+        } else if (sortCol === 'personName') {
+          cmp = (fa.personName || '').localeCompare(fb.personName || '', 'ko');
+        } else if (sortCol === 'mobilePhone') {
+          cmp = (fa.mobilePhone || '').localeCompare(fb.mobilePhone || '');
+        } else if (sortCol === 'email') {
+          cmp = (fa.email || '').localeCompare(fb.email || '');
+        } else if (sortCol === 'pdfFileName') {
+          cmp = (fa.pdfFileName || '').localeCompare(fb.pdfFileName || '', 'ko');
+        } else if (sortCol === 'pageCount') {
+          cmp = (1 + getExtraArray(a).length) - (1 + getExtraArray(b).length);
+        } else {
+          const da = fa.issueDate || fa.date || fa.arrivalDate || fa.sentDate || fa.cardDate || fa.pdfDate || a.createdAt || '';
+          const db = fb.issueDate || fb.date || fb.arrivalDate || fb.sentDate || fb.cardDate || fb.pdfDate || b.createdAt || '';
+          cmp = da.localeCompare(db);
+        }
+        return sortAsc ? cmp : -cmp;
+      });
+      return list;
     }
 
     function selectRow(id) {
       selectedId = id;
       selectedPageIdx = 0;
+      resetZoom();
       render();
+    }
+
+    function changeZoom(delta) {
+      currentZoom = Math.min(5.0, Math.max(0.5, currentZoom + delta));
+      if (currentZoom <= 1.05) { panX = 0; panY = 0; }
+      applyZoom();
+    }
+    function resetZoom() {
+      currentZoom = 1.0;
+      panX = 0;
+      panY = 0;
+      applyZoom();
+    }
+    function applyZoom() {
+      const img = document.getElementById('preview-img');
+      const lbl = document.getElementById('zoom-label');
+      if (img) {
+        img.style.transform = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + currentZoom + ')';
+      }
+      if (lbl) lbl.textContent = Math.round(currentZoom * 100) + '%';
+    }
+
+    function removeExtraPage(idx, ev) {
+      if (ev) ev.stopPropagation();
+      const cur = archiveRecords.find(function(r) { return r.id === selectedId; });
+      if (!cur) return;
+      const arr = getExtraArray(cur).slice();
+      if (idx >= 0 && idx < arr.length) {
+        arr.splice(idx, 1);
+        setExtraArray(cur, arr);
+        selectedPageIdx = 0;
+        render();
+      }
+    }
+
+    function triggerAddExtraPage() {
+      const inp = document.getElementById('extra-file-input');
+      if (inp) { inp.value = ''; inp.click(); }
+    }
+
+    function handleExtraFilesSelected(ev) {
+      const files = ev.target.files;
+      if (!files || files.length === 0) return;
+      const cur = archiveRecords.find(function(r) { return r.id === selectedId; });
+      if (!cur) return;
+      const arr = getExtraArray(cur).slice();
+      let loaded = 0;
+      for (let i = 0; i < files.length; i++) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const res = String(e.target.result || '');
+          const b64 = res.indexOf(',') !== -1 ? res.split(',').pop() : res;
+          if (b64) arr.push(b64);
+          loaded++;
+          if (loaded === files.length) {
+            setExtraArray(cur, arr);
+            selectedPageIdx = arr.length;
+            render();
+          }
+        };
+        reader.readAsDataURL(files[i]);
+      }
+    }
+
+    function renderSummaryBar() {
+      const bar = document.getElementById('summary-bar');
+      const majorList = getMajorRecords();
+      if (selectedCategoryFilter === '자재송장') {
+        bar.style.display = 'flex';
+        const unitSums = {};
+        const groups = {};
+        majorList.forEach(function(r) {
+          const f = r.fields || {};
+          const prod = (f.productName || '').trim();
+          const u = (f.unit || '').trim() || (prod.indexOf('철근') !== -1 ? 'ton' : '매');
+          const q = parseInvoiceQty(r);
+          unitSums[u] = (unitSums[u] || 0) + q;
+          const gKey = getInvoiceGroupKey(r);
+          if (!groups[gKey]) groups[gKey] = { cnt: 0, sum: 0, unit: u };
+          groups[gKey].cnt++;
+          groups[gKey].sum += q;
+        });
+        const unitParts = Object.keys(unitSums).map(function(u) { return fmtQty(unitSums[u]) + u; }).join(' / ');
+        const allLabel = '전체 (' + majorList.length + '건' + (unitParts ? (' · ' + unitParts) : '') + ')';
+        let chipsHtml = '<button class="chip-btn ' + (selectedProductFilter === '전체' ? 'active' : '') + '" onclick="selectedProductFilter=\\'전체\\'; render();">' + escapeHtml(allLabel) + '</button>';
+        Object.keys(groups).forEach(function(k) {
+          const g = groups[k];
+          const cls = selectedProductFilter === k ? 'chip-btn active' : 'chip-btn';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedProductFilter=\\'' + escapeHtml(k) + '\\'; render();">' + escapeHtml(k) + ' (' + fmtQty(g.sum) + escapeHtml(g.unit) + ')</button>';
+        });
+        const modeLabel = (invGroupProduct && invGroupSpec) ? '제품명 + 규격명별' : (invGroupSpec ? '규격명별' : '제품명별');
+        bar.innerHTML =
+          '<div class="sum-sub">📊 합산기준: ' + modeLabel + ' (표의 [제품명]·[규격명] 제목을 누르면 합산 기준 전환)</div>' +
+          '<div class="sub-row">' + chipsHtml + '</div>';
+      } else if (selectedCategoryFilter === '병원비') {
+        bar.style.display = 'flex';
+        const totalSum = majorList.reduce(function(acc, r) { return acc + getRecordAmount(r); }, 0);
+        const groups = {};
+        majorList.forEach(function(r) {
+          const f = r.fields || {};
+          const key = medGroupMode === 'patient'
+            ? ((f.patientName || '').trim() || '미상')
+            : (((f.subCategory || '').trim()) || '미지정');
+          if (!groups[key]) groups[key] = { cnt: 0, sum: 0 };
+          groups[key].cnt++;
+          groups[key].sum += getRecordAmount(r);
+        });
+        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat=\\'전체\\'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
+        Object.keys(groups).forEach(function(k) {
+          const g = groups[k];
+          const cls = selectedSubCat === k ? 'chip-btn active' : 'chip-btn';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat=\\'' + escapeHtml(k) + '\\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
+        });
+
+        let unclaimedCnt = 0, unclaimedSum = 0, claimedCnt = 0, claimedSum = 0;
+        majorList.forEach(function(r) {
+          if (isClaimed(r)) { claimedCnt++; claimedSum += getRecordAmount(r); }
+          else { unclaimedCnt++; unclaimedSum += getRecordAmount(r); }
+        });
+        const claimHtml =
+          '<button class="chip-btn ' + (selectedClaimFilter === '전체' ? 'active' : '') + '" onclick="selectedClaimFilter=\\'전체\\'; render();">청구전체 (' + majorList.length + '건)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '미청구' ? 'active' : '') + '" style="color:#be123c;" onclick="selectedClaimFilter=\\'미청구\\'; render();">미청구 (' + unclaimedCnt + '건 · ' + fmtNum(unclaimedSum) + '원)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '청구완료' ? 'active' : '') + '" style="color:#15803d;" onclick="selectedClaimFilter=\\'청구완료\\'; render();">청구완료 (' + claimedCnt + '건 · ' + fmtNum(claimedSum) + '원)</button>';
+
+        bar.innerHTML =
+          '<div class="sum-title">병원비 합계 [' + (medGroupMode === 'patient' ? '환자성명별' : '카테고리별') + '] (' + majorList.length + '건): ' + fmtNum(totalSum) + '원</div>' +
+          '<div class="sub-row">' + chipsHtml + '</div>' +
+          '<div class="sub-row">' + claimHtml + '</div>';
+      } else if (selectedCategoryFilter === '출장비') {
+        bar.style.display = 'flex';
+        const totalSum = majorList.reduce(function(acc, r) { return acc + getRecordAmount(r); }, 0);
+        const groups = {};
+        majorList.forEach(function(r) {
+          const sc = ((r.fields && r.fields.subCategory) || '').trim() || '미지정';
+          if (!groups[sc]) groups[sc] = { cnt: 0, sum: 0 };
+          groups[sc].cnt++;
+          groups[sc].sum += getRecordAmount(r);
+        });
+        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat=\\'전체\\'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
+        Object.keys(groups).forEach(function(k) {
+          const g = groups[k];
+          const cls = selectedSubCat === k ? 'chip-btn active' : 'chip-btn';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat=\\'' + escapeHtml(k) + '\\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
+        });
+        bar.innerHTML =
+          '<div class="sum-title">출장비 합계 (' + majorList.length + '건): ' + fmtNum(totalSum) + '원</div>' +
+          '<div class="sub-row">' + chipsHtml + '</div>';
+      } else {
+        bar.style.display = 'none';
+      }
     }
 
     function render() {
@@ -6879,55 +7745,147 @@ class _HomeScreenState extends State<HomeScreen> {
       tabBar.innerHTML = ALL_TABS.map(function(t) {
         const cnt = archiveRecords.filter(function(r) { return r.category === t; }).length;
         const cls = t === selectedCategoryFilter ? 'chip-btn active' : 'chip-btn';
-        return '<button class="' + cls + '" onclick="selectedCategoryFilter=\\'' + t + '\\'; render();">' + escapeHtml(t) + ' (' + cnt + ')</button>';
+        return '<button class="' + cls + '" onclick="selectedCategoryFilter=\\'' + t + '\\'; selectedSubCat=\\'전체\\'; selectedProductFilter=\\'전체\\'; render();">' + escapeHtml(t) + ' (' + cnt + ')</button>';
       }).join('');
+
+      renderSummaryBar();
 
       const list = getFiltered();
       if (!list.some(function(r) { return r.id === selectedId; })) {
         selectedId = list.length > 0 ? list[0].id : null;
+        selectedPageIdx = 0;
       }
 
       const thead = document.getElementById('doc-thead');
       const tbody = document.getElementById('doc-tbody');
-      if (selectedCategoryFilter === 'PDF변환') {
-        thead.innerHTML = '<tr><th style="width:90px;">찍은날짜</th><th style="width:190px;">파일명</th><th style="width:70px;">장수</th></tr>';
+
+      if (selectedCategoryFilter === '병원비') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:82px;" class="' + thClass('subCategory', medGroupMode === 'cat') + '" onclick="medGroupMode=\\'cat\\'; selectedSubCat=\\'전체\\'; toggleSort(\\'subCategory\\');">카테고리 ' + (medGroupMode === 'cat' ? '✓' : '') + '<br>' + sortArrow('subCategory') + '</th>' +
+          '<th style="width:78px;" class="' + thClass('patient', medGroupMode === 'patient') + '" onclick="medGroupMode=\\'patient\\'; selectedSubCat=\\'전체\\'; toggleSort(\\'patient\\');">환자성명 ' + (medGroupMode === 'patient' ? '✓' : '') + '<br>' + sortArrow('patient') + '</th>' +
+          '<th style="width:88px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:130px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">상호' + sortArrow('clinic') + '</th>' +
+          '<th style="width:88px;" class="' + thClass('amount', false) + '" onclick="toggleSort(\\'amount\\');">금액' + sortArrow('amount') + '</th>' +
+          '<th style="width:108px;" class="' + thClass('bizRegNumber', false) + '" onclick="toggleSort(\\'bizRegNumber\\');">사업자등록번호' + sortArrow('bizRegNumber') + '</th>' +
+          '<th style="width:82px;" class="' + thClass('claimed', false) + '" onclick="toggleSort(\\'claimed\\');">청구여부' + sortArrow('claimed') + '</th>' +
+          '<th style="width:82px;">증빙첨부</th>' +
+          '</tr>';
         tbody.innerHTML = list.map(function(r) {
           const f = r.fields || {};
-          const extra = [];
-          try { if (f.proofImagesJson) extra.push.apply(extra, JSON.parse(f.proofImagesJson)); } catch(_) {}
+          const extra = getExtraArray(r);
+          const sel = r.id === selectedId ? 'selected' : '';
+          const claimed = isClaimed(r);
+          return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
+            '<td style="font-weight:800;">' + escapeHtml(f.subCategory || '미지정') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.patientName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.issueDate || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.clinicName || '-') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalPaid) + '원</td>' +
+            '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
+            '<td style="font-weight:800; color:' + (claimed ? '#15803d' : '#ea580c') + ';" onclick="toggleClaimed(\\'' + r.id + '\\', event)">' + (claimed ? '☑ 청구완료' : '☐ 미청구') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + (extra.length > 0 ? ('📎 첨부(' + extra.length + ')') : '-') + '</td>' +
+            '</tr>';
+        }).join('');
+      } else if (selectedCategoryFilter === '출장비') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:110px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">카테고리(날짜)' + sortArrow('date') + '</th>' +
+          '<th style="width:70px;" class="' + thClass('travelDivision', false) + '" onclick="toggleSort(\\'travelDivision\\');">구분' + sortArrow('travelDivision') + '</th>' +
+          '<th style="width:155px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">상호' + sortArrow('clinic') + '</th>' +
+          '<th style="width:95px;" class="' + thClass('amount', false) + '" onclick="toggleSort(\\'amount\\');">금액' + sortArrow('amount') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const sel = r.id === selectedId ? 'selected' : '';
+          return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
+            '<td style="font-weight:800;">' + escapeHtml(f.subCategory || '미지정') + '<br>(' + escapeHtml(f.date || '-') + ')</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.travelDivision || '식대') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.merchantName || '-') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalAmount) + '원</td>' +
+            '</tr>';
+        }).join('');
+      } else if (selectedCategoryFilter === '명함관리') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:125px;" class="' + thClass('companyName', false) + '" onclick="toggleSort(\\'companyName\\');">회사명' + sortArrow('companyName') + '</th>' +
+          '<th style="width:140px;" class="' + thClass('siteName', false) + '" onclick="toggleSort(\\'siteName\\');">현장명' + sortArrow('siteName') + '</th>' +
+          '<th style="width:80px;" class="' + thClass('personName', false) + '" onclick="toggleSort(\\'personName\\');">이름' + sortArrow('personName') + '</th>' +
+          '<th style="width:128px;" class="' + thClass('mobilePhone', false) + '" onclick="toggleSort(\\'mobilePhone\\');">휴대폰번호' + sortArrow('mobilePhone') + '</th>' +
+          '<th style="width:165px;" class="' + thClass('email', false) + '" onclick="toggleSort(\\'email\\');">이메일주소' + sortArrow('email') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const sel = r.id === selectedId ? 'selected' : '';
+          return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
+            '<td>' + escapeHtml(f.cardDate || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.companyName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.siteName || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.personName || '-') + '</td>' +
+            '<td style="font-weight:800; color:#15803d;">' + escapeHtml(f.mobilePhone || '-') + '</td>' +
+            '<td style="color:#1e3a8a;">' + escapeHtml(f.email || '-') + '</td>' +
+            '</tr>';
+        }).join('');
+      } else if (selectedCategoryFilter === 'PDF변환') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:95px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">찍은날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:220px;" class="' + thClass('pdfFileName', false) + '" onclick="toggleSort(\\'pdfFileName\\');">파일명' + sortArrow('pdfFileName') + '</th>' +
+          '<th style="width:76px;" class="' + thClass('pageCount', false) + '" onclick="toggleSort(\\'pageCount\\');">장수' + sortArrow('pageCount') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const extra = getExtraArray(r);
           const pages = 1 + extra.length;
           const sel = r.id === selectedId ? 'selected' : '';
           return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
             '<td>' + escapeHtml(f.pdfDate || '-') + '</td>' +
-            '<td style="font-weight:700; color:#1e3a8a;">' + escapeHtml(f.pdfFileName || '문서스캔') + '.pdf</td>' +
-            '<td style="font-weight:700;">' + pages + '장</td></tr>';
+            '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(f.pdfFileName || '문서스캔') + '.pdf</td>' +
+            '<td style="font-weight:800;">' + pages + '장</td></tr>';
         }).join('');
       } else if (selectedCategoryFilter === '자재송장') {
-        thead.innerHTML = '<tr><th style="width:82px;">날짜</th><th style="width:92px;">제품명</th><th style="width:105px;">규격명</th><th style="width:50px;">단위</th><th style="width:64px;">수량</th><th style="width:90px;">공급자</th><th style="width:110px;">주문송장번호</th><th style="width:68px;">올린사람</th></tr>';
+        const cumMap = computeInvoiceCumulativeMap();
+        thead.innerHTML = '<tr>' +
+          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:105px;" class="' + thClass('product', invGroupProduct) + '" onclick="toggleInvoiceGroup(\\'product\\');">제품명 ' + (invGroupProduct ? '✓' : '') + '<br>' + sortArrow('product') + '</th>' +
+          '<th style="width:120px;" class="' + thClass('spec', invGroupSpec) + '" onclick="toggleInvoiceGroup(\\'spec\\');">규격명 ' + (invGroupSpec ? '✓' : '') + '<br>' + sortArrow('spec') + '</th>' +
+          '<th style="width:56px;" class="' + thClass('unit', false) + '" onclick="toggleSort(\\'unit\\');">단위' + sortArrow('unit') + '</th>' +
+          '<th style="width:72px;" class="' + thClass('quantity', false) + '" onclick="toggleSort(\\'quantity\\');">수량' + sortArrow('quantity') + '</th>' +
+          '<th style="width:78px;">누적수량</th>' +
+          '<th style="width:110px;" class="' + thClass('supplier', false) + '" onclick="toggleSort(\\'supplier\\');">공급자' + sortArrow('supplier') + '</th>' +
+          '<th style="width:125px;" class="' + thClass('orderNumber', false) + '" onclick="toggleSort(\\'orderNumber\\');">주문송장번호' + sortArrow('orderNumber') + '</th>' +
+          '<th style="width:74px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\\'uploader\\');">올린사람' + sortArrow('uploader') + '</th>' +
+          '</tr>';
         tbody.innerHTML = list.map(function(r) {
           const f = r.fields || {};
           const sel = r.id === selectedId ? 'selected' : '';
           return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
             '<td>' + escapeHtml(f.arrivalDate || '-') + '</td>' +
-            '<td>' + escapeHtml(f.productName || '-') + '</td>' +
-            '<td>' + escapeHtml(f.specName || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.productName || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.specName || '-') + '</td>' +
             '<td>' + escapeHtml(f.unit || '-') + '</td>' +
-            '<td style="font-weight:700;">' + escapeHtml(f.quantity || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.quantity || '-') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(cumMap[r.id] || '-') + '</td>' +
             '<td>' + escapeHtml(f.supplierName || '-') + '</td>' +
             '<td>' + escapeHtml(f.orderNumber || '-') + '</td>' +
             '<td>' + escapeHtml(f.uploader || '-') + '</td></tr>';
         }).join('');
       } else {
-        thead.innerHTML = '<tr><th style="width:82px;">날짜</th><th style="width:95px;">공문번호</th><th style="width:95px;">보낸/받는사람</th><th style="width:140px;">제목</th><th style="width:170px;">내용</th><th style="width:68px;">올린사람</th></tr>';
+        const isOut = selectedCategoryFilter === '공문(발신)';
+        thead.innerHTML = '<tr>' +
+          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:105px;" class="' + thClass('docNumber', false) + '" onclick="toggleSort(\\'docNumber\\');">공문번호' + sortArrow('docNumber') + '</th>' +
+          '<th style="width:125px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">' + (isOut ? '받는사람' : '보낸사람') + sortArrow('clinic') + '</th>' +
+          '<th style="width:200px;" class="' + thClass('title', false) + '" onclick="toggleSort(\\'title\\');">제목' + sortArrow('title') + '</th>' +
+          '<th style="width:250px;" class="' + thClass('aiSummary', false) + '" onclick="toggleSort(\\'aiSummary\\');">내용' + sortArrow('aiSummary') + '</th>' +
+          '<th style="width:74px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\\'uploader\\');">올린사람' + sortArrow('uploader') + '</th>' +
+          '</tr>';
         tbody.innerHTML = list.map(function(r) {
           const f = r.fields || {};
           const sel = r.id === selectedId ? 'selected' : '';
           return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
-            '<td>' + escapeHtml(f.sentDate || f.date || f.issueDate || f.cardDate || '-') + '</td>' +
-            '<td>' + escapeHtml(f.docNumber || '-') + '</td>' +
-            '<td>' + escapeHtml(f.sender || f.recipient || f.clinicName || f.merchantName || f.companyName || '-') + '</td>' +
-            '<td>' + escapeHtml(f.title || f.personName || '-') + '</td>' +
-            '<td>' + escapeHtml(f.aiSummary || f.totalPaid || f.totalAmount || f.mobilePhone || '-') + '</td>' +
+            '<td>' + escapeHtml(f.sentDate || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.docNumber || '-') + '</td>' +
+            '<td>' + escapeHtml(isOut ? (f.recipient || f.sender || '-') : (f.sender || '-')) + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.title || '-') + '</td>' +
+            '<td>' + escapeHtml(f.aiSummary || '-') + '</td>' +
             '<td>' + escapeHtml(f.uploader || '-') + '</td></tr>';
         }).join('');
       }
@@ -6940,30 +7898,182 @@ class _HomeScreenState extends State<HomeScreen> {
         pageBar.style.display = 'none';
         return;
       }
-      const pages = [cur.base64Image ? ('data:image/jpeg;base64,' + cur.base64Image) : (cur.imagePath || '')];
-      try {
-        if (cur.fields && cur.fields.proofImagesJson) {
-          const arr = JSON.parse(cur.fields.proofImagesJson);
-          arr.forEach(function(b) { pages.push('data:image/jpeg;base64,' + b); });
-        }
-      } catch(_) {}
-      if (pages.length > 1) {
+      const mainSrc = cur.base64Image
+        ? (cur.base64Image.indexOf('data:') === 0 ? cur.base64Image : ('data:image/jpeg;base64,' + cur.base64Image))
+        : (cur.imagePath || '');
+      const pages = [mainSrc];
+      const extraArr = getExtraArray(cur);
+      extraArr.forEach(function(b) {
+        const s = String(b || '');
+        pages.push(s.indexOf('data:') === 0 ? s : ('data:image/jpeg;base64,' + s));
+      });
+
+      if (cur.category === '병원비' || cur.category === 'PDF변환' || pages.length > 1) {
         pageBar.style.display = 'flex';
-        pageBar.innerHTML = pages.map(function(_, idx) {
-          const cls = idx === selectedPageIdx ? 'chip-btn active' : 'chip-btn';
-          return '<button class="' + cls + '" onclick="selectedPageIdx=' + idx + '; render();">' + (idx + 1) + '페이지</button>';
-        }).join('');
+        let barHtml = '';
+        pages.forEach(function(_, idx) {
+          const cls = idx === selectedPageIdx ? 'page-tab active' : 'page-tab';
+          const lbl = cur.category === '병원비'
+            ? (idx === 0 ? '기본 영수증' : ('증빙첨부 ' + idx))
+            : ((idx + 1) + '페이지');
+          barHtml += '<button class="' + cls + '" onclick="selectedPageIdx=' + idx + '; resetZoom(); render();">' + lbl;
+          if (idx > 0) {
+            barHtml += ' <span class="page-del" onclick="removeExtraPage(' + (idx - 1) + ', event)">✕</span>';
+          }
+          barHtml += '</button>';
+        });
+        barHtml += '<button class="page-add" onclick="triggerAddExtraPage()">+ ' + (cur.category === 'PDF변환' ? '페이지 추가' : '증빙첨부 추가') + '</button>';
+        pageBar.innerHTML = barHtml;
       } else {
         pageBar.style.display = 'none';
       }
+      if (selectedPageIdx >= pages.length) selectedPageIdx = 0;
       imgEl.src = pages[selectedPageIdx] || pages[0] || '';
     }
+
+    function downloadModifiedHtml() {
+      const jsonStr = JSON.stringify(archiveRecords);
+      const fullHtml = document.documentElement.outerHTML;
+      const sIdx = fullHtml.indexOf('/*ARCHIVE_DATA_START*/');
+      const eIdx = fullHtml.indexOf('/*ARCHIVE_DATA_END*/');
+      if (sIdx === -1 || eIdx === -1) return;
+      const updatedHtml = '<!DOCTYPE html>\n' +
+        fullHtml.substring(0, sIdx + '/*ARCHIVE_DATA_START*/'.length) +
+        ' ' + jsonStr + ' ' +
+        fullHtml.substring(eIdx);
+      const blob = new Blob([updatedHtml], { type: 'text/html;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = '증빙서류_' + selectedCategoryFilter + '_수정본.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    function exportPdfPrint() {
+      window.print();
+    }
+
+    // ★ 1. 리스트와 사진 사이 조절바 (모바일 touchstart/touchmove + 마우스 완벽 지원)
+    (function initResizer() {
+      const bar = document.getElementById('resizer-bar');
+      const listPane = document.getElementById('list-pane');
+      const ws = document.getElementById('workspace');
+      let dragging = false;
+
+      function updateSplit(clientX, clientY) {
+        const rect = ws.getBoundingClientRect();
+        const isLand = window.matchMedia('(orientation: landscape)').matches;
+        if (isLand) {
+          const pct = Math.min(82, Math.max(18, ((clientX - rect.left) / rect.width) * 100));
+          listPane.style.flex = '0 0 ' + pct + '%';
+        } else {
+          const pct = Math.min(82, Math.max(15, ((clientY - rect.top) / rect.height) * 100));
+          listPane.style.flex = '0 0 ' + pct + '%';
+        }
+      }
+
+      bar.addEventListener('touchstart', function(e) {
+        dragging = true;
+        if (e.cancelable) e.preventDefault();
+      }, { passive: false });
+
+      window.addEventListener('touchmove', function(e) {
+        if (!dragging || !e.touches || e.touches.length === 0) return;
+        if (e.cancelable) e.preventDefault();
+        updateSplit(e.touches[0].clientX, e.touches[0].clientY);
+      }, { passive: false });
+
+      window.addEventListener('touchend', function() { dragging = false; });
+      window.addEventListener('touchcancel', function() { dragging = false; });
+
+      bar.addEventListener('mousedown', function(e) {
+        dragging = true;
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        updateSplit(e.clientX, e.clientY);
+      });
+      window.addEventListener('mouseup', function() { dragging = false; });
+    })();
+
+    // ★ 2. 하단 사진 뷰어 두 손가락 벌려서 확대/축소(Pinch Zoom) + 드래그 이동(Pan) + 더블탭 초기화
+    (function initPhotoPinchAndPan() {
+      const vp = document.getElementById('photo-viewport');
+      let startDist = 0;
+      let startZoom = 1.0;
+      let isPinching = false;
+      let isPanning = false;
+      let startPanX = 0;
+      let startPanY = 0;
+      let lastTapTime = 0;
+
+      function getTouchDist(t1, t2) {
+        const dx = t1.clientX - t2.clientX;
+        const dy = t1.clientY - t2.clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+
+      vp.addEventListener('touchstart', function(e) {
+        if (e.touches.length === 2) {
+          isPinching = true;
+          isPanning = false;
+          startDist = getTouchDist(e.touches[0], e.touches[1]);
+          startZoom = currentZoom;
+          if (e.cancelable) e.preventDefault();
+        } else if (e.touches.length === 1) {
+          const now = Date.now();
+          if (now - lastTapTime < 280) {
+            if (currentZoom > 1.05) resetZoom();
+            else { currentZoom = 2.2; panX = 0; panY = 0; applyZoom(); }
+            lastTapTime = 0;
+            if (e.cancelable) e.preventDefault();
+            return;
+          }
+          lastTapTime = now;
+          isPanning = true;
+          startPanX = e.touches[0].clientX - panX;
+          startPanY = e.touches[0].clientY - panY;
+        }
+      }, { passive: false });
+
+      vp.addEventListener('touchmove', function(e) {
+        if (isPinching && e.touches.length === 2) {
+          if (e.cancelable) e.preventDefault();
+          const dist = getTouchDist(e.touches[0], e.touches[1]);
+          if (startDist > 10) {
+            currentZoom = Math.min(5.0, Math.max(0.5, startZoom * (dist / startDist)));
+            applyZoom();
+          }
+        } else if (isPanning && e.touches.length === 1 && currentZoom > 1.02) {
+          if (e.cancelable) e.preventDefault();
+          panX = e.touches[0].clientX - startPanX;
+          panY = e.touches[0].clientY - startPanY;
+          applyZoom();
+        }
+      }, { passive: false });
+
+      vp.addEventListener('touchend', function(e) {
+        if (e.touches.length < 2) isPinching = false;
+        if (e.touches.length === 0) {
+          isPanning = false;
+          if (currentZoom < 1.0) resetZoom();
+        }
+      });
+
+      vp.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        changeZoom(e.deltaY < 0 ? 0.25 : -0.25);
+      }, { passive: false });
+    })();
 
     render();
   </script>
 </body>
 </html>''';
   }
+
 
   // ---------------------------------------------------------------------------
   // GitHub / OneDrive 현장공유방 연동 (사진 파일 photos/ 분리 업로드 & PC 바로가기)
@@ -7631,8 +8741,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     final content = Container(
       width: width,
-      height: _kTableDataRowHeight,
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+      constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -7643,12 +8753,10 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Text(
         text.trim().isEmpty ? '-' : text,
         textAlign: TextAlign.center,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
         softWrap: true,
         style: TextStyle(
           fontSize: 11.5,
-          height: 1.2,
+          height: 1.25,
           fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
           color: textColor ?? const Color(0xFF0F172A),
         ),
@@ -7663,8 +8771,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildEditDeleteActionCell(DocRecord rec, double width) {
     return Container(
       width: width,
-      height: _kTableDataRowHeight,
-      padding: const EdgeInsets.symmetric(horizontal: 2),
+      constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -7717,8 +8825,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Container(
       width: width,
-      height: _kTableDataRowHeight,
-      padding: const EdgeInsets.symmetric(horizontal: 4),
+      constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -7999,15 +9107,32 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
-              TextButton.icon(
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                ),
-                onPressed: () => _promptAddNewSubCategory(cat),
-                icon: const Icon(Icons.add, size: 15),
-                label: const Text('+ 카테고리',
-                    style: TextStyle(fontSize: 11.5)),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                    ),
+                    onPressed: () => _promptAddNewSubCategory(cat),
+                    icon: const Icon(Icons.add, size: 15),
+                    label: const Text('카테고리추가',
+                        style: TextStyle(fontSize: 11.5)),
+                  ),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: Colors.red.shade700,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                    ),
+                    onPressed: _openBulkDeleteDialog,
+                    icon: const Icon(Icons.delete_sweep_outlined, size: 15),
+                    label: const Text('삭제',
+                        style: TextStyle(
+                            fontSize: 11.5, fontWeight: FontWeight.bold)),
+                  ),
+                ],
               ),
             ],
           ),
@@ -8136,39 +9261,39 @@ class _HomeScreenState extends State<HomeScreen> {
       if (cat == DocCategory.officialIn) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 82, sortKey: 'date'),
-            _buildFixedHeaderCell('공문번호', 96, sortKey: 'docNumber'),
-            _buildFixedHeaderCell('보낸사람', 92, sortKey: 'clinic'),
-            _buildFixedHeaderCell('제목', 142),
-            _buildFixedHeaderCell('내용', 168),
-            _buildFixedHeaderCell('회신요청일', 82),
-            _buildFixedHeaderCell('회신완료', 64, sortKey: 'replied'),
-            _buildFixedHeaderCell('올린사람', 68, sortKey: 'uploader'),
-            _buildFixedHeaderCell('결재', 74),
+            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
+            _buildFixedHeaderCell('공문번호', 105, sortKey: 'docNumber'),
+            _buildFixedHeaderCell('보낸사람', 125, sortKey: 'clinic'),
+            _buildFixedHeaderCell('제목', 195, sortKey: 'title'),
+            _buildFixedHeaderCell('내용', 245, sortKey: 'aiSummary'),
+            _buildFixedHeaderCell('회신요청일', 84, sortKey: 'replyDeadline'),
+            _buildFixedHeaderCell('회신완료', 66, sortKey: 'replied'),
+            _buildFixedHeaderCell('올린사람', 70, sortKey: 'uploader'),
+            _buildFixedHeaderCell('결재', 74, sortKey: 'approval'),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
       } else if (cat == DocCategory.officialOut) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 82, sortKey: 'date'),
-            _buildFixedHeaderCell('공문번호', 96, sortKey: 'docNumber'),
-            _buildFixedHeaderCell('받는사람', 92, sortKey: 'clinic'),
-            _buildFixedHeaderCell('회신번호', 96),
-            _buildFixedHeaderCell('제목', 142),
-            _buildFixedHeaderCell('내용', 168),
-            _buildFixedHeaderCell('올린사람', 68, sortKey: 'uploader'),
-            _buildFixedHeaderCell('결재', 74),
+            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
+            _buildFixedHeaderCell('공문번호', 105, sortKey: 'docNumber'),
+            _buildFixedHeaderCell('받는사람', 125, sortKey: 'clinic'),
+            _buildFixedHeaderCell('회신번호', 105, sortKey: 'replyDocNumber'),
+            _buildFixedHeaderCell('제목', 195, sortKey: 'title'),
+            _buildFixedHeaderCell('내용', 245, sortKey: 'aiSummary'),
+            _buildFixedHeaderCell('올린사람', 70, sortKey: 'uploader'),
+            _buildFixedHeaderCell('결재', 74, sortKey: 'approval'),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
       } else if (cat == DocCategory.invoice) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 82, sortKey: 'date'),
+            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
             _buildFixedHeaderCell(
               '제품명 ${_invSumByProduct ? "✓" : ""}',
-              92,
+              102,
               onHeaderTap: () {
                 _toggleInvoiceGroupHeader('product');
                 _toggleSortColumn('product');
@@ -8177,30 +9302,30 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             _buildFixedHeaderCell(
               '규격명 ${_invSumBySpec ? "✓" : ""}',
-              110,
+              118,
               onHeaderTap: () {
                 _toggleInvoiceGroupHeader('spec');
                 _toggleSortColumn('spec');
               },
               isHighlightedGroup: _invSumBySpec,
             ),
-            _buildFixedHeaderCell('단위', 52),
-            _buildFixedHeaderCell('수량', 66),
-            _buildFixedHeaderCell('누적수량', 72),
-            _buildFixedHeaderCell('공급자', 92, sortKey: 'supplier'),
-            _buildFixedHeaderCell('주문송장번호', 112),
-            _buildFixedHeaderCell('올린사람', 68, sortKey: 'uploader'),
-            _buildFixedHeaderCell('결재', 74),
+            _buildFixedHeaderCell('단위', 54, sortKey: 'unit'),
+            _buildFixedHeaderCell('수량', 70, sortKey: 'quantity'),
+            _buildFixedHeaderCell('누적수량', 76),
+            _buildFixedHeaderCell('공급자', 105, sortKey: 'supplier'),
+            _buildFixedHeaderCell('주문송장번호', 120, sortKey: 'orderNumber'),
+            _buildFixedHeaderCell('올린사람', 70, sortKey: 'uploader'),
+            _buildFixedHeaderCell('결재', 74, sortKey: 'approval'),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
       } else if (cat == DocCategory.travel) {
         return Row(
           children: [
-            _buildFixedHeaderCell('카테고리(날짜)', 106, sortKey: 'date'),
-            _buildFixedHeaderCell('구분', 64),
-            _buildFixedHeaderCell('상호', 140, sortKey: 'clinic'),
-            _buildFixedHeaderCell('금액', 88, sortKey: 'amount'),
+            _buildFixedHeaderCell('카테고리(날짜)', 110, sortKey: 'date'),
+            _buildFixedHeaderCell('구분', 66, sortKey: 'travelDivision'),
+            _buildFixedHeaderCell('상호', 155, sortKey: 'clinic'),
+            _buildFixedHeaderCell('금액', 92, sortKey: 'amount'),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
@@ -8209,7 +9334,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildFixedHeaderCell(
               '카테고리 ${_medSumByCat ? "✓" : ""}',
-              82,
+              84,
               onHeaderTap: () {
                 _toggleMedicalGroupHeader('cat');
                 _toggleSortColumn('subCategory');
@@ -8218,39 +9343,39 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             _buildFixedHeaderCell(
               '환자성명 ${_medSumByPatient ? "✓" : ""}',
-              76,
+              78,
               onHeaderTap: () {
                 _toggleMedicalGroupHeader('patient');
                 _toggleSortColumn('patient');
               },
               isHighlightedGroup: _medSumByPatient,
             ),
-            _buildFixedHeaderCell('날짜', 82, sortKey: 'date'),
-            _buildFixedHeaderCell('상호', 110, sortKey: 'clinic'),
-            _buildFixedHeaderCell('금액', 82, sortKey: 'amount'),
-            _buildFixedHeaderCell('사업자등록번호', 102),
+            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
+            _buildFixedHeaderCell('상호', 124, sortKey: 'clinic'),
+            _buildFixedHeaderCell('금액', 86, sortKey: 'amount'),
+            _buildFixedHeaderCell('사업자등록번호', 106, sortKey: 'bizRegNumber'),
             _buildFixedHeaderCell(
               '청구여부 ${_medSumByClaim ? "✓" : ""}',
-              76,
+              78,
               onHeaderTap: () {
                 _toggleMedicalGroupHeader('claim');
                 _toggleSortColumn('claimed');
               },
               isHighlightedGroup: _medSumByClaim,
             ),
-            _buildFixedHeaderCell('증빙첨부', 80),
+            _buildFixedHeaderCell('증빙첨부', 82),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
       } else if (cat == DocCategory.businessCard) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 82, sortKey: 'date'),
-            _buildFixedHeaderCell('회사명', 108, sortKey: 'companyName'),
-            _buildFixedHeaderCell('현장명', 112, sortKey: 'siteName'),
-            _buildFixedHeaderCell('이름', 74, sortKey: 'personName'),
-            _buildFixedHeaderCell('휴대폰번호 (📞전화)', 124),
-            _buildFixedHeaderCell('이메일주소 (✉️메일)', 152),
+            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
+            _buildFixedHeaderCell('회사명', 120, sortKey: 'companyName'),
+            _buildFixedHeaderCell('현장명', 135, sortKey: 'siteName'),
+            _buildFixedHeaderCell('이름', 78, sortKey: 'personName'),
+            _buildFixedHeaderCell('휴대폰번호', 128, sortKey: 'mobilePhone'),
+            _buildFixedHeaderCell('이메일주소', 162, sortKey: 'email'),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
@@ -8258,10 +9383,10 @@ class _HomeScreenState extends State<HomeScreen> {
         // ★ PDF변환 탭: 찍은날짜 | 파일명 | 장수 | 페이지추가 | 수정/삭제
         return Row(
           children: [
-            _buildFixedHeaderCell('찍은날짜', 90, sortKey: 'date'),
-            _buildFixedHeaderCell('파일명', 175, sortKey: 'pdfFileName'),
-            _buildFixedHeaderCell('장수', 66, sortKey: 'pageCount'),
-            _buildFixedHeaderCell('페이지추가', 88),
+            _buildFixedHeaderCell('찍은날짜', 92, sortKey: 'date'),
+            _buildFixedHeaderCell('파일명', 200, sortKey: 'pdfFileName'),
+            _buildFixedHeaderCell('장수', 68, sortKey: 'pageCount'),
+            _buildFixedHeaderCell('페이지추가', 90),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
@@ -8276,56 +9401,59 @@ class _HomeScreenState extends State<HomeScreen> {
       if (cat == DocCategory.officialIn) {
         final bool replied = _isIncomingDocReplied(r, repliedKeys);
         rowWidget = Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 82),
-            _buildFixedDataCell(f['docNumber'] ?? '-', 96, bold: true),
-            _buildFixedDataCell(r.officialCounterpartyValue, 92),
-            _buildFixedDataCell(f['title'] ?? '-', 142, bold: true),
-            _buildFixedDataCell(f['aiSummary'] ?? '-', 168),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 84),
+            _buildFixedDataCell(f['docNumber'] ?? '-', 105, bold: true),
+            _buildFixedDataCell(r.officialCounterpartyValue, 125),
+            _buildFixedDataCell(f['title'] ?? '-', 195, bold: true),
+            _buildFixedDataCell(f['aiSummary'] ?? '-', 245),
             _buildFixedDataCell(
-                DocRecord.formatDotDate(f['replyDeadline']), 82),
+                DocRecord.formatDotDate(f['replyDeadline']), 84),
             _buildFixedDataCell(
               replied ? '○' : '-',
-              64,
+              66,
               bold: true,
               textColor: replied ? Colors.green.shade700 : Colors.black38,
             ),
-            _buildFixedDataCell(_resolveUploaderName(r), 68),
+            _buildFixedDataCell(_resolveUploaderName(r), 70),
             _buildApprovalCell(r, 74),
             _buildEditDeleteActionCell(r, 68),
           ],
         );
       } else if (cat == DocCategory.officialOut) {
         rowWidget = Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 82),
-            _buildFixedDataCell(f['docNumber'] ?? '-', 96, bold: true),
-            _buildFixedDataCell(r.officialCounterpartyValue, 92),
-            _buildFixedDataCell(f['replyDocNumber'] ?? '-', 96),
-            _buildFixedDataCell(f['title'] ?? '-', 142, bold: true),
-            _buildFixedDataCell(f['aiSummary'] ?? '-', 168),
-            _buildFixedDataCell(_resolveUploaderName(r), 68),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 84),
+            _buildFixedDataCell(f['docNumber'] ?? '-', 105, bold: true),
+            _buildFixedDataCell(r.officialCounterpartyValue, 125),
+            _buildFixedDataCell(f['replyDocNumber'] ?? '-', 105),
+            _buildFixedDataCell(f['title'] ?? '-', 195, bold: true),
+            _buildFixedDataCell(f['aiSummary'] ?? '-', 245),
+            _buildFixedDataCell(_resolveUploaderName(r), 70),
             _buildApprovalCell(r, 74),
             _buildEditDeleteActionCell(r, 68),
           ],
         );
       } else if (cat == DocCategory.invoice) {
         rowWidget = Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(DocRecord.formatDotDate(f['arrivalDate']), 82),
-            _buildFixedDataCell(f['productName'] ?? '-', 92, bold: true),
-            _buildFixedDataCell(f['specName'] ?? '-', 110, bold: true),
-            _buildFixedDataCell(f['unit'] ?? '-', 52),
-            _buildFixedDataCell(f['quantity'] ?? '-', 66, bold: true),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['arrivalDate']), 84),
+            _buildFixedDataCell(f['productName'] ?? '-', 102, bold: true),
+            _buildFixedDataCell(f['specName'] ?? '-', 118, bold: true),
+            _buildFixedDataCell(f['unit'] ?? '-', 54),
+            _buildFixedDataCell(f['quantity'] ?? '-', 70, bold: true),
             _buildFixedDataCell(
               cumulativeMap[r.id] ?? '-',
-              72,
+              76,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
-            _buildFixedDataCell(f['supplierName'] ?? '-', 92),
-            _buildFixedDataCell(f['orderNumber'] ?? '-', 112),
-            _buildFixedDataCell(_resolveUploaderName(r), 68),
+            _buildFixedDataCell(f['supplierName'] ?? '-', 105),
+            _buildFixedDataCell(f['orderNumber'] ?? '-', 120),
+            _buildFixedDataCell(_resolveUploaderName(r), 70),
             _buildApprovalCell(r, 74),
             _buildEditDeleteActionCell(r, 68),
           ],
@@ -8334,13 +9462,14 @@ class _HomeScreenState extends State<HomeScreen> {
         final subLabel = r.subCategory.isEmpty ? '미지정' : r.subCategory;
         final dateStr = DocRecord.formatDotDate(f['date']);
         rowWidget = Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell('$subLabel\n($dateStr)', 106, bold: true),
-            _buildFixedDataCell(r.travelDivision, 64, bold: true),
-            _buildFixedDataCell(f['merchantName'] ?? '-', 140, bold: true),
+            _buildFixedDataCell('$subLabel\n($dateStr)', 110, bold: true),
+            _buildFixedDataCell(r.travelDivision, 66, bold: true),
+            _buildFixedDataCell(f['merchantName'] ?? '-', 155, bold: true),
             _buildFixedDataCell(
               '${NumberFormat('#,###').format(r.numericAmount)}원',
-              88,
+              92,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
@@ -8351,21 +9480,22 @@ class _HomeScreenState extends State<HomeScreen> {
         final subLabel = r.subCategory.isEmpty ? '미지정' : r.subCategory;
         final cnt = r.proofAttachmentCount;
         rowWidget = Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(subLabel, 82, bold: true),
-            _buildFixedDataCell(f['patientName'] ?? '-', 76, bold: true),
-            _buildFixedDataCell(DocRecord.formatDotDate(f['issueDate']), 82),
-            _buildFixedDataCell(f['clinicName'] ?? '-', 110, bold: true),
+            _buildFixedDataCell(subLabel, 84, bold: true),
+            _buildFixedDataCell(f['patientName'] ?? '-', 78, bold: true),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['issueDate']), 84),
+            _buildFixedDataCell(f['clinicName'] ?? '-', 124, bold: true),
             _buildFixedDataCell(
               '${NumberFormat('#,###').format(r.numericAmount)}원',
-              82,
+              86,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
-            _buildFixedDataCell(f['bizRegNumber'] ?? '-', 102),
+            _buildFixedDataCell(f['bizRegNumber'] ?? '-', 106),
             _buildFixedDataCell(
               r.isMedicalClaimed ? '☑ 청구완료' : '☐ 미청구',
-              76,
+              78,
               bold: true,
               textColor: r.isMedicalClaimed
                   ? Colors.green.shade700
@@ -8374,7 +9504,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             _buildFixedDataCell(
               cnt > 0 ? '📎 첨부($cnt)' : '+ 증빙추가',
-              80,
+              82,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
               onTap: () => _manageRecordExtraPagesDialog(r),
@@ -8386,25 +9516,26 @@ class _HomeScreenState extends State<HomeScreen> {
         final phone = (f['mobilePhone'] ?? '').trim();
         final email = (f['email'] ?? '').trim();
         rowWidget = Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _buildFixedDataCell(
               DocRecord.formatDotDate(
                   f['cardDate'] ?? r.createdAt.split(' ').first),
-              82,
+              84,
             ),
-            _buildFixedDataCell(f['companyName'] ?? '-', 108, bold: true),
-            _buildFixedDataCell(f['siteName'] ?? '-', 112),
-            _buildFixedDataCell(f['personName'] ?? '-', 74, bold: true),
+            _buildFixedDataCell(f['companyName'] ?? '-', 120, bold: true),
+            _buildFixedDataCell(f['siteName'] ?? '-', 135),
+            _buildFixedDataCell(f['personName'] ?? '-', 78, bold: true),
             _buildFixedDataCell(
               phone.isEmpty ? '-' : '📞 $phone',
-              124,
+              128,
               bold: true,
               textColor: Colors.green.shade800,
               onTap: phone.isEmpty ? null : () => _openPhoneDialer(phone),
             ),
             _buildFixedDataCell(
               email.isEmpty ? '-' : '✉️ $email',
-              152,
+              162,
               textColor: const Color(0xFF1E3A8A),
               onTap: email.isEmpty ? null : () => _openEmailComposer(email),
             ),
@@ -8419,27 +9550,28 @@ class _HomeScreenState extends State<HomeScreen> {
             : (rawFn.toLowerCase().endsWith('.pdf') ? rawFn : '$rawFn.pdf');
         final totalPages = r.totalPdfPageCount;
         rowWidget = Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _buildFixedDataCell(
               DocRecord.formatDotDate(
                   f['pdfDate'] ?? r.createdAt.split(' ').first),
-              90,
+              92,
             ),
             _buildFixedDataCell(
               dispFn,
-              175,
+              200,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
             _buildFixedDataCell(
               '${totalPages}장',
-              66,
+              68,
               bold: true,
               textColor: const Color(0xFF0F766E),
             ),
             _buildFixedDataCell(
               '+ 페이지추가',
-              88,
+              90,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
               onTap: () => _manageRecordExtraPagesDialog(r),
@@ -8458,9 +9590,9 @@ class _HomeScreenState extends State<HomeScreen> {
         },
         onLongPress: () => _editRecordDialog(r),
         child: Container(
-          height: _kTableDataRowHeight,
+          constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
           color: isSelected ? const Color(0xFFDBEAFE) : Colors.white,
-          child: rowWidget,
+          child: IntrinsicHeight(child: rowWidget),
         ),
       );
     }
@@ -8471,23 +9603,22 @@ class _HomeScreenState extends State<HomeScreen> {
         scrollDirection: Axis.horizontal,
         child: SizedBox(
           width: cat == DocCategory.officialIn
-              ? 936
+              ? 1116
               : (cat == DocCategory.officialOut
-                  ? 886
+                  ? 1071
                   : (cat == DocCategory.invoice
-                      ? 888
+                      ? 941
                       : (cat == DocCategory.medical
-                          ? 758
+                          ? 790
                           : (cat == DocCategory.businessCard
-                              ? 720
-                              : (cat == DocCategory.pdfConvert ? 487 : 466))))),
+                              ? 775
+                              : (cat == DocCategory.pdfConvert ? 518 : 491))))),
           child: Column(
             children: [
               buildHeaderRow(),
               Expanded(
                 child: ListView.builder(
                   padding: EdgeInsets.zero,
-                  itemExtent: _kTableDataRowHeight,
                   itemCount: list.length,
                   itemBuilder: (ctx, idx) => buildDataRow(list[idx]),
                 ),
@@ -8755,6 +9886,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 label: 'PDF내보내기',
                 iconColor: const Color(0xFFFDE047),
                 onTap: _exportCurrentTabBundledPdf,
+              ),
+              _buildTopActionBtn(
+                icon: Icons.delete_sweep_outlined,
+                label: '일괄삭제',
+                iconColor: const Color(0xFFFCA5A5),
+                onTap: _openBulkDeleteDialog,
               ),
             ],
           ),
