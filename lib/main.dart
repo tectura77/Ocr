@@ -7356,7 +7356,7 @@ class _HomeScreenState extends State<HomeScreen> {
     function fmtQty(val) {
       const v = parseFloat(String(val || '0').replace(/[^0-9.-]/g, '')) || 0;
       if (Math.abs(v - Math.round(v)) < 0.0005) return Math.round(v).toLocaleString('ko-KR');
-      return v.toFixed(3).replace(/0+$/, '').replace(/\\.$/, '');
+      return Number(v.toFixed(3)).toString();
     }
 
     function parseInvoiceQty(r) {
