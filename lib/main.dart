@@ -7701,7 +7701,7 @@ class _HomeScreenState extends State<HomeScreen> {
     function buildPageButtonsHtml(r, totalPages) {
       return '<div style="white-space:nowrap; display:inline-flex; align-items:center; gap:3px;">' +
         '<span style="font-weight:900; color:#0f766e;">' + totalPages + '장</span>' +
-        '<button style="border:1px solid #93c5fd; background:#eff6ff; color:#1e3a8a; border-radius:4px; padding:1px 5px; font-size:10px; font-weight:900; cursor:pointer;" onclick="selectRow(\'' + r.id + '\'); triggerAddExtraPage(); event.stopPropagation();">+</button>' +
+        '<button style="border:1px solid #93c5fd; background:#eff6ff; color:#1e3a8a; border-radius:4px; padding:1px 5px; font-size:10px; font-weight:900; cursor:pointer;" onclick="selectRow(\\'' + r.id + '\\'); triggerAddExtraPage(); event.stopPropagation();">+</button>' +
         '</div>';
     }
 
@@ -7783,11 +7783,11 @@ class _HomeScreenState extends State<HomeScreen> {
           groups[gKey].sum += q;
         });
         const allLabel = '전체 ' + majorList.length + '장';
-        let chipsHtml = '<button class="chip-btn ' + (selectedProductFilter === '전체' ? 'active' : '') + '" onclick="selectedProductFilter=\'전체\'; render();">' + escapeHtml(allLabel) + '</button>';
+        let chipsHtml = '<button class="chip-btn ' + (selectedProductFilter === '전체' ? 'active' : '') + '" onclick="selectedProductFilter=\\'전체\\'; render();">' + escapeHtml(allLabel) + '</button>';
         Object.keys(groups).forEach(function(k) {
           const g = groups[k];
           const cls = selectedProductFilter === k ? 'chip-btn active' : 'chip-btn';
-          chipsHtml += '<button class="' + cls + '" onclick="selectedProductFilter=\'' + escapeHtml(k) + '\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtQty(g.sum) + escapeHtml(g.unit) + ')</button>';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedProductFilter=\\'' + escapeHtml(k) + '\\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtQty(g.sum) + escapeHtml(g.unit) + ')</button>';
         });
         const modeLabel = (invGroupProduct && invGroupSpec) ? '제품명. 규격별' : (invGroupSpec ? '규격명별' : '제품명별');
         bar.innerHTML =
@@ -7803,11 +7803,11 @@ class _HomeScreenState extends State<HomeScreen> {
           groups[key].cnt++;
           groups[key].sum += getRecordAmount(r);
         });
-        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat=\'전체\'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
+        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat=\\'전체\\'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
         Object.keys(groups).forEach(function(k) {
           const g = groups[k];
           const cls = selectedSubCat === k ? 'chip-btn active' : 'chip-btn';
-          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat=\'' + escapeHtml(k) + '\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat=\\'' + escapeHtml(k) + '\\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
         });
 
         let unclaimedCnt = 0, unclaimedSum = 0, claimedCnt = 0, claimedSum = 0;
@@ -7816,9 +7816,9 @@ class _HomeScreenState extends State<HomeScreen> {
           else { unclaimedCnt++; unclaimedSum += getRecordAmount(r); }
         });
         const claimHtml =
-          '<button class="chip-btn ' + (selectedClaimFilter === '전체' ? 'active' : '') + '" onclick="selectedClaimFilter=\'전체\'; render();">청구전체 (' + majorList.length + '건)</button>' +
-          '<button class="chip-btn ' + (selectedClaimFilter === '미청구' ? 'active' : '') + '" style="color:#be123c;" onclick="selectedClaimFilter=\'미청구\'; render();">미청구 (' + unclaimedCnt + '건 · ' + fmtNum(unclaimedSum) + '원)</button>' +
-          '<button class="chip-btn ' + (selectedClaimFilter === '청구완료' ? 'active' : '') + '" style="color:#15803d;" onclick="selectedClaimFilter=\'청구완료\'; render();">청구완료 (' + claimedCnt + '건 · ' + fmtNum(claimedSum) + '원)</button>';
+          '<button class="chip-btn ' + (selectedClaimFilter === '전체' ? 'active' : '') + '" onclick="selectedClaimFilter=\\'전체\\'; render();">청구전체 (' + majorList.length + '건)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '미청구' ? 'active' : '') + '" style="color:#be123c;" onclick="selectedClaimFilter=\\'미청구\\'; render();">미청구 (' + unclaimedCnt + '건 · ' + fmtNum(unclaimedSum) + '원)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '청구완료' ? 'active' : '') + '" style="color:#15803d;" onclick="selectedClaimFilter=\\'청구완료\\'; render();">청구완료 (' + claimedCnt + '건 · ' + fmtNum(claimedSum) + '원)</button>';
 
         const medModeStr = (medSumByCat && medSumByPatient) ? '카테고리. 환자별' : (medSumByPatient ? '환자별' : '카테고리별');
         bar.innerHTML =
@@ -7870,8 +7870,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (selectedCategoryFilter === '병원비') {
         thead.innerHTML = '<tr>' +
-          '<th style="width:74px;" class="' + thClass('subCategory', medSumByCat) + '" onclick="toggleMedicalGroup(\'cat\');">카테고리 ' + (medSumByCat ? '✓' : '') + '<br>' + sortArrow('subCategory') + '</th>' +
-          '<th style="width:70px;" class="' + thClass('patient', medSumByPatient) + '" onclick="toggleMedicalGroup(\'patient\');">환자성명 ' + (medSumByPatient ? '✓' : '') + '<br>' + sortArrow('patient') + '</th>' +
+          '<th style="width:74px;" class="' + thClass('subCategory', medSumByCat) + '" onclick="toggleMedicalGroup(\\'cat\\');">카테고리 ' + (medSumByCat ? '✓' : '') + '<br>' + sortArrow('subCategory') + '</th>' +
+          '<th style="width:70px;" class="' + thClass('patient', medSumByPatient) + '" onclick="toggleMedicalGroup(\\'patient\\');">환자성명 ' + (medSumByPatient ? '✓' : '') + '<br>' + sortArrow('patient') + '</th>' +
           '<th style="width:88px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
           '<th style="width:130px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">상호' + sortArrow('clinic') + '</th>' +
           '<th style="width:88px;" class="' + thClass('amount', false) + '" onclick="toggleSort(\\'amount\\');">금액' + sortArrow('amount') + '</th>' +
@@ -8046,7 +8046,7 @@ class _HomeScreenState extends State<HomeScreen> {
       const sIdx = fullHtml.indexOf('/*ARCHIVE_DATA_START*/');
       const eIdx = fullHtml.indexOf('/*ARCHIVE_DATA_END*/');
       if (sIdx === -1 || eIdx === -1) return;
-      const updatedHtml = '<!DOCTYPE html>\n' +
+      const updatedHtml = '<!DOCTYPE html>\\n' +
         fullHtml.substring(0, sIdx + '/*ARCHIVE_DATA_START*/'.length) +
         ' ' + jsonStr + ' ' +
         fullHtml.substring(eIdx);
