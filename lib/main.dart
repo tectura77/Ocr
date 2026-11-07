@@ -1,10 +1,9 @@
-// ignore_for_file: deprecated_member_use, use_build_context_synchronously, unused_field, unused_element, unnecessary_string_escapes, unnecessary_brace_in_string_interps, prefer_interpolation_to_compose_strings, prefer_const_constructors, prefer_const_literals_to_create_immutables
+// ignore_for_file: deprecated_member_use, use_build_context_synchronously, unused_field, unused_element, unused_import, unnecessary_import, unnecessary_string_escapes, unnecessary_brace_in_string_interps, prefer_interpolation_to_compose_strings, prefer_const_constructors, prefer_const_literals_to_create_immutables
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -19,7 +18,6 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -4327,6 +4325,10 @@ class _HomeScreenState extends State<HomeScreen> {
         await savedFile.writeAsBytes(flattenedBytes, flush: true);
       }
 
+      final XFile validPicked = picked;
+      final Uint8List validRawBytes = rawBytes;
+      final Uint8List validFlattenedBytes = flattenedBytes;
+
       String chosenCategory = _selectedCategoryFilter == DocCategory.all
           ? DocCategory.officialIn
           : _selectedCategoryFilter;
@@ -4342,7 +4344,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final subCategoryCtrl = TextEditingController(text: initialSubCat);
       final todayDotStr = DateFormat('yyyy.MM.dd').format(DateTime.now());
       final photoTakenDateDot =
-          await _extractPhotoTakenDateOrToday(rawBytes, picked);
+          await _extractPhotoTakenDateOrToday(validRawBytes, validPicked);
 
       // 1. 공문(수신) / 공문(발신) 컨트롤러
       final docTitleCtrl = TextEditingController();
@@ -4631,7 +4633,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 try {
                   final ocrMap = await _extractFieldsOfflineOcr(
                     imagePath: savedFile.path,
-                    imageBytes: flattenedBytes,
+                    imageBytes: validFlattenedBytes,
                     category: chosenCategory,
                   );
                   if (ctx.mounted) {
@@ -4650,7 +4652,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     }
                     final aiMap = await _analyzeDocumentWithAi(
                       category: chosenCategory,
-                      imageBytes: flattenedBytes,
+                      imageBytes: validFlattenedBytes,
                     );
                     if (ctx.mounted) {
                       setDialogState(() {
