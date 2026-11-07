@@ -1,4 +1,4 @@
-// ignore_for_file: deprecated_member_use, use_build_context_synchronously, unused_field, unused_element, unnecessary_string_escapes, prefer_const_constructors, prefer_const_literals_to_create_immutables
+// ignore_for_file: deprecated_member_use, use_build_context_synchronously, unused_field, unused_element, unnecessary_string_escapes, unnecessary_brace_in_string_interps, prefer_interpolation_to_compose_strings, prefer_const_constructors, prefer_const_literals_to_create_immutables
 
 import 'dart:async';
 import 'dart:convert';
@@ -469,7 +469,7 @@ class DocRecord {
     } else if (category == DocCategory.travel) {
       datePart = formatDotDate(fields['date']);
       titlePart =
-          '${subCategory.isNotEmpty ? "${subCategory}_" : ""}$travelDivision_${fields['merchantName'] ?? '출장비'}';
+          '${subCategory.isNotEmpty ? "${subCategory}_" : ""}${travelDivision}_${fields['merchantName'] ?? '출장비'}';
     } else if (category == DocCategory.medical) {
       datePart = formatDotDate(fields['issueDate']);
       final pat = (fields['patientName'] ?? '').trim();
