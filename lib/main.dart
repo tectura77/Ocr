@@ -1405,13 +1405,12 @@ class _HomeScreenState extends State<HomeScreen> {
   String _selectedMedicalClaimFilter = '전체';
   DocRecord? _selectedRecord;
   int _selectedPhotoIndex = 0;
-  final PageController _photoPageCtrl = PageController();
+  final TransformationController _photoTransformCtrl =
+      TransformationController();
 
   void _resetPhotoPageToZero() {
     _selectedPhotoIndex = 0;
-    if (_photoPageCtrl.hasClients) {
-      _photoPageCtrl.jumpToPage(0);
-    }
+    _photoTransformCtrl.value = Matrix4.identity();
   }
 
   bool _invSumByProduct = true;
@@ -1473,7 +1472,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _photoPageCtrl.dispose();
+    _photoTransformCtrl.dispose();
     _businessCardSearchCtrl.dispose();
     super.dispose();
   }
@@ -4134,11 +4133,19 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (ctx, setModalState) {
           final int totalPages = 1 + math.max(paths.length, b64List.length);
           return AlertDialog(
-            title: Text(
-              isPdfTab
-                  ? '📄 PDF 페이지 추가·관리 (총 ${totalPages}장)'
-                  : '📎 병원비 추가 증빙첨부 관리 (${math.max(paths.length, b64List.length)}장)',
-              style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
+            title: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                isPdfTab
+                    ? '📄 PDF 페이지 추가·관리 (총 ${totalPages}장)'
+                    : '📎 병원비 추가 증빙첨부 관리 (${math.max(paths.length, b64List.length)}장)',
+                maxLines: 1,
+                style:
+                    const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+              ),
             ),
             content: SizedBox(
               width: 380,
@@ -6757,9 +6764,16 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
           return AlertDialog(
-            title: const Text(
-              '⚙️ 현장공유 및 AI 설정',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
+            title: const FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '⚙️ 현장공유 및 AI 설정',
+                maxLines: 1,
+                style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
+              ),
             ),
             content: SizedBox(
               width: 400,
@@ -6787,8 +6801,15 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Expanded(
                           child: ChoiceChip(
-                            label: const Text('🐙 GitHub 자동동기화',
-                                style: TextStyle(fontSize: 11.5)),
+                            visualDensity: VisualDensity.compact,
+                            labelPadding:
+                                const EdgeInsets.symmetric(horizontal: 4),
+                            label: const FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text('🐙 GitHub 자동동기화',
+                                  maxLines: 1,
+                                  style: TextStyle(fontSize: 11.5)),
+                            ),
                             selected: tempMode == 'github',
                             onSelected: (_) =>
                                 setModalState(() => tempMode = 'github'),
@@ -6797,8 +6818,15 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(width: 6),
                         Expanded(
                           child: ChoiceChip(
-                            label: const Text('☁️ OneDrive 간편공유',
-                                style: TextStyle(fontSize: 11.5)),
+                            visualDensity: VisualDensity.compact,
+                            labelPadding:
+                                const EdgeInsets.symmetric(horizontal: 4),
+                            label: const FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text('☁️ OneDrive 간편공유',
+                                  maxLines: 1,
+                                  style: TextStyle(fontSize: 11.5)),
+                            ),
                             selected: tempMode == 'onedrive',
                             onSelected: (_) =>
                                 setModalState(() => tempMode = 'onedrive'),
@@ -7584,15 +7612,36 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     function selectRow(id) {
+      if (selectedId !== id) {
+        selectedId = id;
+        selectedPageIdx = 0;
+        resetZoom();
+      }
+      render();
+    }
+
+    function selectRowPage(id, pIdx, ev) {
+      if (ev) ev.stopPropagation();
       selectedId = id;
-      selectedPageIdx = 0;
+      selectedPageIdx = pIdx;
       resetZoom();
       render();
     }
 
+    function buildPageButtonsHtml(r, totalPages) {
+      let html = '<div style="display:flex; gap:3px; justify-content:center; flex-wrap:wrap;">';
+      for (let i = 0; i < totalPages; i++) {
+        const active = (r.id === selectedId && selectedPageIdx === i);
+        const bg = active ? '#1e3a8a' : '#e2e8f0';
+        const fg = active ? '#fff' : '#0f172a';
+        html += '<button style="border:1px solid #94a3b8; background:' + bg + '; color:' + fg + '; border-radius:4px; padding:2px 6px; font-size:10.5px; font-weight:900; cursor:pointer;" onclick="selectRowPage(\'' + r.id + '\', ' + i + ', event)">' + (i + 1) + '</button>';
+      }
+      html += '</div>';
+      return html;
+    }
+
     function changeZoom(delta) {
-      currentZoom = Math.min(5.0, Math.max(0.5, currentZoom + delta));
-      if (currentZoom <= 1.05) { panX = 0; panY = 0; }
+      currentZoom = Math.min(6.0, Math.max(0.2, currentZoom + delta));
       applyZoom();
     }
     function resetZoom() {
@@ -7783,7 +7832,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalPaid) + '원</td>' +
             '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
             '<td style="font-weight:800; color:' + (claimed ? '#15803d' : '#ea580c') + ';" onclick="toggleClaimed(\\'' + r.id + '\\', event)">' + (claimed ? '☑ 청구완료' : '☐ 미청구') + '</td>' +
-            '<td style="font-weight:800; color:#1e3a8a;">' + (extra.length > 0 ? ('📎 첨부(' + extra.length + ')') : '-') + '</td>' +
+            '<td>' + buildPageButtonsHtml(r, 1 + extra.length) + '</td>' +
             '</tr>';
         }).join('');
       } else if (selectedCategoryFilter === '출장비') {
@@ -7838,7 +7887,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
             '<td>' + escapeHtml(f.pdfDate || '-') + '</td>' +
             '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(f.pdfFileName || '문서스캔') + '.pdf</td>' +
-            '<td style="font-weight:800;">' + pages + '장</td></tr>';
+            '<td>' + buildPageButtonsHtml(r, pages) + '</td></tr>';
         }).join('');
       } else if (selectedCategoryFilter === '자재송장') {
         const cumMap = computeInvoiceCumulativeMap();
@@ -8043,10 +8092,10 @@ class _HomeScreenState extends State<HomeScreen> {
           if (e.cancelable) e.preventDefault();
           const dist = getTouchDist(e.touches[0], e.touches[1]);
           if (startDist > 10) {
-            currentZoom = Math.min(5.0, Math.max(0.5, startZoom * (dist / startDist)));
+            currentZoom = Math.min(6.0, Math.max(0.2, startZoom * (dist / startDist)));
             applyZoom();
           }
-        } else if (isPanning && e.touches.length === 1 && currentZoom > 1.02) {
+        } else if (isPanning && e.touches.length === 1) {
           if (e.cancelable) e.preventDefault();
           panX = e.touches[0].clientX - startPanX;
           panY = e.touches[0].clientY - startPanY;
@@ -8058,7 +8107,6 @@ class _HomeScreenState extends State<HomeScreen> {
         if (e.touches.length < 2) isPinching = false;
         if (e.touches.length === 0) {
           isPanning = false;
-          if (currentZoom < 1.0) resetZoom();
         }
       });
 
@@ -8442,12 +8490,22 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (ctx, setModalState) {
           final effFolder = _buildEffectiveGithubFolder(_githubFolder);
           return AlertDialog(
-            title: const Text(
-              '☁️ 현장 공유방 (공문 · 자재송장 통합)',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
+            titlePadding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+            contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            actionsPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            title: const FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '☁️ 현장 공유방 (공문 · 자재송장 통합)',
+                maxLines: 1,
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900),
+              ),
             ),
             content: SizedBox(
-              width: 390,
+              width: 420,
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -8457,8 +8515,19 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Expanded(
                           child: ChoiceChip(
-                            label: const Text('🐙 GitHub 방식',
-                                style: TextStyle(fontSize: 12)),
+                            visualDensity: VisualDensity.compact,
+                            labelPadding:
+                                const EdgeInsets.symmetric(horizontal: 4),
+                            label: const FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(
+                                '🐙 GitHub 방식',
+                                maxLines: 1,
+                                style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
                             selected: _shareRoomMode == 'github',
                             onSelected: (_) async {
                               setState(() => _shareRoomMode = 'github');
@@ -8473,8 +8542,19 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(width: 6),
                         Expanded(
                           child: ChoiceChip(
-                            label: const Text('☁️ OneDrive 방식',
-                                style: TextStyle(fontSize: 12)),
+                            visualDensity: VisualDensity.compact,
+                            labelPadding:
+                                const EdgeInsets.symmetric(horizontal: 4),
+                            label: const FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(
+                                '☁️ OneDrive 방식',
+                                maxLines: 1,
+                                style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
                             selected: _shareRoomMode == 'onedrive',
                             onSelected: (_) async {
                               setState(() => _shareRoomMode = 'onedrive');
@@ -8490,7 +8570,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 10),
                     Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
                         color: Colors.indigo.shade50,
                         borderRadius: BorderRadius.circular(10),
@@ -8499,12 +8579,17 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            '📄 1. 공문 HTML ($effFolder/공문_통합.html)',
-                            style: const TextStyle(
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF1E3A8A),
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '📄 1. 공문 HTML ($effFolder/공문_통합.html)',
+                              maxLines: 1,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF1E3A8A),
+                              ),
                             ),
                           ),
                           const SizedBox(height: 8),
@@ -8512,6 +8597,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             children: [
                               Expanded(
                                 child: FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 8),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
                                   onPressed: () {
                                     Navigator.pop(ctx);
                                     _syncAndMergeCategoryWithGithubRoom(
@@ -8520,14 +8610,27 @@ class _HomeScreenState extends State<HomeScreen> {
                                     );
                                   },
                                   icon:
-                                      const Icon(Icons.cloud_upload, size: 16),
-                                  label: const Text('올려서 합치기',
-                                      style: TextStyle(fontSize: 12)),
+                                      const Icon(Icons.cloud_upload, size: 15),
+                                  label: const FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Text(
+                                      '올려서 합치기',
+                                      maxLines: 1,
+                                      style: TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(width: 6),
                               Expanded(
                                 child: OutlinedButton.icon(
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 8),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
                                   onPressed: () {
                                     Navigator.pop(ctx);
                                     _syncAndMergeCategoryWithGithubRoom(
@@ -8535,9 +8638,17 @@ class _HomeScreenState extends State<HomeScreen> {
                                       openViewerAfterSync: true,
                                     );
                                   },
-                                  icon: const Icon(Icons.visibility, size: 16),
-                                  label: const Text('들어가서 보기',
-                                      style: TextStyle(fontSize: 12)),
+                                  icon: const Icon(Icons.visibility, size: 15),
+                                  label: const FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Text(
+                                      '들어가서 보기',
+                                      maxLines: 1,
+                                      style: TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],
@@ -8547,7 +8658,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 10),
                     Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
                         color: Colors.amber.shade50,
                         borderRadius: BorderRadius.circular(10),
@@ -8556,12 +8667,17 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            '📦 2. 자재송장 HTML ($effFolder/자재송장_통합.html)',
-                            style: const TextStyle(
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF92400E),
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              '📦 2. 자재송장 HTML ($effFolder/자재송장_통합.html)',
+                              maxLines: 1,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF92400E),
+                              ),
                             ),
                           ),
                           const SizedBox(height: 8),
@@ -8571,6 +8687,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                 child: FilledButton.icon(
                                   style: FilledButton.styleFrom(
                                     backgroundColor: const Color(0xFFB45309),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 8),
+                                    visualDensity: VisualDensity.compact,
                                   ),
                                   onPressed: () {
                                     Navigator.pop(ctx);
@@ -8580,14 +8699,27 @@ class _HomeScreenState extends State<HomeScreen> {
                                     );
                                   },
                                   icon:
-                                      const Icon(Icons.cloud_upload, size: 16),
-                                  label: const Text('올려서 합치기',
-                                      style: TextStyle(fontSize: 12)),
+                                      const Icon(Icons.cloud_upload, size: 15),
+                                  label: const FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Text(
+                                      '올려서 합치기',
+                                      maxLines: 1,
+                                      style: TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(width: 6),
                               Expanded(
                                 child: OutlinedButton.icon(
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 8),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
                                   onPressed: () {
                                     Navigator.pop(ctx);
                                     _syncAndMergeCategoryWithGithubRoom(
@@ -8595,9 +8727,17 @@ class _HomeScreenState extends State<HomeScreen> {
                                       openViewerAfterSync: true,
                                     );
                                   },
-                                  icon: const Icon(Icons.visibility, size: 16),
-                                  label: const Text('들어가서 보기',
-                                      style: TextStyle(fontSize: 12)),
+                                  icon: const Icon(Icons.visibility, size: 15),
+                                  label: const FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Text(
+                                      '들어가서 보기',
+                                      maxLines: 1,
+                                      style: TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],
@@ -8605,17 +8745,26 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 9),
+                        visualDensity: VisualDensity.compact,
+                      ),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _exportPcShortcutLauncherHtml();
                       },
-                      icon: const Icon(Icons.desktop_windows, size: 16),
-                      label: const Text(
-                        '💻 PC용 현장공유방 바로가기(1회 설치용) 보내기',
-                        style: TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.bold),
+                      icon: const Icon(Icons.desktop_windows, size: 15),
+                      label: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          '💻 PC용 현장공유방 바로가기(1회 설치용) 보내기',
+                          maxLines: 1,
+                          style: TextStyle(
+                              fontSize: 11.5, fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ),
                   ],
@@ -8637,8 +8786,8 @@ class _HomeScreenState extends State<HomeScreen> {
   // ===========================================================================
   // 6단계: 상단 액션 바, 7개 탭 바(PDF변환 포함), 테이블 리스트, 하단/우측 사진 뷰어
   // ===========================================================================
-  static const double _kTableHeaderHeight = 40.0;
-  static const double _kTableDataRowHeight = 48.0;
+  static const double _kTableHeaderHeight = 34.0;
+  static const double _kTableDataRowHeight = 38.0;
 
   Widget _buildTopActionBtn({
     required IconData icon,
@@ -8718,8 +8867,9 @@ class _HomeScreenState extends State<HomeScreen> {
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: 11.5,
-            height: 1.15,
+            fontSize: 10.5,
+            height: 1.12,
+            letterSpacing: -0.3,
             fontWeight: FontWeight.w900,
             color: isHighlightedGroup
                 ? const Color(0xFF92400E)
@@ -8742,7 +8892,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final content = Container(
       width: width,
       constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -8755,8 +8905,9 @@ class _HomeScreenState extends State<HomeScreen> {
         textAlign: TextAlign.center,
         softWrap: true,
         style: TextStyle(
-          fontSize: 11.5,
-          height: 1.25,
+          fontSize: 10.5,
+          height: 1.2,
+          letterSpacing: -0.3,
           fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
           color: textColor ?? const Color(0xFF0F172A),
         ),
@@ -9242,13 +9393,122 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// ★ 장수(○장) 글씨 대신 1 2 3 4 숫자 버튼을 표시하여 누르면 바로 해당 페이지 사진을 보여주는 셀
+  Widget _buildPageNumberButtonsCell(
+    DocRecord rec,
+    double width, {
+    required int totalPages,
+    bool showAddWhenSingle = false,
+  }) {
+    final bool isSelectedRec = _selectedRecord?.id == rec.id;
+    final int activeIdx =
+        isSelectedRec ? _selectedPhotoIndex.clamp(0, math.max(0, totalPages - 1)) : 0;
+
+    return Container(
+      width: width,
+      constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+      decoration: const BoxDecoration(
+        border: Border(
+          right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
+          bottom: BorderSide(color: Color(0xFFE2E8F0), width: 1),
+        ),
+      ),
+      alignment: Alignment.center,
+      child: (showAddWhenSingle && totalPages <= 1)
+          ? InkWell(
+              onTap: () => _manageRecordExtraPagesDialog(rec),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+                child: Text(
+                  '+ 증빙추가',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.3,
+                    color: Color(0xFF1E3A8A),
+                  ),
+                ),
+              ),
+            )
+          : Wrap(
+              spacing: 3,
+              runSpacing: 3,
+              alignment: WrapAlignment.center,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                for (int i = 0; i < totalPages; i++)
+                  InkWell(
+                    borderRadius: BorderRadius.circular(4),
+                    onTap: () {
+                      setState(() {
+                        _selectedRecord = rec;
+                        _selectedPhotoIndex = i;
+                      });
+                      _photoTransformCtrl.value = Matrix4.identity();
+                    },
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 19, minHeight: 19),
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: (isSelectedRec && activeIdx == i)
+                            ? const Color(0xFF1E3A8A)
+                            : Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: (isSelectedRec && activeIdx == i)
+                              ? const Color(0xFF1E3A8A)
+                              : Colors.grey.shade400,
+                        ),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        '${i + 1}',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                          color: (isSelectedRec && activeIdx == i)
+                              ? Colors.white
+                              : const Color(0xFF0F172A),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (showAddWhenSingle)
+                  InkWell(
+                    borderRadius: BorderRadius.circular(4),
+                    onTap: () => _manageRecordExtraPagesDialog(rec),
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 18, minHeight: 19),
+                      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.blue.shade300),
+                      ),
+                      alignment: Alignment.center,
+                      child: const Text(
+                        '+',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF1E3A8A),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+
   Widget _buildRecordTableSection(List<DocRecord> list) {
     if (list.isEmpty) {
       return Center(
         child: Text(
           '등록된 $_selectedCategoryFilter 항목이 없습니다.\n우측 하단 촬영 버튼으로 사진을 추가하세요.',
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.black54, fontSize: 13),
+          style: const TextStyle(color: Colors.black54, fontSize: 12.5),
         ),
       );
     }
@@ -9261,39 +9521,39 @@ class _HomeScreenState extends State<HomeScreen> {
       if (cat == DocCategory.officialIn) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
-            _buildFixedHeaderCell('공문번호', 105, sortKey: 'docNumber'),
-            _buildFixedHeaderCell('보낸사람', 125, sortKey: 'clinic'),
-            _buildFixedHeaderCell('제목', 195, sortKey: 'title'),
-            _buildFixedHeaderCell('내용', 245, sortKey: 'aiSummary'),
-            _buildFixedHeaderCell('회신요청일', 84, sortKey: 'replyDeadline'),
-            _buildFixedHeaderCell('회신완료', 66, sortKey: 'replied'),
-            _buildFixedHeaderCell('올린사람', 70, sortKey: 'uploader'),
-            _buildFixedHeaderCell('결재', 74, sortKey: 'approval'),
-            _buildFixedHeaderCell('수정/삭제', 68),
+            _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
+            _buildFixedHeaderCell('공문번호', 82, sortKey: 'docNumber'),
+            _buildFixedHeaderCell('보낸사람', 82, sortKey: 'clinic'),
+            _buildFixedHeaderCell('제목', 126, sortKey: 'title'),
+            _buildFixedHeaderCell('내용', 148, sortKey: 'aiSummary'),
+            _buildFixedHeaderCell('회신요청일', 70, sortKey: 'replyDeadline'),
+            _buildFixedHeaderCell('회신완료', 54, sortKey: 'replied'),
+            _buildFixedHeaderCell('올린사람', 58, sortKey: 'uploader'),
+            _buildFixedHeaderCell('결재', 62, sortKey: 'approval'),
+            _buildFixedHeaderCell('수정/삭제', 56),
           ],
         );
       } else if (cat == DocCategory.officialOut) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
-            _buildFixedHeaderCell('공문번호', 105, sortKey: 'docNumber'),
-            _buildFixedHeaderCell('받는사람', 125, sortKey: 'clinic'),
-            _buildFixedHeaderCell('회신번호', 105, sortKey: 'replyDocNumber'),
-            _buildFixedHeaderCell('제목', 195, sortKey: 'title'),
-            _buildFixedHeaderCell('내용', 245, sortKey: 'aiSummary'),
-            _buildFixedHeaderCell('올린사람', 70, sortKey: 'uploader'),
-            _buildFixedHeaderCell('결재', 74, sortKey: 'approval'),
-            _buildFixedHeaderCell('수정/삭제', 68),
+            _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
+            _buildFixedHeaderCell('공문번호', 82, sortKey: 'docNumber'),
+            _buildFixedHeaderCell('받는사람', 82, sortKey: 'clinic'),
+            _buildFixedHeaderCell('회신번호', 82, sortKey: 'replyDocNumber'),
+            _buildFixedHeaderCell('제목', 126, sortKey: 'title'),
+            _buildFixedHeaderCell('내용', 148, sortKey: 'aiSummary'),
+            _buildFixedHeaderCell('올린사람', 58, sortKey: 'uploader'),
+            _buildFixedHeaderCell('결재', 62, sortKey: 'approval'),
+            _buildFixedHeaderCell('수정/삭제', 56),
           ],
         );
       } else if (cat == DocCategory.invoice) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
+            _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
             _buildFixedHeaderCell(
               '제품명 ${_invSumByProduct ? "✓" : ""}',
-              102,
+              78,
               onHeaderTap: () {
                 _toggleInvoiceGroupHeader('product');
                 _toggleSortColumn('product');
@@ -9302,31 +9562,31 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             _buildFixedHeaderCell(
               '규격명 ${_invSumBySpec ? "✓" : ""}',
-              118,
+              92,
               onHeaderTap: () {
                 _toggleInvoiceGroupHeader('spec');
                 _toggleSortColumn('spec');
               },
               isHighlightedGroup: _invSumBySpec,
             ),
-            _buildFixedHeaderCell('단위', 54, sortKey: 'unit'),
-            _buildFixedHeaderCell('수량', 70, sortKey: 'quantity'),
-            _buildFixedHeaderCell('누적수량', 76),
-            _buildFixedHeaderCell('공급자', 105, sortKey: 'supplier'),
-            _buildFixedHeaderCell('주문송장번호', 120, sortKey: 'orderNumber'),
-            _buildFixedHeaderCell('올린사람', 70, sortKey: 'uploader'),
-            _buildFixedHeaderCell('결재', 74, sortKey: 'approval'),
-            _buildFixedHeaderCell('수정/삭제', 68),
+            _buildFixedHeaderCell('단위', 44, sortKey: 'unit'),
+            _buildFixedHeaderCell('수량', 56, sortKey: 'quantity'),
+            _buildFixedHeaderCell('누적수량', 62),
+            _buildFixedHeaderCell('공급자', 78, sortKey: 'supplier'),
+            _buildFixedHeaderCell('주문송장번호', 92, sortKey: 'orderNumber'),
+            _buildFixedHeaderCell('올린사람', 58, sortKey: 'uploader'),
+            _buildFixedHeaderCell('결재', 62, sortKey: 'approval'),
+            _buildFixedHeaderCell('수정/삭제', 56),
           ],
         );
       } else if (cat == DocCategory.travel) {
         return Row(
           children: [
-            _buildFixedHeaderCell('카테고리(날짜)', 110, sortKey: 'date'),
-            _buildFixedHeaderCell('구분', 66, sortKey: 'travelDivision'),
-            _buildFixedHeaderCell('상호', 155, sortKey: 'clinic'),
-            _buildFixedHeaderCell('금액', 92, sortKey: 'amount'),
-            _buildFixedHeaderCell('수정/삭제', 68),
+            _buildFixedHeaderCell('카테고리(날짜)', 86, sortKey: 'date'),
+            _buildFixedHeaderCell('구분', 48, sortKey: 'travelDivision'),
+            _buildFixedHeaderCell('상호', 118, sortKey: 'clinic'),
+            _buildFixedHeaderCell('금액', 70, sortKey: 'amount'),
+            _buildFixedHeaderCell('수정/삭제', 54),
           ],
         );
       } else if (cat == DocCategory.medical) {
@@ -9334,7 +9594,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildFixedHeaderCell(
               '카테고리 ${_medSumByCat ? "✓" : ""}',
-              84,
+              68,
               onHeaderTap: () {
                 _toggleMedicalGroupHeader('cat');
                 _toggleSortColumn('subCategory');
@@ -9343,20 +9603,20 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             _buildFixedHeaderCell(
               '환자성명 ${_medSumByPatient ? "✓" : ""}',
-              78,
+              62,
               onHeaderTap: () {
                 _toggleMedicalGroupHeader('patient');
                 _toggleSortColumn('patient');
               },
               isHighlightedGroup: _medSumByPatient,
             ),
-            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
-            _buildFixedHeaderCell('상호', 124, sortKey: 'clinic'),
-            _buildFixedHeaderCell('금액', 86, sortKey: 'amount'),
-            _buildFixedHeaderCell('사업자등록번호', 106, sortKey: 'bizRegNumber'),
+            _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
+            _buildFixedHeaderCell('상호', 96, sortKey: 'clinic'),
+            _buildFixedHeaderCell('금액', 68, sortKey: 'amount'),
+            _buildFixedHeaderCell('사업자등록번호', 88, sortKey: 'bizRegNumber'),
             _buildFixedHeaderCell(
               '청구여부 ${_medSumByClaim ? "✓" : ""}',
-              78,
+              66,
               onHeaderTap: () {
                 _toggleMedicalGroupHeader('claim');
                 _toggleSortColumn('claimed');
@@ -9364,30 +9624,30 @@ class _HomeScreenState extends State<HomeScreen> {
               isHighlightedGroup: _medSumByClaim,
             ),
             _buildFixedHeaderCell('증빙첨부', 82),
-            _buildFixedHeaderCell('수정/삭제', 68),
+            _buildFixedHeaderCell('수정/삭제', 54),
           ],
         );
       } else if (cat == DocCategory.businessCard) {
         return Row(
           children: [
-            _buildFixedHeaderCell('날짜', 84, sortKey: 'date'),
-            _buildFixedHeaderCell('회사명', 120, sortKey: 'companyName'),
-            _buildFixedHeaderCell('현장명', 135, sortKey: 'siteName'),
-            _buildFixedHeaderCell('이름', 78, sortKey: 'personName'),
-            _buildFixedHeaderCell('휴대폰번호', 128, sortKey: 'mobilePhone'),
-            _buildFixedHeaderCell('이메일주소', 162, sortKey: 'email'),
-            _buildFixedHeaderCell('수정/삭제', 68),
+            _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
+            _buildFixedHeaderCell('회사명', 90, sortKey: 'companyName'),
+            _buildFixedHeaderCell('현장명', 94, sortKey: 'siteName'),
+            _buildFixedHeaderCell('이름', 60, sortKey: 'personName'),
+            _buildFixedHeaderCell('휴대폰번호', 102, sortKey: 'mobilePhone'),
+            _buildFixedHeaderCell('이메일주소', 126, sortKey: 'email'),
+            _buildFixedHeaderCell('수정/삭제', 54),
           ],
         );
       } else {
-        // ★ PDF변환 탭: 찍은날짜 | 파일명 | 장수 | 페이지추가 | 수정/삭제
+        // ★ PDF변환 탭: 찍은날짜 | 파일명 | 페이지(1 2 3 4 버튼) | 페이지추가 | 수정/삭제
         return Row(
           children: [
-            _buildFixedHeaderCell('찍은날짜', 92, sortKey: 'date'),
-            _buildFixedHeaderCell('파일명', 200, sortKey: 'pdfFileName'),
-            _buildFixedHeaderCell('장수', 68, sortKey: 'pageCount'),
-            _buildFixedHeaderCell('페이지추가', 90),
-            _buildFixedHeaderCell('수정/삭제', 68),
+            _buildFixedHeaderCell('찍은날짜', 74, sortKey: 'date'),
+            _buildFixedHeaderCell('파일명', 120, sortKey: 'pdfFileName'),
+            _buildFixedHeaderCell('페이지', 96, sortKey: 'pageCount'),
+            _buildFixedHeaderCell('페이지추가', 68),
+            _buildFixedHeaderCell('수정/삭제', 54),
           ],
         );
       }
@@ -9403,59 +9663,59 @@ class _HomeScreenState extends State<HomeScreen> {
         rowWidget = Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 84),
-            _buildFixedDataCell(f['docNumber'] ?? '-', 105, bold: true),
-            _buildFixedDataCell(r.officialCounterpartyValue, 125),
-            _buildFixedDataCell(f['title'] ?? '-', 195, bold: true),
-            _buildFixedDataCell(f['aiSummary'] ?? '-', 245),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 70),
+            _buildFixedDataCell(f['docNumber'] ?? '-', 82, bold: true),
+            _buildFixedDataCell(r.officialCounterpartyValue, 82),
+            _buildFixedDataCell(f['title'] ?? '-', 126, bold: true),
+            _buildFixedDataCell(f['aiSummary'] ?? '-', 148),
             _buildFixedDataCell(
-                DocRecord.formatDotDate(f['replyDeadline']), 84),
+                DocRecord.formatDotDate(f['replyDeadline']), 70),
             _buildFixedDataCell(
               replied ? '○' : '-',
-              66,
+              54,
               bold: true,
               textColor: replied ? Colors.green.shade700 : Colors.black38,
             ),
-            _buildFixedDataCell(_resolveUploaderName(r), 70),
-            _buildApprovalCell(r, 74),
-            _buildEditDeleteActionCell(r, 68),
+            _buildFixedDataCell(_resolveUploaderName(r), 58),
+            _buildApprovalCell(r, 62),
+            _buildEditDeleteActionCell(r, 56),
           ],
         );
       } else if (cat == DocCategory.officialOut) {
         rowWidget = Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 84),
-            _buildFixedDataCell(f['docNumber'] ?? '-', 105, bold: true),
-            _buildFixedDataCell(r.officialCounterpartyValue, 125),
-            _buildFixedDataCell(f['replyDocNumber'] ?? '-', 105),
-            _buildFixedDataCell(f['title'] ?? '-', 195, bold: true),
-            _buildFixedDataCell(f['aiSummary'] ?? '-', 245),
-            _buildFixedDataCell(_resolveUploaderName(r), 70),
-            _buildApprovalCell(r, 74),
-            _buildEditDeleteActionCell(r, 68),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['sentDate']), 70),
+            _buildFixedDataCell(f['docNumber'] ?? '-', 82, bold: true),
+            _buildFixedDataCell(r.officialCounterpartyValue, 82),
+            _buildFixedDataCell(f['replyDocNumber'] ?? '-', 82),
+            _buildFixedDataCell(f['title'] ?? '-', 126, bold: true),
+            _buildFixedDataCell(f['aiSummary'] ?? '-', 148),
+            _buildFixedDataCell(_resolveUploaderName(r), 58),
+            _buildApprovalCell(r, 62),
+            _buildEditDeleteActionCell(r, 56),
           ],
         );
       } else if (cat == DocCategory.invoice) {
         rowWidget = Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(DocRecord.formatDotDate(f['arrivalDate']), 84),
-            _buildFixedDataCell(f['productName'] ?? '-', 102, bold: true),
-            _buildFixedDataCell(f['specName'] ?? '-', 118, bold: true),
-            _buildFixedDataCell(f['unit'] ?? '-', 54),
-            _buildFixedDataCell(f['quantity'] ?? '-', 70, bold: true),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['arrivalDate']), 70),
+            _buildFixedDataCell(f['productName'] ?? '-', 78, bold: true),
+            _buildFixedDataCell(f['specName'] ?? '-', 92, bold: true),
+            _buildFixedDataCell(f['unit'] ?? '-', 44),
+            _buildFixedDataCell(f['quantity'] ?? '-', 56, bold: true),
             _buildFixedDataCell(
               cumulativeMap[r.id] ?? '-',
-              76,
+              62,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
-            _buildFixedDataCell(f['supplierName'] ?? '-', 105),
-            _buildFixedDataCell(f['orderNumber'] ?? '-', 120),
-            _buildFixedDataCell(_resolveUploaderName(r), 70),
-            _buildApprovalCell(r, 74),
-            _buildEditDeleteActionCell(r, 68),
+            _buildFixedDataCell(f['supplierName'] ?? '-', 78),
+            _buildFixedDataCell(f['orderNumber'] ?? '-', 92),
+            _buildFixedDataCell(_resolveUploaderName(r), 58),
+            _buildApprovalCell(r, 62),
+            _buildEditDeleteActionCell(r, 56),
           ],
         );
       } else if (cat == DocCategory.travel) {
@@ -9464,52 +9724,51 @@ class _HomeScreenState extends State<HomeScreen> {
         rowWidget = Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell('$subLabel\n($dateStr)', 110, bold: true),
-            _buildFixedDataCell(r.travelDivision, 66, bold: true),
-            _buildFixedDataCell(f['merchantName'] ?? '-', 155, bold: true),
+            _buildFixedDataCell('$subLabel\n($dateStr)', 86, bold: true),
+            _buildFixedDataCell(r.travelDivision, 48, bold: true),
+            _buildFixedDataCell(f['merchantName'] ?? '-', 118, bold: true),
             _buildFixedDataCell(
               '${NumberFormat('#,###').format(r.numericAmount)}원',
-              92,
+              70,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
-            _buildEditDeleteActionCell(r, 68),
+            _buildEditDeleteActionCell(r, 54),
           ],
         );
       } else if (cat == DocCategory.medical) {
         final subLabel = r.subCategory.isEmpty ? '미지정' : r.subCategory;
-        final cnt = r.proofAttachmentCount;
+        final totalMedPages = 1 + r.proofAttachmentCount;
         rowWidget = Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildFixedDataCell(subLabel, 84, bold: true),
-            _buildFixedDataCell(f['patientName'] ?? '-', 78, bold: true),
-            _buildFixedDataCell(DocRecord.formatDotDate(f['issueDate']), 84),
-            _buildFixedDataCell(f['clinicName'] ?? '-', 124, bold: true),
+            _buildFixedDataCell(subLabel, 68, bold: true),
+            _buildFixedDataCell(f['patientName'] ?? '-', 62, bold: true),
+            _buildFixedDataCell(DocRecord.formatDotDate(f['issueDate']), 70),
+            _buildFixedDataCell(f['clinicName'] ?? '-', 96, bold: true),
             _buildFixedDataCell(
               '${NumberFormat('#,###').format(r.numericAmount)}원',
-              86,
+              68,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
-            _buildFixedDataCell(f['bizRegNumber'] ?? '-', 106),
+            _buildFixedDataCell(f['bizRegNumber'] ?? '-', 88),
             _buildFixedDataCell(
               r.isMedicalClaimed ? '☑ 청구완료' : '☐ 미청구',
-              78,
+              66,
               bold: true,
               textColor: r.isMedicalClaimed
                   ? Colors.green.shade700
                   : Colors.orange.shade800,
               onTap: () => _toggleMedicalRecordClaimed(r),
             ),
-            _buildFixedDataCell(
-              cnt > 0 ? '📎 첨부($cnt)' : '+ 증빙추가',
+            _buildPageNumberButtonsCell(
+              r,
               82,
-              bold: true,
-              textColor: const Color(0xFF1E3A8A),
-              onTap: () => _manageRecordExtraPagesDialog(r),
+              totalPages: totalMedPages,
+              showAddWhenSingle: true,
             ),
-            _buildEditDeleteActionCell(r, 68),
+            _buildEditDeleteActionCell(r, 54),
           ],
         );
       } else if (cat == DocCategory.businessCard) {
@@ -9521,29 +9780,29 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildFixedDataCell(
               DocRecord.formatDotDate(
                   f['cardDate'] ?? r.createdAt.split(' ').first),
-              84,
+              70,
             ),
-            _buildFixedDataCell(f['companyName'] ?? '-', 120, bold: true),
-            _buildFixedDataCell(f['siteName'] ?? '-', 135),
-            _buildFixedDataCell(f['personName'] ?? '-', 78, bold: true),
+            _buildFixedDataCell(f['companyName'] ?? '-', 90, bold: true),
+            _buildFixedDataCell(f['siteName'] ?? '-', 94),
+            _buildFixedDataCell(f['personName'] ?? '-', 60, bold: true),
             _buildFixedDataCell(
               phone.isEmpty ? '-' : '📞 $phone',
-              128,
+              102,
               bold: true,
               textColor: Colors.green.shade800,
               onTap: phone.isEmpty ? null : () => _openPhoneDialer(phone),
             ),
             _buildFixedDataCell(
               email.isEmpty ? '-' : '✉️ $email',
-              162,
+              126,
               textColor: const Color(0xFF1E3A8A),
               onTap: email.isEmpty ? null : () => _openEmailComposer(email),
             ),
-            _buildEditDeleteActionCell(r, 68),
+            _buildEditDeleteActionCell(r, 54),
           ],
         );
       } else {
-        // ★ PDF변환 탭 데이터 행: 찍은날짜 | 파일명 | 장수 | 페이지추가 | 수정/삭제
+        // ★ PDF변환 탭 데이터 행: 찍은날짜 | 파일명 | 페이지(1 2 3 4 버튼) | 페이지추가 | 수정/삭제
         final rawFn = (f['pdfFileName'] ?? '').trim();
         final dispFn = rawFn.isEmpty
             ? '문서스캔.pdf'
@@ -9555,28 +9814,28 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildFixedDataCell(
               DocRecord.formatDotDate(
                   f['pdfDate'] ?? r.createdAt.split(' ').first),
-              92,
+              74,
             ),
             _buildFixedDataCell(
               dispFn,
-              200,
+              120,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
-            _buildFixedDataCell(
-              '${totalPages}장',
-              68,
-              bold: true,
-              textColor: const Color(0xFF0F766E),
+            _buildPageNumberButtonsCell(
+              r,
+              96,
+              totalPages: totalPages,
+              showAddWhenSingle: false,
             ),
             _buildFixedDataCell(
               '+ 페이지추가',
-              90,
+              68,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
               onTap: () => _manageRecordExtraPagesDialog(r),
             ),
-            _buildEditDeleteActionCell(r, 68),
+            _buildEditDeleteActionCell(r, 54),
           ],
         );
       }
@@ -9584,9 +9843,12 @@ class _HomeScreenState extends State<HomeScreen> {
       return GestureDetector(
         onTap: () {
           setState(() {
-            _selectedRecord = r;
+            if (_selectedRecord?.id != r.id) {
+              _selectedRecord = r;
+              _selectedPhotoIndex = 0;
+              _photoTransformCtrl.value = Matrix4.identity();
+            }
           });
-          _resetPhotoPageToZero();
         },
         onLongPress: () => _editRecordDialog(r),
         child: Container(
@@ -9603,16 +9865,16 @@ class _HomeScreenState extends State<HomeScreen> {
         scrollDirection: Axis.horizontal,
         child: SizedBox(
           width: cat == DocCategory.officialIn
-              ? 1116
+              ? 808
               : (cat == DocCategory.officialOut
-                  ? 1071
+                  ? 766
                   : (cat == DocCategory.invoice
-                      ? 941
+                      ? 748
                       : (cat == DocCategory.medical
-                          ? 790
+                          ? 654
                           : (cat == DocCategory.businessCard
-                              ? 775
-                              : (cat == DocCategory.pdfConvert ? 518 : 491))))),
+                              ? 596
+                              : (cat == DocCategory.pdfConvert ? 412 : 376))))),
           child: Column(
             children: [
               buildHeaderRow(),
@@ -9631,9 +9893,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// ★ 하단 사진 미리보기:
-  /// - 여러 장(1페이지/2페이지/3페이지...) 칩 버튼 나열 대신,
-  ///   [병원비]: "기본 영수증  |  첨부 2장 (1/3)" 표시 + 좌우 스와이프(PageView)로 한 장씩 넘겨보기
-  ///   [PDF변환]: "총 4장 (현재 1/4장)" 표시 + 좌우 스와이프(PageView)로 한 장씩 넘겨보기
+  /// - 좌우 스와이프(PageView)를 완전히 제거하여 두 손가락 확대/축소(InteractiveViewer)가 충돌 없이 100% 부드럽게 작동하도록 개선
+  /// - 표의 [1] [2] [3] [4] 버튼 또는 하단 바의 [1] [2] [3] [4] 번호 버튼을 눌러 다음 페이지를 즉시 확인
   Widget _buildPhotoPreviewSection() {
     final rec = _selectedRecord;
     if (rec == null) {
@@ -9642,7 +9903,7 @@ class _HomeScreenState extends State<HomeScreen> {
         alignment: Alignment.center,
         child: const Text(
           '상단 목록에서 항목을 선택하면 아래에 사진이 표시됩니다.',
-          style: TextStyle(color: Colors.white70, fontSize: 13),
+          style: TextStyle(color: Colors.white70, fontSize: 12.5),
         ),
       );
     }
@@ -9662,7 +9923,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final int totalCount = allPageBytes.length;
     final int safeIndex =
         totalCount == 0 ? 0 : _selectedPhotoIndex.clamp(0, totalCount - 1);
-    final int extraCount = math.max(0, totalCount - 1);
 
     return Container(
       color: const Color(0xFF0F172A),
@@ -9672,50 +9932,69 @@ class _HomeScreenState extends State<HomeScreen> {
             Container(
               width: double.infinity,
               color: const Color(0xFF1E293B),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Expanded(
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 9, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.amber.shade300,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            rec.category == DocCategory.medical
-                                ? (safeIndex == 0
-                                    ? '기본 영수증 (첨부 ${extraCount}장)'
-                                    : '첨부사진 $safeIndex / ${extraCount}장 (기본영수증 외 총 ${extraCount}장)')
-                                : '총 ${totalCount}장 (${safeIndex + 1} / ${totalCount}장)',
-                            style: const TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF0F172A),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          const Text(
+                            '페이지:',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
-                        ),
-                        if (totalCount > 1) ...[
-                          const SizedBox(width: 8),
-                          const Flexible(
-                            child: Text(
-                              '👉 좌우로 밀어서 한 장씩 넘겨보기',
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
+                          const SizedBox(width: 6),
+                          for (int i = 0; i < totalCount; i++)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 5),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(5),
+                                onTap: () {
+                                  setState(() => _selectedPhotoIndex = i);
+                                  _photoTransformCtrl.value =
+                                      Matrix4.identity();
+                                },
+                                child: Container(
+                                  constraints: const BoxConstraints(
+                                      minWidth: 26, minHeight: 23),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: safeIndex == i
+                                        ? Colors.amber.shade400
+                                        : const Color(0xFF334155),
+                                    borderRadius: BorderRadius.circular(5),
+                                    border: Border.all(
+                                      color: safeIndex == i
+                                          ? Colors.amber.shade200
+                                          : const Color(0xFF64748B),
+                                    ),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    '${i + 1}',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w900,
+                                      color: safeIndex == i
+                                          ? const Color(0xFF0F172A)
+                                          : Colors.white,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
                         ],
-                      ],
+                      ),
                     ),
                   ),
+                  const SizedBox(width: 6),
                   InkWell(
                     onTap: () => _manageRecordExtraPagesDialog(rec),
                     child: Container(
@@ -9727,10 +10006,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       child: Text(
                         rec.category == DocCategory.pdfConvert
-                            ? '+ 페이지 추가'
-                            : '+ 증빙첨부',
+                            ? '+ 페이지 추가/삭제'
+                            : '+ 증빙첨부 관리',
                         style: const TextStyle(
-                          fontSize: 11,
+                          fontSize: 10.5,
                           fontWeight: FontWeight.w900,
                           color: Color(0xFF0F172A),
                         ),
@@ -9748,70 +10027,20 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: TextStyle(color: Colors.white54),
                     ),
                   )
-                : Stack(
-                    children: [
-                      PageView.builder(
-                        controller: _photoPageCtrl,
-                        itemCount: totalCount,
-                        onPageChanged: (idx) {
-                          setState(() => _selectedPhotoIndex = idx);
-                        },
-                        itemBuilder: (ctx, pageIdx) {
-                          return InteractiveViewer(
-                            minScale: 0.5,
-                            maxScale: 8.0,
-                            child: Center(
-                              child: Image.memory(
-                                allPageBytes[pageIdx],
-                                fit: BoxFit.contain,
-                              ),
-                            ),
-                          );
-                        },
+                : InteractiveViewer(
+                    key: ValueKey<String>('${rec.id}_$safeIndex'),
+                    transformationController: _photoTransformCtrl,
+                    boundaryMargin: const EdgeInsets.all(double.infinity),
+                    panEnabled: true,
+                    scaleEnabled: true,
+                    minScale: 0.15,
+                    maxScale: 8.0,
+                    child: Center(
+                      child: Image.memory(
+                        allPageBytes[safeIndex],
+                        fit: BoxFit.contain,
                       ),
-                      if (totalCount > 1 && safeIndex > 0)
-                        Positioned(
-                          left: 6,
-                          top: 0,
-                          bottom: 0,
-                          child: Center(
-                            child: IconButton(
-                              style: IconButton.styleFrom(
-                                backgroundColor: Colors.black54,
-                                foregroundColor: Colors.white,
-                              ),
-                              icon: const Icon(Icons.chevron_left, size: 24),
-                              onPressed: () {
-                                _photoPageCtrl.previousPage(
-                                  duration: const Duration(milliseconds: 220),
-                                  curve: Curves.easeOut,
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                      if (totalCount > 1 && safeIndex < totalCount - 1)
-                        Positioned(
-                          right: 6,
-                          top: 0,
-                          bottom: 0,
-                          child: Center(
-                            child: IconButton(
-                              style: IconButton.styleFrom(
-                                backgroundColor: Colors.black54,
-                                foregroundColor: Colors.white,
-                              ),
-                              icon: const Icon(Icons.chevron_right, size: 24),
-                              onPressed: () {
-                                _photoPageCtrl.nextPage(
-                                  duration: const Duration(milliseconds: 220),
-                                  curve: Curves.easeOut,
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                    ],
+                    ),
                   ),
           ),
         ],
