@@ -1413,6 +1413,19 @@ class _HomeScreenState extends State<HomeScreen> {
     _photoTransformCtrl.value = Matrix4.identity();
   }
 
+  /// ★ 하단 사진 확대/축소 버튼 및 핀치 줌 (처음 100% 화면에서도 15%까지 축소 가능)
+  void _adjustPhotoZoom(double factor, {bool reset = false}) {
+    setState(() {
+      if (reset) {
+        _photoTransformCtrl.value = Matrix4.identity();
+        return;
+      }
+      final double curScale = _photoTransformCtrl.value.getMaxScaleOnAxis();
+      final double nextScale = (curScale * factor).clamp(0.15, 8.0);
+      _photoTransformCtrl.value = Matrix4.identity()..scale(nextScale);
+    });
+  }
+
   bool _invSumByProduct = true;
   bool _invSumBySpec = false;
 
@@ -2041,7 +2054,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // 그룹 키 & 합산 도우미
   // ---------------------------------------------------------------------------
   String get _invoiceSummaryModeLabel {
-    if (_invSumByProduct && _invSumBySpec) return '제품명-규격별';
+    if (_invSumByProduct && _invSumBySpec) return '제품명. 규격별';
     if (_invSumBySpec) return '규격명별';
     return '제품명별';
   }
@@ -2053,30 +2066,37 @@ class _HomeScreenState extends State<HomeScreen> {
     final spec = (r.fields['specName'] ?? '').trim().isEmpty
         ? '규격미상'
         : r.fields['specName']!.trim();
-    if (_invSumByProduct && _invSumBySpec) return '$prod-$spec';
+    if (_invSumByProduct && _invSumBySpec) return '$prod. $spec';
     if (_invSumBySpec) return spec;
     return prod;
   }
 
+  /// ★ 제품명과 규격명을 연달아 누르면 이중선택(제품명 + 규격명)이 되도록 직관적 토글 적용
   void _toggleInvoiceGroupHeader(String fieldType) {
     setState(() {
       if (fieldType == 'product') {
-        if (_invSumByProduct && _invSumBySpec) {
-          _invSumByProduct = false;
-        } else if (_invSumByProduct && !_invSumBySpec) {
+        if (_invSumByProduct && !_invSumBySpec) {
+          // 단독 선택 중이면 그대로 유지
+        } else if (!_invSumByProduct && _invSumBySpec) {
+          // 규격명 선택 상태에서 제품명을 연달아 누르면 이중선택!
           _invSumByProduct = true;
         } else {
+          // 이중선택 상태에서 제품명을 다시 누르면 제품명 단독 선택으로 전환
           _invSumByProduct = true;
+          _invSumBySpec = false;
         }
       } else if (fieldType == 'spec') {
-        if (_invSumByProduct && _invSumBySpec) {
-          _invSumBySpec = false;
-        } else if (!_invSumByProduct && _invSumBySpec) {
-          _invSumByProduct = true;
-          _invSumBySpec = false;
-        } else {
+        if (_invSumByProduct && !_invSumBySpec) {
+          // 제품명 선택 상태에서 규격명을 연달아 누르면 이중선택!
+          _invSumBySpec = true;
+        } else if (_invSumByProduct && _invSumBySpec) {
+          // 이중선택 상태에서 규격명을 한 번 더 누르면 규격명 단독 선택으로 전환
           _invSumByProduct = false;
           _invSumBySpec = true;
+        } else {
+          // 규격명 단독에서 다시 누르면 기본(제품명)으로 복귀
+          _invSumByProduct = true;
+          _invSumBySpec = false;
         }
       }
       if (!_invSumByProduct && !_invSumBySpec) {
@@ -2092,7 +2112,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_medSumByPatient) parts.add('환자');
     if (_medSumByClaim) parts.add('청구여부');
     if (parts.isEmpty) return '카테고리별';
-    return '${parts.join('-')}별';
+    return '${parts.join('. ')}별';
   }
 
   String _medicalGroupKeyOf(DocRecord r) {
@@ -2106,24 +2126,39 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_medSumByPatient) parts.add(pat);
     if (_medSumByClaim) parts.add(clm);
     if (parts.isEmpty) return cat;
-    return parts.join('-');
+    return parts.join('. ');
   }
 
+  /// ★ 카테고리와 환자성명을 연달아 누르면 이중선택("카테고리. 환자별")이 되도록 개선!
+  /// - 처음(카테고리✓)에 [환자성명]을 누르면 환자별(환자성명✓)로 나오고,
+  ///   연달아 [카테고리]를 누르거나 [환자성명]을 한 번 더 누르면 이중선택(카테고리✓ + 환자성명✓)이 되어
+  ///   "독감. 권미연 (2건 · 50,000원)"처럼 "카테고리. 환자별"로 세분화 집계됩니다.
   void _toggleMedicalGroupHeader(String fieldType) {
     setState(() {
       if (fieldType == 'cat') {
-        _medSumByCat = true;
-        _medSumByPatient = false;
-        _medSumByClaim = false;
+        if (!_medSumByCat && _medSumByPatient) {
+          // 환자성명 선택 상태에서 카테고리를 연달아 누르면 이중선택(카테고리 + 환자성명)!
+          _medSumByCat = true;
+          _medSumByClaim = false;
+        } else {
+          // 그 외에는 카테고리 단독 선택으로 전환
+          _medSumByCat = true;
+          _medSumByPatient = false;
+          _medSumByClaim = false;
+        }
       } else if (fieldType == 'patient') {
-        if (!_medSumByPatient && !_medSumByClaim) {
+        if (_medSumByCat && !_medSumByPatient && !_medSumByClaim) {
+          // 처음(카테고리 단독)에서 환자성명을 누르면 환자별 단독 집계
           _medSumByCat = false;
           _medSumByPatient = true;
           _medSumByClaim = false;
-        } else if (_medSumByPatient && !_medSumByCat && !_medSumByClaim) {
+        } else if (!_medSumByCat && _medSumByPatient && !_medSumByClaim) {
+          // 환자성명 단독 상태에서 환자성명을 연달아 한 번 더 눌러도 이중선택(카테고리 + 환자성명)!
           _medSumByCat = true;
           _medSumByPatient = true;
+          _medSumByClaim = false;
         } else {
+          // 이중선택 상태에서 다시 환자성명을 누르면 환자성명 단독으로 전환
           _medSumByCat = false;
           _medSumByPatient = true;
           _medSumByClaim = false;
@@ -2138,6 +2173,9 @@ class _HomeScreenState extends State<HomeScreen> {
           _medSumByPatient = false;
           _medSumByClaim = false;
         }
+      }
+      if (!_medSumByCat && !_medSumByPatient && !_medSumByClaim) {
+        _medSumByCat = true;
       }
       _selectedSubCategoryFilter = '전체';
     });
@@ -2255,35 +2293,33 @@ class _HomeScreenState extends State<HomeScreen> {
         .where((r) =>
             r.category == DocCategory.invoice && _matchesCurrentPeriodFilter(r))
         .toList();
+    // ★ 맨 왼쪽 '전체' 버튼은 단순하게 '전체 4장' 형태로만 표시!
     if (groupKey == '전체') {
-      final Map<String, double> sumByUnit = {};
-      for (final r in periodInvoices) {
-        final prod = (r.fields['productName'] ?? '').trim();
-        final rawU = (r.fields['unit'] ?? '').trim();
-        final u = rawU.isNotEmpty
-            ? rawU
-            : (prod.contains('철근') ? 'ton' : '매');
-        sumByUnit[u] = (sumByUnit[u] ?? 0.0) + r.numericInvoiceQuantity;
-      }
-      if (sumByUnit.isEmpty) {
-        return '전체 (0건)';
-      }
-      final unitParts = sumByUnit.entries
-          .map((e) => '${_formatQtyClean(e.value)}${e.key}')
-          .join(' / ');
-      return '전체 (${periodInvoices.length}건 · $unitParts)';
+      return '전체 ${periodInvoices.length}장';
     }
     final matching = periodInvoices
         .where((r) => _invoiceGroupKeyOf(r) == groupKey)
         .toList();
     double sumQty = 0.0;
+    int sumAmt = 0;
     String unit = 'ton';
     for (final r in matching) {
       sumQty += r.numericInvoiceQuantity;
+      sumAmt += r.numericAmount;
+      final prod = (r.fields['productName'] ?? '').trim();
       final u = (r.fields['unit'] ?? '').trim();
-      if (u.isNotEmpty) unit = u;
+      if (u.isNotEmpty) {
+        unit = u;
+      } else if (!prod.contains('철근')) {
+        unit = '매';
+      }
     }
-    return '$groupKey(${_formatQtyClean(sumQty)}$unit)';
+    final cntStr = '${matching.length}건';
+    final qtyStr = '${_formatQtyClean(sumQty)}$unit';
+    if (sumAmt > 0) {
+      return '$groupKey ($cntStr · $qtyStr · ${NumberFormat('#,###').format(sumAmt)}원)';
+    }
+    return '$groupKey ($cntStr · $qtyStr)';
   }
 
   List<DocRecord> get _recordsInSelectedMajorCategory {
@@ -7361,7 +7397,8 @@ class _HomeScreenState extends State<HomeScreen> {
     let selectedProductFilter = '전체';
     let sortCol = 'date';
     let sortAsc = false;
-    let medGroupMode = 'cat';
+    let medSumByCat = true;
+    let medSumByPatient = false;
     let invGroupProduct = true;
     let invGroupSpec = false;
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
@@ -7513,9 +7550,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (selectedCategoryFilter === '병원비') {
         if (selectedSubCat !== '전체') {
           list = list.filter(function(r) {
-            const sc = ((r.fields && r.fields.subCategory) || '').trim() || '미지정';
-            const pat = ((r.fields && r.fields.patientName) || '').trim() || '미상';
-            return medGroupMode === 'patient' ? (pat === selectedSubCat) : (sc === selectedSubCat);
+            return getMedicalGroupKey(r) === selectedSubCat;
           });
         }
         if (selectedClaimFilter === '미청구') {
@@ -7628,16 +7663,46 @@ class _HomeScreenState extends State<HomeScreen> {
       render();
     }
 
-    function buildPageButtonsHtml(r, totalPages) {
-      let html = '<div style="display:flex; gap:3px; justify-content:center; flex-wrap:wrap;">';
-      for (let i = 0; i < totalPages; i++) {
-        const active = (r.id === selectedId && selectedPageIdx === i);
-        const bg = active ? '#1e3a8a' : '#e2e8f0';
-        const fg = active ? '#fff' : '#0f172a';
-        html += '<button style="border:1px solid #94a3b8; background:' + bg + '; color:' + fg + '; border-radius:4px; padding:2px 6px; font-size:10.5px; font-weight:900; cursor:pointer;" onclick="selectRowPage(\'' + r.id + '\', ' + i + ', event)">' + (i + 1) + '</button>';
+    function getMedicalGroupKey(r) {
+      const f = r.fields || {};
+      const sc = (f.subCategory || '').trim() || '미지정';
+      const pat = (f.patientName || '').trim() || '환자미상';
+      if (medSumByCat && medSumByPatient) return sc + '. ' + pat;
+      if (medSumByPatient) return pat;
+      return sc;
+    }
+
+    function toggleMedicalGroup(col) {
+      if (col === 'cat') {
+        if (!medSumByCat && medSumByPatient) {
+          medSumByCat = true;
+        } else {
+          medSumByCat = true;
+          medSumByPatient = false;
+        }
+        selectedSubCat = '전체';
+        toggleSort('subCategory');
+      } else if (col === 'patient') {
+        if (medSumByCat && !medSumByPatient) {
+          medSumByCat = false;
+          medSumByPatient = true;
+        } else if (!medSumByCat && medSumByPatient) {
+          medSumByCat = true;
+          medSumByPatient = true;
+        } else {
+          medSumByCat = false;
+          medSumByPatient = true;
+        }
+        selectedSubCat = '전체';
+        toggleSort('patient');
       }
-      html += '</div>';
-      return html;
+    }
+
+    function buildPageButtonsHtml(r, totalPages) {
+      return '<div style="white-space:nowrap; display:inline-flex; align-items:center; gap:3px;">' +
+        '<span style="font-weight:900; color:#0f766e;">' + totalPages + '장</span>' +
+        '<button style="border:1px solid #93c5fd; background:#eff6ff; color:#1e3a8a; border-radius:4px; padding:1px 5px; font-size:10px; font-weight:900; cursor:pointer;" onclick="selectRow(\'' + r.id + '\'); triggerAddExtraPage(); event.stopPropagation();">+</button>' +
+        '</div>';
     }
 
     function changeZoom(delta) {
@@ -7706,28 +7771,25 @@ class _HomeScreenState extends State<HomeScreen> {
       const majorList = getMajorRecords();
       if (selectedCategoryFilter === '자재송장') {
         bar.style.display = 'flex';
-        const unitSums = {};
         const groups = {};
         majorList.forEach(function(r) {
           const f = r.fields || {};
           const prod = (f.productName || '').trim();
           const u = (f.unit || '').trim() || (prod.indexOf('철근') !== -1 ? 'ton' : '매');
           const q = parseInvoiceQty(r);
-          unitSums[u] = (unitSums[u] || 0) + q;
           const gKey = getInvoiceGroupKey(r);
           if (!groups[gKey]) groups[gKey] = { cnt: 0, sum: 0, unit: u };
           groups[gKey].cnt++;
           groups[gKey].sum += q;
         });
-        const unitParts = Object.keys(unitSums).map(function(u) { return fmtQty(unitSums[u]) + u; }).join(' / ');
-        const allLabel = '전체 (' + majorList.length + '건' + (unitParts ? (' · ' + unitParts) : '') + ')';
-        let chipsHtml = '<button class="chip-btn ' + (selectedProductFilter === '전체' ? 'active' : '') + '" onclick="selectedProductFilter=\\'전체\\'; render();">' + escapeHtml(allLabel) + '</button>';
+        const allLabel = '전체 ' + majorList.length + '장';
+        let chipsHtml = '<button class="chip-btn ' + (selectedProductFilter === '전체' ? 'active' : '') + '" onclick="selectedProductFilter=\'전체\'; render();">' + escapeHtml(allLabel) + '</button>';
         Object.keys(groups).forEach(function(k) {
           const g = groups[k];
           const cls = selectedProductFilter === k ? 'chip-btn active' : 'chip-btn';
-          chipsHtml += '<button class="' + cls + '" onclick="selectedProductFilter=\\'' + escapeHtml(k) + '\\'; render();">' + escapeHtml(k) + ' (' + fmtQty(g.sum) + escapeHtml(g.unit) + ')</button>';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedProductFilter=\'' + escapeHtml(k) + '\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtQty(g.sum) + escapeHtml(g.unit) + ')</button>';
         });
-        const modeLabel = (invGroupProduct && invGroupSpec) ? '제품명 + 규격명별' : (invGroupSpec ? '규격명별' : '제품명별');
+        const modeLabel = (invGroupProduct && invGroupSpec) ? '제품명. 규격별' : (invGroupSpec ? '규격명별' : '제품명별');
         bar.innerHTML =
           '<div class="sum-sub">📊 합산기준: ' + modeLabel + ' (표의 [제품명]·[규격명] 제목을 누르면 합산 기준 전환)</div>' +
           '<div class="sub-row">' + chipsHtml + '</div>';
@@ -7736,19 +7798,16 @@ class _HomeScreenState extends State<HomeScreen> {
         const totalSum = majorList.reduce(function(acc, r) { return acc + getRecordAmount(r); }, 0);
         const groups = {};
         majorList.forEach(function(r) {
-          const f = r.fields || {};
-          const key = medGroupMode === 'patient'
-            ? ((f.patientName || '').trim() || '미상')
-            : (((f.subCategory || '').trim()) || '미지정');
+          const key = getMedicalGroupKey(r);
           if (!groups[key]) groups[key] = { cnt: 0, sum: 0 };
           groups[key].cnt++;
           groups[key].sum += getRecordAmount(r);
         });
-        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat=\\'전체\\'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
+        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat=\'전체\'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
         Object.keys(groups).forEach(function(k) {
           const g = groups[k];
           const cls = selectedSubCat === k ? 'chip-btn active' : 'chip-btn';
-          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat=\\'' + escapeHtml(k) + '\\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat=\'' + escapeHtml(k) + '\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
         });
 
         let unclaimedCnt = 0, unclaimedSum = 0, claimedCnt = 0, claimedSum = 0;
@@ -7757,12 +7816,13 @@ class _HomeScreenState extends State<HomeScreen> {
           else { unclaimedCnt++; unclaimedSum += getRecordAmount(r); }
         });
         const claimHtml =
-          '<button class="chip-btn ' + (selectedClaimFilter === '전체' ? 'active' : '') + '" onclick="selectedClaimFilter=\\'전체\\'; render();">청구전체 (' + majorList.length + '건)</button>' +
-          '<button class="chip-btn ' + (selectedClaimFilter === '미청구' ? 'active' : '') + '" style="color:#be123c;" onclick="selectedClaimFilter=\\'미청구\\'; render();">미청구 (' + unclaimedCnt + '건 · ' + fmtNum(unclaimedSum) + '원)</button>' +
-          '<button class="chip-btn ' + (selectedClaimFilter === '청구완료' ? 'active' : '') + '" style="color:#15803d;" onclick="selectedClaimFilter=\\'청구완료\\'; render();">청구완료 (' + claimedCnt + '건 · ' + fmtNum(claimedSum) + '원)</button>';
+          '<button class="chip-btn ' + (selectedClaimFilter === '전체' ? 'active' : '') + '" onclick="selectedClaimFilter=\'전체\'; render();">청구전체 (' + majorList.length + '건)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '미청구' ? 'active' : '') + '" style="color:#be123c;" onclick="selectedClaimFilter=\'미청구\'; render();">미청구 (' + unclaimedCnt + '건 · ' + fmtNum(unclaimedSum) + '원)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '청구완료' ? 'active' : '') + '" style="color:#15803d;" onclick="selectedClaimFilter=\'청구완료\'; render();">청구완료 (' + claimedCnt + '건 · ' + fmtNum(claimedSum) + '원)</button>';
 
+        const medModeStr = (medSumByCat && medSumByPatient) ? '카테고리. 환자별' : (medSumByPatient ? '환자별' : '카테고리별');
         bar.innerHTML =
-          '<div class="sum-title">병원비 합계 [' + (medGroupMode === 'patient' ? '환자성명별' : '카테고리별') + '] (' + majorList.length + '건): ' + fmtNum(totalSum) + '원</div>' +
+          '<div class="sum-title">병원비 합계 [' + medModeStr + '] (' + majorList.length + '건): ' + fmtNum(totalSum) + '원</div>' +
           '<div class="sub-row">' + chipsHtml + '</div>' +
           '<div class="sub-row">' + claimHtml + '</div>';
       } else if (selectedCategoryFilter === '출장비') {
@@ -7810,8 +7870,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (selectedCategoryFilter === '병원비') {
         thead.innerHTML = '<tr>' +
-          '<th style="width:82px;" class="' + thClass('subCategory', medGroupMode === 'cat') + '" onclick="medGroupMode=\\'cat\\'; selectedSubCat=\\'전체\\'; toggleSort(\\'subCategory\\');">카테고리 ' + (medGroupMode === 'cat' ? '✓' : '') + '<br>' + sortArrow('subCategory') + '</th>' +
-          '<th style="width:78px;" class="' + thClass('patient', medGroupMode === 'patient') + '" onclick="medGroupMode=\\'patient\\'; selectedSubCat=\\'전체\\'; toggleSort(\\'patient\\');">환자성명 ' + (medGroupMode === 'patient' ? '✓' : '') + '<br>' + sortArrow('patient') + '</th>' +
+          '<th style="width:74px;" class="' + thClass('subCategory', medSumByCat) + '" onclick="toggleMedicalGroup(\'cat\');">카테고리 ' + (medSumByCat ? '✓' : '') + '<br>' + sortArrow('subCategory') + '</th>' +
+          '<th style="width:70px;" class="' + thClass('patient', medSumByPatient) + '" onclick="toggleMedicalGroup(\'patient\');">환자성명 ' + (medSumByPatient ? '✓' : '') + '<br>' + sortArrow('patient') + '</th>' +
           '<th style="width:88px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
           '<th style="width:130px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">상호' + sortArrow('clinic') + '</th>' +
           '<th style="width:88px;" class="' + thClass('amount', false) + '" onclick="toggleSort(\\'amount\\');">금액' + sortArrow('amount') + '</th>' +
@@ -8491,21 +8551,25 @@ class _HomeScreenState extends State<HomeScreen> {
           final effFolder = _buildEffectiveGithubFolder(_githubFolder);
           return AlertDialog(
             insetPadding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
-            titlePadding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
-            contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            actionsPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-            title: const FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(
-                '☁️ 현장 공유방 (공문 · 자재송장 통합)',
-                maxLines: 1,
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900),
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
+            titlePadding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
+            contentPadding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
+            actionsPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+            title: const SizedBox(
+              width: double.infinity,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '☁️ 현장 공유방 (공문 · 자재송장 통합)',
+                  maxLines: 1,
+                  softWrap: false,
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900),
+                ),
               ),
             ),
             content: SizedBox(
-              width: 420,
+              width: 440,
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -8515,17 +8579,36 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Expanded(
                           child: ChoiceChip(
-                            visualDensity: VisualDensity.compact,
+                            visualDensity:
+                                const VisualDensity(horizontal: -4, vertical: -3),
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                             labelPadding:
                                 const EdgeInsets.symmetric(horizontal: 4),
-                            label: const FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Text(
-                                '🐙 GitHub 방식',
-                                maxLines: 1,
-                                style: TextStyle(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 2),
+                            showCheckmark: false,
+                            selectedColor: const Color(0xFFDBEAFE),
+                            label: SizedBox(
+                              width: double.infinity,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Text(
+                                  _shareRoomMode == 'github'
+                                      ? '✓ 🐙 GitHub 방식'
+                                      : '🐙 GitHub 방식',
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  style: TextStyle(
                                     fontSize: 11.5,
-                                    fontWeight: FontWeight.bold),
+                                    fontWeight: _shareRoomMode == 'github'
+                                        ? FontWeight.w900
+                                        : FontWeight.w700,
+                                    color: _shareRoomMode == 'github'
+                                        ? const Color(0xFF1E3A8A)
+                                        : const Color(0xFF1E293B),
+                                  ),
+                                ),
                               ),
                             ),
                             selected: _shareRoomMode == 'github',
@@ -8542,17 +8625,36 @@ class _HomeScreenState extends State<HomeScreen> {
                         const SizedBox(width: 6),
                         Expanded(
                           child: ChoiceChip(
-                            visualDensity: VisualDensity.compact,
+                            visualDensity:
+                                const VisualDensity(horizontal: -4, vertical: -3),
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                             labelPadding:
                                 const EdgeInsets.symmetric(horizontal: 4),
-                            label: const FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Text(
-                                '☁️ OneDrive 방식',
-                                maxLines: 1,
-                                style: TextStyle(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 2),
+                            showCheckmark: false,
+                            selectedColor: const Color(0xFFDBEAFE),
+                            label: SizedBox(
+                              width: double.infinity,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Text(
+                                  _shareRoomMode == 'onedrive'
+                                      ? '✓ ☁️ OneDrive 방식'
+                                      : '☁️ OneDrive 방식',
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  style: TextStyle(
                                     fontSize: 11.5,
-                                    fontWeight: FontWeight.bold),
+                                    fontWeight: _shareRoomMode == 'onedrive'
+                                        ? FontWeight.w900
+                                        : FontWeight.w700,
+                                    color: _shareRoomMode == 'onedrive'
+                                        ? const Color(0xFF1E3A8A)
+                                        : const Color(0xFF1E293B),
+                                  ),
+                                ),
                               ),
                             ),
                             selected: _shareRoomMode == 'onedrive',
@@ -8577,18 +8679,22 @@ class _HomeScreenState extends State<HomeScreen> {
                         border: Border.all(color: Colors.indigo.shade200),
                       ),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              '📄 1. 공문 HTML ($effFolder/공문_통합.html)',
-                              maxLines: 1,
-                              style: const TextStyle(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w900,
-                                color: Color(0xFF1E3A8A),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                '📄 1. 공문 HTML ($effFolder/공문_통합.html)',
+                                maxLines: 1,
+                                softWrap: false,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFF1E3A8A),
+                                ),
                               ),
                             ),
                           ),
@@ -8596,10 +8702,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: FilledButton.icon(
+                                child: FilledButton(
                                   style: FilledButton.styleFrom(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 8),
+                                        horizontal: 8, vertical: 9),
                                     visualDensity: VisualDensity.compact,
                                   ),
                                   onPressed: () {
@@ -8609,26 +8715,32 @@ class _HomeScreenState extends State<HomeScreen> {
                                       openViewerAfterSync: false,
                                     );
                                   },
-                                  icon:
-                                      const Icon(Icons.cloud_upload, size: 15),
-                                  label: const FittedBox(
+                                  child: const FittedBox(
                                     fit: BoxFit.scaleDown,
-                                    child: Text(
-                                      '올려서 합치기',
-                                      maxLines: 1,
-                                      style: TextStyle(
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.bold),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.cloud_upload, size: 15),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          '올려서 합치기',
+                                          maxLines: 1,
+                                          softWrap: false,
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
                               ),
                               const SizedBox(width: 6),
                               Expanded(
-                                child: OutlinedButton.icon(
+                                child: OutlinedButton(
                                   style: OutlinedButton.styleFrom(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 8),
+                                        horizontal: 8, vertical: 9),
                                     visualDensity: VisualDensity.compact,
                                   ),
                                   onPressed: () {
@@ -8638,15 +8750,22 @@ class _HomeScreenState extends State<HomeScreen> {
                                       openViewerAfterSync: true,
                                     );
                                   },
-                                  icon: const Icon(Icons.visibility, size: 15),
-                                  label: const FittedBox(
+                                  child: const FittedBox(
                                     fit: BoxFit.scaleDown,
-                                    child: Text(
-                                      '들어가서 보기',
-                                      maxLines: 1,
-                                      style: TextStyle(
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.bold),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.visibility, size: 15),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          '들어가서 보기',
+                                          maxLines: 1,
+                                          softWrap: false,
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -8665,18 +8784,22 @@ class _HomeScreenState extends State<HomeScreen> {
                         border: Border.all(color: Colors.amber.shade300),
                       ),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              '📦 2. 자재송장 HTML ($effFolder/자재송장_통합.html)',
-                              maxLines: 1,
-                              style: const TextStyle(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w900,
-                                color: Color(0xFF92400E),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                '📦 2. 자재송장 HTML ($effFolder/자재송장_통합.html)',
+                                maxLines: 1,
+                                softWrap: false,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w900,
+                                  color: Color(0xFF92400E),
+                                ),
                               ),
                             ),
                           ),
@@ -8684,11 +8807,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: FilledButton.icon(
+                                child: FilledButton(
                                   style: FilledButton.styleFrom(
                                     backgroundColor: const Color(0xFFB45309),
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 8),
+                                        horizontal: 8, vertical: 9),
                                     visualDensity: VisualDensity.compact,
                                   ),
                                   onPressed: () {
@@ -8698,26 +8821,32 @@ class _HomeScreenState extends State<HomeScreen> {
                                       openViewerAfterSync: false,
                                     );
                                   },
-                                  icon:
-                                      const Icon(Icons.cloud_upload, size: 15),
-                                  label: const FittedBox(
+                                  child: const FittedBox(
                                     fit: BoxFit.scaleDown,
-                                    child: Text(
-                                      '올려서 합치기',
-                                      maxLines: 1,
-                                      style: TextStyle(
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.bold),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.cloud_upload, size: 15),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          '올려서 합치기',
+                                          maxLines: 1,
+                                          softWrap: false,
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
                               ),
                               const SizedBox(width: 6),
                               Expanded(
-                                child: OutlinedButton.icon(
+                                child: OutlinedButton(
                                   style: OutlinedButton.styleFrom(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 8),
+                                        horizontal: 8, vertical: 9),
                                     visualDensity: VisualDensity.compact,
                                   ),
                                   onPressed: () {
@@ -8727,15 +8856,22 @@ class _HomeScreenState extends State<HomeScreen> {
                                       openViewerAfterSync: true,
                                     );
                                   },
-                                  icon: const Icon(Icons.visibility, size: 15),
-                                  label: const FittedBox(
+                                  child: const FittedBox(
                                     fit: BoxFit.scaleDown,
-                                    child: Text(
-                                      '들어가서 보기',
-                                      maxLines: 1,
-                                      style: TextStyle(
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.bold),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.visibility, size: 15),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          '들어가서 보기',
+                                          maxLines: 1,
+                                          softWrap: false,
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
@@ -8746,24 +8882,31 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                     const SizedBox(height: 10),
-                    OutlinedButton.icon(
+                    OutlinedButton(
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 9),
+                            horizontal: 8, vertical: 9),
                         visualDensity: VisualDensity.compact,
                       ),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _exportPcShortcutLauncherHtml();
                       },
-                      icon: const Icon(Icons.desktop_windows, size: 15),
-                      label: const FittedBox(
+                      child: const FittedBox(
                         fit: BoxFit.scaleDown,
-                        child: Text(
-                          '💻 PC용 현장공유방 바로가기(1회 설치용) 보내기',
-                          maxLines: 1,
-                          style: TextStyle(
-                              fontSize: 11.5, fontWeight: FontWeight.bold),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.desktop_windows, size: 15),
+                            SizedBox(width: 4),
+                            Text(
+                              '💻 PC용 현장공유방 바로가기(1회 설치용) 보내기',
+                              maxLines: 1,
+                              softWrap: false,
+                              style: TextStyle(
+                                  fontSize: 11.5, fontWeight: FontWeight.bold),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -9155,15 +9298,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: prods.map((pKey) {
                   final isSel = _selectedInvoiceProductFilter == pKey;
                   return Padding(
-                    padding: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.only(right: 4),
                     child: ChoiceChip(
-                      visualDensity: VisualDensity.compact,
+                      visualDensity:
+                          const VisualDensity(horizontal: -4, vertical: -4),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      labelPadding:
+                          const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                      showCheckmark: false,
                       selectedColor: Colors.amber.shade300,
                       label: Text(
                         _invoiceProductChipLabel(pKey),
-                        style: const TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.bold,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          letterSpacing: -0.3,
+                          fontWeight:
+                              isSel ? FontWeight.w900 : FontWeight.w700,
                         ),
                       ),
                       selected: isSel,
@@ -9295,14 +9447,31 @@ class _HomeScreenState extends State<HomeScreen> {
                 final cnt = _countBySubCategory(sc);
                 final sum = _sumBySubCategory(sc);
                 return Padding(
-                  padding: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.only(right: 4),
                   child: InputChip(
-                    visualDensity: VisualDensity.compact,
+                    visualDensity:
+                        const VisualDensity(horizontal: -4, vertical: -4),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    labelPadding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                    showCheckmark: false,
                     selected: isSel,
+                    selectedColor: const Color(0xFFDBEAFE),
                     label: Text(
-                      '$sc (${cnt}건 · ${NumberFormat('#,###').format(sum)}원)',
-                      style: const TextStyle(
-                          fontSize: 11.5, fontWeight: FontWeight.bold),
+                      sc == '전체'
+                          ? '전체 (${cnt}건 · ${NumberFormat('#,###').format(sum)}원)'
+                          : '$sc (${cnt}건 · ${NumberFormat('#,###').format(sum)}원)',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        letterSpacing: -0.3,
+                        fontWeight:
+                            isSel ? FontWeight.w900 : FontWeight.w700,
+                        color: isSel
+                            ? const Color(0xFF1E3A8A)
+                            : const Color(0xFF1E293B),
+                      ),
                     ),
                     onSelected: (_) =>
                         setState(() => _selectedSubCategoryFilter = sc),
@@ -9317,7 +9486,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           if (cat == DocCategory.travel) ...[
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
@@ -9326,17 +9495,28 @@ class _HomeScreenState extends State<HomeScreen> {
                   final cnt = _countByTravelDivision(div);
                   final sum = _sumByTravelDivision(div);
                   return Padding(
-                    padding: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.only(right: 4),
                     child: ChoiceChip(
-                      visualDensity: VisualDensity.compact,
+                      visualDensity:
+                          const VisualDensity(horizontal: -4, vertical: -4),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      labelPadding:
+                          const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                      showCheckmark: false,
                       selectedColor: Colors.amber.shade300,
                       selected: isSel,
                       label: Text(
                         div == '전체'
                             ? '구분전체 (${cnt}건)'
                             : '$div (${NumberFormat('#,###').format(sum)}원)',
-                        style: const TextStyle(
-                            fontSize: 11.5, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          letterSpacing: -0.3,
+                          fontWeight:
+                              isSel ? FontWeight.w900 : FontWeight.w700,
+                        ),
                       ),
                       onSelected: (_) =>
                           setState(() => _selectedTravelDivisionFilter = div),
@@ -9347,36 +9527,55 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
           if (cat == DocCategory.medical) ...[
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
                   for (final st in ['전체', '미청구', '청구완료'])
                     Padding(
-                      padding: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.only(right: 4),
                       child: ChoiceChip(
-                        visualDensity: VisualDensity.compact,
+                        visualDensity:
+                            const VisualDensity(horizontal: -4, vertical: -4),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 0),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 0),
+                        showCheckmark: false,
                         selectedColor: Colors.teal.shade200,
                         selected: _selectedMedicalClaimFilter == st,
                         label: Text(
                           st == '전체'
                               ? '청구전체 (${_countByMedicalClaimStatus(st)}건)'
                               : '$st (${_countByMedicalClaimStatus(st)}건 · ${NumberFormat('#,###').format(_sumByMedicalClaimStatus(st))}원)',
-                          style: const TextStyle(
-                              fontSize: 11, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            letterSpacing: -0.3,
+                            fontWeight: _selectedMedicalClaimFilter == st
+                                ? FontWeight.w900
+                                : FontWeight.w700,
+                          ),
                         ),
                         onSelected: (_) =>
                             setState(() => _selectedMedicalClaimFilter = st),
                       ),
                     ),
                   ActionChip(
-                    visualDensity: VisualDensity.compact,
+                    visualDensity:
+                        const VisualDensity(horizontal: -4, vertical: -4),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    labelPadding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
                     backgroundColor: Colors.indigo.shade50,
                     label: const Text(
-                      '☑ 현재목록 일괄체크',
+                      '☑ 일괄체크',
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 10.5,
+                        letterSpacing: -0.3,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF1E3A8A),
                       ),
@@ -9393,21 +9592,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// ★ 장수(○장) 글씨 대신 1 2 3 4 숫자 버튼을 표시하여 누르면 바로 해당 페이지 사진을 보여주는 셀
+  /// ★ 병원비, PDF변환 등 여러 장이 있는 경우 행 높이를 늘리지 않고 '3장 +' 형태로 깔끔하게 한 줄 처리!
+  /// - '3장' 부분을 누르면 해당 항목이 선택(이미 선택된 상태면 1->2->3페이지 순환)되고 하단의 [1] [2] [3] 버튼으로 즉시 페이지 이동 가능
+  /// - '+' 부분을 누르면 추가 증빙/페이지 관리 창이 열림
   Widget _buildPageNumberButtonsCell(
     DocRecord rec,
     double width, {
     required int totalPages,
     bool showAddWhenSingle = false,
   }) {
-    final bool isSelectedRec = _selectedRecord?.id == rec.id;
-    final int activeIdx =
-        isSelectedRec ? _selectedPhotoIndex.clamp(0, math.max(0, totalPages - 1)) : 0;
-
     return Container(
       width: width,
       constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
-      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -9418,10 +9615,11 @@ class _HomeScreenState extends State<HomeScreen> {
       child: (showAddWhenSingle && totalPages <= 1)
           ? InkWell(
               onTap: () => _manageRecordExtraPagesDialog(rec),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+              child: const FittedBox(
+                fit: BoxFit.scaleDown,
                 child: Text(
                   '+ 증빙추가',
+                  maxLines: 1,
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
@@ -9431,73 +9629,65 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             )
-          : Wrap(
-              spacing: 3,
-              runSpacing: 3,
-              alignment: WrapAlignment.center,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                for (int i = 0; i < totalPages; i++)
+          : FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   InkWell(
                     borderRadius: BorderRadius.circular(4),
                     onTap: () {
                       setState(() {
-                        _selectedRecord = rec;
-                        _selectedPhotoIndex = i;
+                        if (_selectedRecord?.id != rec.id) {
+                          _selectedRecord = rec;
+                          _selectedPhotoIndex = 0;
+                        } else if (totalPages > 1) {
+                          _selectedPhotoIndex =
+                              (_selectedPhotoIndex + 1) % totalPages;
+                        }
                       });
                       _photoTransformCtrl.value = Matrix4.identity();
                     },
-                    child: Container(
-                      constraints: const BoxConstraints(minWidth: 19, minHeight: 19),
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: (isSelectedRec && activeIdx == i)
-                            ? const Color(0xFF1E3A8A)
-                            : Colors.grey.shade200,
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(
-                          color: (isSelectedRec && activeIdx == i)
-                              ? const Color(0xFF1E3A8A)
-                              : Colors.grey.shade400,
-                        ),
-                      ),
-                      alignment: Alignment.center,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 3, vertical: 2),
                       child: Text(
-                        '${i + 1}',
-                        style: TextStyle(
-                          fontSize: 10,
+                        '${totalPages}장',
+                        maxLines: 1,
+                        style: const TextStyle(
+                          fontSize: 10.5,
                           fontWeight: FontWeight.w900,
-                          color: (isSelectedRec && activeIdx == i)
-                              ? Colors.white
-                              : const Color(0xFF0F172A),
+                          letterSpacing: -0.3,
+                          color: Color(0xFF0F766E),
                         ),
                       ),
                     ),
                   ),
-                if (showAddWhenSingle)
+                  const SizedBox(width: 2),
                   InkWell(
                     borderRadius: BorderRadius.circular(4),
                     onTap: () => _manageRecordExtraPagesDialog(rec),
                     child: Container(
-                      constraints: const BoxConstraints(minWidth: 18, minHeight: 19),
-                      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 1),
                       decoration: BoxDecoration(
                         color: Colors.blue.shade50,
                         borderRadius: BorderRadius.circular(4),
                         border: Border.all(color: Colors.blue.shade300),
                       ),
-                      alignment: Alignment.center,
                       child: const Text(
                         '+',
+                        maxLines: 1,
                         style: TextStyle(
-                          fontSize: 10,
+                          fontSize: 10.5,
                           fontWeight: FontWeight.w900,
                           color: Color(0xFF1E3A8A),
                         ),
                       ),
                     ),
                   ),
-              ],
+                ],
+              ),
             ),
     );
   }
@@ -9623,7 +9813,7 @@ class _HomeScreenState extends State<HomeScreen> {
               },
               isHighlightedGroup: _medSumByClaim,
             ),
-            _buildFixedHeaderCell('증빙첨부', 82),
+            _buildFixedHeaderCell('증빙첨부', 66),
             _buildFixedHeaderCell('수정/삭제', 54),
           ],
         );
@@ -9640,13 +9830,12 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         );
       } else {
-        // ★ PDF변환 탭: 찍은날짜 | 파일명 | 페이지(1 2 3 4 버튼) | 페이지추가 | 수정/삭제
+        // ★ PDF변환 탭: 찍은날짜 | 파일명 | 장수(3장 +) | 수정/삭제
         return Row(
           children: [
             _buildFixedHeaderCell('찍은날짜', 74, sortKey: 'date'),
-            _buildFixedHeaderCell('파일명', 120, sortKey: 'pdfFileName'),
-            _buildFixedHeaderCell('페이지', 96, sortKey: 'pageCount'),
-            _buildFixedHeaderCell('페이지추가', 68),
+            _buildFixedHeaderCell('파일명', 150, sortKey: 'pdfFileName'),
+            _buildFixedHeaderCell('장수', 66, sortKey: 'pageCount'),
             _buildFixedHeaderCell('수정/삭제', 54),
           ],
         );
@@ -9764,7 +9953,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             _buildPageNumberButtonsCell(
               r,
-              82,
+              66,
               totalPages: totalMedPages,
               showAddWhenSingle: true,
             ),
@@ -9802,7 +9991,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         );
       } else {
-        // ★ PDF변환 탭 데이터 행: 찍은날짜 | 파일명 | 페이지(1 2 3 4 버튼) | 페이지추가 | 수정/삭제
+        // ★ PDF변환 탭 데이터 행: 찍은날짜 | 파일명 | 장수(3장 +) | 수정/삭제
         final rawFn = (f['pdfFileName'] ?? '').trim();
         final dispFn = rawFn.isEmpty
             ? '문서스캔.pdf'
@@ -9818,22 +10007,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             _buildFixedDataCell(
               dispFn,
-              120,
+              150,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
             _buildPageNumberButtonsCell(
               r,
-              96,
+              66,
               totalPages: totalPages,
               showAddWhenSingle: false,
-            ),
-            _buildFixedDataCell(
-              '+ 페이지추가',
-              68,
-              bold: true,
-              textColor: const Color(0xFF1E3A8A),
-              onTap: () => _manageRecordExtraPagesDialog(r),
             ),
             _buildEditDeleteActionCell(r, 54),
           ],
@@ -9871,10 +10053,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   : (cat == DocCategory.invoice
                       ? 748
                       : (cat == DocCategory.medical
-                          ? 654
+                          ? 638
                           : (cat == DocCategory.businessCard
                               ? 596
-                              : (cat == DocCategory.pdfConvert ? 412 : 376))))),
+                              : (cat == DocCategory.pdfConvert ? 344 : 376))))),
           child: Column(
             children: [
               buildHeaderRow(),
@@ -10027,20 +10209,108 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: TextStyle(color: Colors.white54),
                     ),
                   )
-                : InteractiveViewer(
-                    key: ValueKey<String>('${rec.id}_$safeIndex'),
-                    transformationController: _photoTransformCtrl,
-                    boundaryMargin: const EdgeInsets.all(double.infinity),
-                    panEnabled: true,
-                    scaleEnabled: true,
-                    minScale: 0.15,
-                    maxScale: 8.0,
-                    child: Center(
-                      child: Image.memory(
-                        allPageBytes[safeIndex],
-                        fit: BoxFit.contain,
+                : Stack(
+                    children: [
+                      Positioned.fill(
+                        child: InteractiveViewer(
+                          key: ValueKey<String>('${rec.id}_$safeIndex'),
+                          transformationController: _photoTransformCtrl,
+                          boundaryMargin:
+                              const EdgeInsets.all(double.infinity),
+                          panEnabled: true,
+                          scaleEnabled: true,
+                          minScale: 0.15,
+                          maxScale: 8.0,
+                          child: Center(
+                            child: Image.memory(
+                              allPageBytes[safeIndex],
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
+                      Positioned(
+                        left: 8,
+                        bottom: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xCC0F172A),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFF334155)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              InkWell(
+                                borderRadius: BorderRadius.circular(5),
+                                onTap: () => _adjustPhotoZoom(0.75),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 7, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF1E3A8A),
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  child: const Text(
+                                    '－ 축소',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(5),
+                                onTap: () =>
+                                    _adjustPhotoZoom(1.0, reset: true),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF334155),
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  child: const Text(
+                                    '100%',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(5),
+                                onTap: () => _adjustPhotoZoom(1.3),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 7, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF1E3A8A),
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  child: const Text(
+                                    '＋ 확대',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
           ),
         ],
@@ -10130,11 +10400,11 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           if (_isBusy) const LinearProgressIndicator(minHeight: 3),
 
-          // 상단 대분류 탭 바 (맨 우측에 PDF변환 탭 배치)
+          // 상단 대분류 탭 바 (컴팩트한 열 너비로 한 화면에 많은 탭 표시)
           Container(
             width: double.infinity,
             color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
@@ -10143,15 +10413,27 @@ class _HomeScreenState extends State<HomeScreen> {
                   final count =
                       _records.where((r) => r.category == cat).length;
                   return Padding(
-                    padding: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.only(right: 4),
                     child: ChoiceChip(
-                      visualDensity: VisualDensity.compact,
+                      visualDensity:
+                          const VisualDensity(horizontal: -4, vertical: -4),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      labelPadding:
+                          const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                      showCheckmark: false,
+                      selectedColor: const Color(0xFFDBEAFE),
                       label: Text(
-                        count > 0 ? '$cat ($count)' : cat,
+                        count > 0 ? '$cat($count)' : cat,
                         style: TextStyle(
-                          fontSize: 12.5,
+                          fontSize: 11,
+                          letterSpacing: -0.3,
                           fontWeight:
-                              isSelected ? FontWeight.w900 : FontWeight.w600,
+                              isSelected ? FontWeight.w900 : FontWeight.w700,
+                          color: isSelected
+                              ? const Color(0xFF1E3A8A)
+                              : const Color(0xFF1E293B),
                         ),
                       ),
                       selected: isSelected,
