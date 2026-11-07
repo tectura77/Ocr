@@ -1281,6 +1281,14 @@ class _HomeScreenState extends State<HomeScreen> {
   String _selectedMedicalClaimFilter = '전체';
   DocRecord? _selectedRecord;
   int _selectedPhotoIndex = 0;
+  final PageController _photoPageCtrl = PageController();
+
+  void _resetPhotoPageToZero() {
+    _selectedPhotoIndex = 0;
+    if (_photoPageCtrl.hasClients) {
+      _photoPageCtrl.jumpToPage(0);
+    }
+  }
 
   bool _invSumByProduct = true;
   bool _invSumBySpec = false;
@@ -1337,6 +1345,13 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadInitialState();
+  }
+
+  @override
+  void dispose() {
+    _photoPageCtrl.dispose();
+    _businessCardSearchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadInitialState() async {
@@ -4232,31 +4247,85 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 사진 촬영 또는 갤러리 선택 후 신규 등록 다이얼로그
+  /// (★ PDF변환 탭에서 갤러리 선택 시 처음부터 여러 장을 한꺼번에 멀티선택 가능!)
   Future<void> _captureAndAddRecord(ImageSource source) async {
     try {
-      final XFile? picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 2600,
-        maxHeight: 2600,
-        imageQuality: 96,
-      );
-      if (picked == null) return;
+      final bool isPdfMultiGallery =
+          source == ImageSource.gallery &&
+          _selectedCategoryFilter == DocCategory.pdfConvert;
 
-      final rawBytes = await picked.readAsBytes();
-      if (!mounted) return;
+      XFile? picked;
+      Uint8List? rawBytes;
+      Uint8List? flattenedBytes;
+      final List<String> initialMultiExtraPaths = <String>[];
+      final List<String> initialMultiExtraBase64 = <String>[];
 
-      final cropRes = await showDialog<PerspectiveCropResult>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => PerspectiveCropDialog(originalBytes: rawBytes),
-      );
-      if (cropRes == null) return;
-
-      final Uint8List flattenedBytes = cropRes.bytes;
       final appDir = await getApplicationDocumentsDirectory();
       final String newId = DateTime.now().microsecondsSinceEpoch.toString();
       final File savedFile = File(p.join(appDir.path, 'doc_$newId.jpg'));
-      await savedFile.writeAsBytes(flattenedBytes, flush: true);
+
+      if (isPdfMultiGallery) {
+        final List<XFile> pickedFiles = await _picker.pickMultiImage(
+          maxWidth: 2600,
+          maxHeight: 2600,
+          imageQuality: 96,
+        );
+        if (pickedFiles.isEmpty) return;
+
+        for (int i = 0; i < pickedFiles.length; i++) {
+          final xf = pickedFiles[i];
+          final b = await xf.readAsBytes();
+          if (!mounted) return;
+          final cropRes = await showDialog<PerspectiveCropResult>(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => PerspectiveCropDialog(
+              originalBytes: b,
+              titleText: pickedFiles.length > 1
+                  ? 'PDF 스캔 (${i + 1} / ${pickedFiles.length}장)'
+                  : '문서 영역 스캔',
+            ),
+          );
+          if (cropRes == null) continue;
+          if (picked == null) {
+            picked = xf;
+            rawBytes = b;
+            flattenedBytes = cropRes.bytes;
+            await savedFile.writeAsBytes(flattenedBytes, flush: true);
+          } else {
+            final extraFileName =
+                'extra_${DateTime.now().microsecondsSinceEpoch}_$i.jpg';
+            final extraSaved = File(p.join(appDir.path, extraFileName));
+            await extraSaved.writeAsBytes(cropRes.bytes, flush: true);
+            initialMultiExtraPaths.add(extraSaved.path);
+            initialMultiExtraBase64.add(base64Encode(cropRes.bytes));
+          }
+        }
+        if (picked == null || rawBytes == null || flattenedBytes == null) {
+          return;
+        }
+      } else {
+        picked = await _picker.pickImage(
+          source: source,
+          maxWidth: 2600,
+          maxHeight: 2600,
+          imageQuality: 96,
+        );
+        if (picked == null) return;
+
+        rawBytes = await picked.readAsBytes();
+        if (!mounted) return;
+
+        final cropRes = await showDialog<PerspectiveCropResult>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => PerspectiveCropDialog(originalBytes: rawBytes!),
+        );
+        if (cropRes == null) return;
+
+        flattenedBytes = cropRes.bytes;
+        await savedFile.writeAsBytes(flattenedBytes, flush: true);
+      }
 
       String chosenCategory = _selectedCategoryFilter == DocCategory.all
           ? DocCategory.officialIn
@@ -4359,8 +4428,10 @@ class _HomeScreenState extends State<HomeScreen> {
       // 6. PDF변환 컨트롤러 (OCR 없음! 찍은날짜 + 파일명 + 다중 페이지 추가)
       final pdfDateCtrl = TextEditingController(text: photoTakenDateDot);
       final pdfFileNameCtrl = TextEditingController();
-      final List<String> pdfExtraBase64List = <String>[];
-      final List<String> pdfExtraPathList = <String>[];
+      final List<String> pdfExtraBase64List =
+          List<String>.from(initialMultiExtraBase64);
+      final List<String> pdfExtraPathList =
+          List<String>.from(initialMultiExtraPaths);
 
       void applyExtractedMap(Map<String, String> extracted) {
         if (DocCategory.isOfficial(chosenCategory)) {
@@ -7454,6 +7525,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // ===========================================================================
   // 6단계: 상단 액션 바, 7개 탭 바(PDF변환 포함), 테이블 리스트, 하단/우측 사진 뷰어
   // ===========================================================================
+  static const double _kTableHeaderHeight = 40.0;
+  static const double _kTableDataRowHeight = 48.0;
+
   Widget _buildTopActionBtn({
     required IconData icon,
     required String label,
@@ -7461,26 +7535,27 @@ class _HomeScreenState extends State<HomeScreen> {
     required VoidCallback onTap,
   }) {
     return Padding(
-      padding: const EdgeInsets.only(left: 5),
+      padding: const EdgeInsets.only(left: 4),
       child: Material(
         color: Colors.white.withOpacity(0.14),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(7),
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(7),
           onTap: _isBusy ? null : onTap,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 5),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 15, color: iconColor),
-                const SizedBox(width: 4),
+                Icon(icon, size: 12.5, color: iconColor),
+                const SizedBox(width: 3),
                 Text(
                   label,
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 12,
+                    fontSize: 10.5,
                     fontWeight: FontWeight.w800,
+                    letterSpacing: -0.3,
                   ),
                 ),
               ],
@@ -7499,17 +7574,26 @@ class _HomeScreenState extends State<HomeScreen> {
     bool isHighlightedGroup = false,
   }) {
     final bool isSorted = sortKey != null && _sortColumn == sortKey;
-    final String arrow = isSorted ? (_sortAscending ? ' ▲' : ' ▼') : ' ↕';
+    String displayLabel = text;
+    if (sortKey != null) {
+      if (isSorted) {
+        final String arrow = _sortAscending ? '▲' : '▼';
+        displayLabel = '$text\n$arrow';
+      } else {
+        displayLabel = '$text ↕';
+      }
+    }
     return InkWell(
       onTap: onHeaderTap ??
           (sortKey != null ? () => _toggleSortColumn(sortKey) : null),
       child: Container(
         width: width,
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+        height: _kTableHeaderHeight,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
         decoration: BoxDecoration(
           color: isHighlightedGroup
               ? Colors.amber.shade100
-              : const Color(0xFFE2E8F0),
+              : (isSorted ? const Color(0xFFDBEAFE) : const Color(0xFFE2E8F0)),
           border: const Border(
             right: BorderSide(color: Color(0xFFCBD5E1), width: 1),
             bottom: BorderSide(color: Color(0xFFCBD5E1), width: 1.2),
@@ -7517,14 +7601,19 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         alignment: Alignment.center,
         child: Text(
-          sortKey != null ? '$text$arrow' : text,
+          displayLabel,
           textAlign: TextAlign.center,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
             fontSize: 11.5,
+            height: 1.15,
             fontWeight: FontWeight.w900,
             color: isHighlightedGroup
                 ? const Color(0xFF92400E)
-                : const Color(0xFF1E293B),
+                : (isSorted
+                    ? const Color(0xFF1E3A8A)
+                    : const Color(0xFF1E293B)),
           ),
         ),
       ),
@@ -7540,7 +7629,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     final content = Container(
       width: width,
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+      height: _kTableDataRowHeight,
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -7551,10 +7641,13 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Text(
         text.trim().isEmpty ? '-' : text,
         textAlign: TextAlign.center,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
         softWrap: true,
         style: TextStyle(
           fontSize: 11.5,
-          fontWeight: bold ? FontWeight.w800 : FontWeight.w500,
+          height: 1.2,
+          fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
           color: textColor ?? const Color(0xFF0F172A),
         ),
       ),
@@ -7568,7 +7661,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildEditDeleteActionCell(DocRecord rec, double width) {
     return Container(
       width: width,
-      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+      height: _kTableDataRowHeight,
+      padding: const EdgeInsets.symmetric(horizontal: 2),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -7621,7 +7715,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Container(
       width: width,
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+      height: _kTableDataRowHeight,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
       decoration: const BoxDecoration(
         border: Border(
           right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
@@ -7653,52 +7748,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildSummaryAndSubCategoryBar() {
     final cat = _selectedCategoryFilter;
-    if (DocCategory.isOfficial(cat)) {
+    // ★ 공문(수신), 공문(발신), 그리고 PDF변환 탭은 3번째 줄 요약/PDF공유 바를 표시하지 않음! (맨 위 PDF내보내기 사용)
+    if (DocCategory.isOfficial(cat) || cat == DocCategory.pdfConvert) {
       return const SizedBox.shrink();
-    }
-
-    if (cat == DocCategory.pdfConvert) {
-      final pdfList =
-          _records.where((r) => r.category == DocCategory.pdfConvert).toList();
-      int totalPages = 0;
-      for (final r in pdfList) {
-        totalPages += r.totalPdfPageCount;
-      }
-      return Container(
-        width: double.infinity,
-        color: const Color(0xFFF8FAFC),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              '📄 PDF변환 목록 (${pdfList.length}건 · 총 ${totalPages}장)',
-              style: const TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w900,
-                color: Color(0xFF1E3A8A),
-              ),
-            ),
-            if (_selectedRecord != null &&
-                _selectedRecord!.category == DocCategory.pdfConvert)
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF0F766E),
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                ),
-                onPressed: () =>
-                    _exportSinglePdfConvertRecord(_selectedRecord!),
-                icon: const Icon(Icons.picture_as_pdf, size: 15),
-                label: Text(
-                  '선택 파일(${_selectedRecord!.totalPdfPageCount}장) PDF공유',
-                  style: const TextStyle(
-                      fontSize: 11.5, fontWeight: FontWeight.bold),
-                ),
-              ),
-          ],
-        ),
-      );
     }
 
     if (cat == DocCategory.businessCard) {
@@ -7871,6 +7923,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final majorSum = _sumByMajorCategory(cat);
     final majorCnt = _recordsInSelectedMajorCategory.length;
     final subCats = _userRegisteredSubCategoriesForCurrentTab;
+    final subSelectedSum = _sumBySubCategory(_selectedSubCategoryFilter);
 
     return Container(
       width: double.infinity,
@@ -7920,12 +7973,28 @@ class _HomeScreenState extends State<HomeScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '$cat 합계 (${majorCnt}건): ${NumberFormat('#,###').format(majorSum)}원',
-                style: const TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w900,
-                  color: Color(0xFF1E3A8A),
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '$cat 합계 (${majorCnt}건): ${NumberFormat('#,###').format(majorSum)}원',
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF1E3A8A),
+                      ),
+                    ),
+                    if (_selectedSubCategoryFilter != '전체')
+                      Text(
+                        '[${_selectedSubCategoryFilter} 합계: ${NumberFormat('#,###').format(subSelectedSum)}원]',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF1E3A8A),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               TextButton.icon(
@@ -7935,7 +8004,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 onPressed: () => _promptAddNewSubCategory(cat),
                 icon: const Icon(Icons.add, size: 15),
-                label: const Text('+ 카테고리 등록',
+                label: const Text('+ 카테고리',
                     style: TextStyle(fontSize: 11.5)),
               ),
             ],
@@ -7955,7 +8024,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     label: Text(
                       '$sc (${cnt}건 · ${NumberFormat('#,###').format(sum)}원)',
                       style: const TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold),
+                          fontSize: 11.5, fontWeight: FontWeight.bold),
                     ),
                     onSelected: (_) =>
                         setState(() => _selectedSubCategoryFilter = sc),
@@ -7989,7 +8058,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             ? '구분전체 (${cnt}건)'
                             : '$div (${NumberFormat('#,###').format(sum)}원)',
                         style: const TextStyle(
-                            fontSize: 11, fontWeight: FontWeight.bold),
+                            fontSize: 11.5, fontWeight: FontWeight.bold),
                       ),
                       onSelected: (_) =>
                           setState(() => _selectedTravelDivisionFilter = div),
@@ -8184,14 +8253,13 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         );
       } else {
-        // ★ PDF변환 탭: 찍은날짜 | 파일명 | 장수 | 페이지추가 | PDF공유 | 수정/삭제
+        // ★ PDF변환 탭: 찍은날짜 | 파일명 | 장수 | 페이지추가 | 수정/삭제
         return Row(
           children: [
-            _buildFixedHeaderCell('찍은날짜', 88, sortKey: 'date'),
-            _buildFixedHeaderCell('파일명', 165, sortKey: 'pdfFileName'),
-            _buildFixedHeaderCell('장수', 64, sortKey: 'pageCount'),
-            _buildFixedHeaderCell('페이지추가', 86),
-            _buildFixedHeaderCell('PDF공유', 76),
+            _buildFixedHeaderCell('찍은날짜', 90, sortKey: 'date'),
+            _buildFixedHeaderCell('파일명', 175, sortKey: 'pdfFileName'),
+            _buildFixedHeaderCell('장수', 66, sortKey: 'pageCount'),
+            _buildFixedHeaderCell('페이지추가', 88),
             _buildFixedHeaderCell('수정/삭제', 68),
           ],
         );
@@ -8267,7 +8335,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _buildFixedDataCell('$subLabel\n($dateStr)', 106, bold: true),
             _buildFixedDataCell(r.travelDivision, 64, bold: true),
-            _buildFixedDataCell(f['merchantName'] ?? '-', 140),
+            _buildFixedDataCell(f['merchantName'] ?? '-', 140, bold: true),
             _buildFixedDataCell(
               '${NumberFormat('#,###').format(r.numericAmount)}원',
               88,
@@ -8285,7 +8353,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildFixedDataCell(subLabel, 82, bold: true),
             _buildFixedDataCell(f['patientName'] ?? '-', 76, bold: true),
             _buildFixedDataCell(DocRecord.formatDotDate(f['issueDate']), 82),
-            _buildFixedDataCell(f['clinicName'] ?? '-', 110),
+            _buildFixedDataCell(f['clinicName'] ?? '-', 110, bold: true),
             _buildFixedDataCell(
               '${NumberFormat('#,###').format(r.numericAmount)}원',
               82,
@@ -8342,7 +8410,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         );
       } else {
-        // ★ PDF변환 탭 데이터 행: 찍은날짜 | 파일명 | 장수 | 페이지추가 | PDF공유 | 수정/삭제
+        // ★ PDF변환 탭 데이터 행: 찍은날짜 | 파일명 | 장수 | 페이지추가 | 수정/삭제
         final rawFn = (f['pdfFileName'] ?? '').trim();
         final dispFn = rawFn.isEmpty
             ? '문서스캔.pdf'
@@ -8353,33 +8421,26 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildFixedDataCell(
               DocRecord.formatDotDate(
                   f['pdfDate'] ?? r.createdAt.split(' ').first),
-              88,
+              90,
             ),
             _buildFixedDataCell(
               dispFn,
-              165,
+              175,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
             ),
             _buildFixedDataCell(
               '${totalPages}장',
-              64,
+              66,
               bold: true,
               textColor: const Color(0xFF0F766E),
             ),
             _buildFixedDataCell(
               '+ 페이지추가',
-              86,
+              88,
               bold: true,
               textColor: const Color(0xFF1E3A8A),
               onTap: () => _manageRecordExtraPagesDialog(r),
-            ),
-            _buildFixedDataCell(
-              '📤 PDF공유',
-              76,
-              bold: true,
-              textColor: Colors.deepOrange.shade800,
-              onTap: () => _exportSinglePdfConvertRecord(r),
             ),
             _buildEditDeleteActionCell(r, 68),
           ],
@@ -8390,11 +8451,12 @@ class _HomeScreenState extends State<HomeScreen> {
         onTap: () {
           setState(() {
             _selectedRecord = r;
-            _selectedPhotoIndex = 0;
           });
+          _resetPhotoPageToZero();
         },
         onLongPress: () => _editRecordDialog(r),
         child: Container(
+          height: _kTableDataRowHeight,
           color: isSelected ? const Color(0xFFDBEAFE) : Colors.white,
           child: rowWidget,
         ),
@@ -8416,12 +8478,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           ? 758
                           : (cat == DocCategory.businessCard
                               ? 720
-                              : (cat == DocCategory.pdfConvert ? 547 : 466))))),
+                              : (cat == DocCategory.pdfConvert ? 487 : 466))))),
           child: Column(
             children: [
               buildHeaderRow(),
               Expanded(
                 child: ListView.builder(
+                  padding: EdgeInsets.zero,
+                  itemExtent: _kTableDataRowHeight,
                   itemCount: list.length,
                   itemBuilder: (ctx, idx) => buildDataRow(list[idx]),
                 ),
@@ -8433,6 +8497,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// ★ 하단 사진 미리보기:
+  /// - 여러 장(1페이지/2페이지/3페이지...) 칩 버튼 나열 대신,
+  ///   [병원비]: "기본 영수증  |  첨부 2장 (1/3)" 표시 + 좌우 스와이프(PageView)로 한 장씩 넘겨보기
+  ///   [PDF변환]: "총 4장 (현재 1/4장)" 표시 + 좌우 스와이프(PageView)로 한 장씩 넘겨보기
   Widget _buildPhotoPreviewSection() {
     final rec = _selectedRecord;
     if (rec == null) {
@@ -8458,9 +8526,10 @@ class _HomeScreenState extends State<HomeScreen> {
       allPageBytes.addAll(rec.resolveAllProofImageBytes());
     }
 
-    final int safeIndex = allPageBytes.isEmpty
-        ? 0
-        : _selectedPhotoIndex.clamp(0, allPageBytes.length - 1);
+    final int totalCount = allPageBytes.length;
+    final int safeIndex =
+        totalCount == 0 ? 0 : _selectedPhotoIndex.clamp(0, totalCount - 1);
+    final int extraCount = math.max(0, totalCount - 1);
 
     return Container(
       color: const Color(0xFF0F172A),
@@ -8471,47 +8540,71 @@ class _HomeScreenState extends State<HomeScreen> {
               width: double.infinity,
               color: const Color(0xFF1E293B),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    for (int i = 0; i < allPageBytes.length; i++)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: ChoiceChip(
-                          visualDensity: VisualDensity.compact,
-                          selectedColor: Colors.amber.shade300,
-                          selected: safeIndex == i,
-                          label: Text(
-                            rec.category == DocCategory.pdfConvert
-                                ? '${i + 1}페이지 / 총${allPageBytes.length}장'
-                                : (i == 0 ? '기본 영수증' : '증빙첨부 $i'),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 9, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.shade300,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            rec.category == DocCategory.medical
+                                ? (safeIndex == 0
+                                    ? '기본 영수증 (첨부 ${extraCount}장)'
+                                    : '첨부사진 $safeIndex / ${extraCount}장 (기본영수증 외 총 ${extraCount}장)')
+                                : '총 ${totalCount}장 (${safeIndex + 1} / ${totalCount}장)',
                             style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF0F172A),
                             ),
                           ),
-                          onSelected: (_) =>
-                              setState(() => _selectedPhotoIndex = i),
                         ),
+                        if (totalCount > 1) ...[
+                          const SizedBox(width: 8),
+                          const Flexible(
+                            child: Text(
+                              '👉 좌우로 밀어서 한 장씩 넘겨보기',
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  InkWell(
+                    onTap: () => _manageRecordExtraPagesDialog(rec),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E676),
+                        borderRadius: BorderRadius.circular(999),
                       ),
-                    ActionChip(
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: const Color(0xFF00E676),
-                      label: Text(
+                      child: Text(
                         rec.category == DocCategory.pdfConvert
-                            ? '+ PDF 페이지 추가'
-                            : '+ 증빙첨부 추가',
+                            ? '+ 페이지 추가'
+                            : '+ 증빙첨부',
                         style: const TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w900,
                           color: Color(0xFF0F172A),
                         ),
                       ),
-                      onPressed: () => _manageRecordExtraPagesDialog(rec),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           Expanded(
@@ -8522,15 +8615,70 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: TextStyle(color: Colors.white54),
                     ),
                   )
-                : InteractiveViewer(
-                    minScale: 0.5,
-                    maxScale: 8.0,
-                    child: Center(
-                      child: Image.memory(
-                        allPageBytes[safeIndex],
-                        fit: BoxFit.contain,
+                : Stack(
+                    children: [
+                      PageView.builder(
+                        controller: _photoPageCtrl,
+                        itemCount: totalCount,
+                        onPageChanged: (idx) {
+                          setState(() => _selectedPhotoIndex = idx);
+                        },
+                        itemBuilder: (ctx, pageIdx) {
+                          return InteractiveViewer(
+                            minScale: 0.5,
+                            maxScale: 8.0,
+                            child: Center(
+                              child: Image.memory(
+                                allPageBytes[pageIdx],
+                                fit: BoxFit.contain,
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    ),
+                      if (totalCount > 1 && safeIndex > 0)
+                        Positioned(
+                          left: 6,
+                          top: 0,
+                          bottom: 0,
+                          child: Center(
+                            child: IconButton(
+                              style: IconButton.styleFrom(
+                                backgroundColor: Colors.black54,
+                                foregroundColor: Colors.white,
+                              ),
+                              icon: const Icon(Icons.chevron_left, size: 24),
+                              onPressed: () {
+                                _photoPageCtrl.previousPage(
+                                  duration: const Duration(milliseconds: 220),
+                                  curve: Curves.easeOut,
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      if (totalCount > 1 && safeIndex < totalCount - 1)
+                        Positioned(
+                          right: 6,
+                          top: 0,
+                          bottom: 0,
+                          child: Center(
+                            child: IconButton(
+                              style: IconButton.styleFrom(
+                                backgroundColor: Colors.black54,
+                                foregroundColor: Colors.white,
+                              ),
+                              icon: const Icon(Icons.chevron_right, size: 24),
+                              onPressed: () {
+                                _photoPageCtrl.nextPage(
+                                  duration: const Duration(milliseconds: 220),
+                                  curve: Curves.easeOut,
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
           ),
         ],
@@ -8555,27 +8703,31 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: const Color(0xFF1E3A8A),
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
-        titleSpacing: 6,
+        toolbarHeight: 44,
+        titleSpacing: 4,
         title: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
             children: [
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                tooltip: '설정 (공유방 & Gemini AI)',
-                onPressed: _openSettingsDialog,
-                icon: Icon(
-                  _geminiApiKey.trim().isEmpty
-                      ? Icons.settings
-                      : (_geminiKeyVerified
-                          ? Icons.auto_awesome
-                          : Icons.warning_amber_rounded),
-                  color: _geminiApiKey.trim().isEmpty
-                      ? Colors.white
-                      : (_geminiKeyVerified
-                          ? Colors.amberAccent
-                          : Colors.redAccent),
-                  size: 20,
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: _openSettingsDialog,
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
+                  child: Icon(
+                    _geminiApiKey.trim().isEmpty
+                        ? Icons.settings
+                        : (_geminiKeyVerified
+                            ? Icons.auto_awesome
+                            : Icons.warning_amber_rounded),
+                    color: _geminiApiKey.trim().isEmpty
+                        ? Colors.white
+                        : (_geminiKeyVerified
+                            ? Colors.amberAccent
+                            : Colors.redAccent),
+                    size: 18,
+                  ),
                 ),
               ),
               _buildTopActionBtn(
@@ -8645,8 +8797,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           final nextList = _filteredRecords;
                           _selectedRecord =
                               nextList.isNotEmpty ? nextList.first : null;
-                          _selectedPhotoIndex = 0;
                         });
+                        _resetPhotoPageToZero();
                       },
                     ),
                   );
@@ -8766,7 +8918,9 @@ class _HomeScreenState extends State<HomeScreen> {
             heroTag: 'gallery_btn',
             backgroundColor: Colors.white,
             foregroundColor: const Color(0xFF1E3A8A),
-            tooltip: '갤러리에서 사진 불러오기',
+            tooltip: _selectedCategoryFilter == DocCategory.pdfConvert
+                ? '갤러리에서 여러 장 멀티선택하여 PDF 만들기'
+                : '갤러리에서 사진 불러오기',
             onPressed: _isBusy
                 ? null
                 : () => _captureAndAddRecord(ImageSource.gallery),
