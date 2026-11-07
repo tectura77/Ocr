@@ -2,2358 +2,868 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>증빙서류 스냅 - [현장공유방/테스트현장] 자재송장</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+  <title>증빙서류 스냅 - 자재송장_통합</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", sans-serif;
-      background: #f8fafc;
-      color: #0f172a;
-      height: 100vh;
-      height: 100dvh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    /* 1) 앱 상단 AppBar 완벽 재현 */
-    header.app-bar {
-      background: #1e3a8a;
-      color: #ffffff;
-      padding: 8px 12px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-shrink: 0;
-      gap: 6px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-      z-index: 20;
-    }
-    header.app-bar .title-wrap {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 15px;
-      font-weight: 700;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    header.app-bar .actions-wrap {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-    .app-btn {
-      border: none;
-      border-radius: 6px;
-      padding: 5px 9px;
-      font-size: 11.5px;
-      font-weight: 700;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      white-space: nowrap;
-    }
-    .app-btn.merge { background: #f59e0b; color: #0f172a; }
-    .app-btn.save { background: #ffffff; color: #1e3a8a; }
-
-    /* 2) 상단 1줄: 문서 종류 선택 탭 (전체 | 공문(수신) | 공문(발신) | 자재송장 | 출장비 | 병원비) */
-    #major-tabs-bar {
-      height: 42px;
-      background: #f1f5f9;
-      padding: 0 10px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      overflow-x: auto;
-      flex-shrink: 0;
-      border-bottom: 1px solid #e2e8f0;
-    }
-    #major-tabs-bar::-webkit-scrollbar { display: none; }
-    .chip-btn {
-      padding: 5px 11px;
-      border-radius: 8px;
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
-      color: #334155;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    .chip-btn.active {
-      background: #dbeafe;
-      border-color: #1e3a8a;
-      color: #1e3a8a;
-      font-weight: 700;
-    }
-
-    /* 3) 상단 2줄: 요약 합계 & 기간필터 & 서브카테고리/구분/제품명 필터 칩 바 */
-    #summary-filter-bar {
-      background: #eff6ff;
-      border-bottom: 1px solid #bfdbfe;
-      padding: 7px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-    .summary-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    .summary-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: #1e3a8a;
-    }
-    .summary-sub {
-      font-size: 12px;
-      font-weight: 700;
-      color: #4338ca;
-    }
-    .chip-scroll-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      overflow-x: auto;
-      padding-bottom: 1px;
-    }
-    .chip-scroll-row::-webkit-scrollbar { display: none; }
-    .sub-chip {
-      padding: 4px 10px;
-      border-radius: 7px;
-      border: 1px solid #c7d2fe;
-      background: #ffffff;
-      color: #1e293b;
-      font-size: 11.5px;
-      font-weight: 500;
-      cursor: pointer;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    .sub-chip.active {
-      background: #e0e7ff;
-      border-color: #4338ca;
-      color: #1e1b4b;
-      font-weight: 700;
-    }
-    .amber-chip {
-      padding: 4px 10px;
-      border-radius: 7px;
-      border: 1px solid #fcd34d;
-      background: #fffbeb;
-      color: #451a03;
-      font-size: 11.5px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    .amber-chip.active {
-      background: #fcd34d;
-      border-color: #d97706;
-      color: #451a03;
-      font-weight: 700;
-    }
-    .period-bar {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-      font-size: 11.5px;
-    }
-    .period-badge {
-      background: #1e3a8a;
-      color: #ffffff;
-      font-weight: 700;
-      padding: 4px 9px;
-      border-radius: 7px;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .period-nav-btn {
-      background: #ffffff;
-      border: 1px solid #93c5fd;
-      color: #1e3a8a;
-      border-radius: 6px;
-      padding: 2px 8px;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    .period-input {
-      border: 1px solid #93c5fd;
-      border-radius: 5px;
-      padding: 2px 5px;
-      font-size: 11px;
-      color: #1e3a8a;
-      background: #ffffff;
-    }
-
-    /* 4) 메인 분할 화면 (가로 모드: 좌측 표 + 좌우 조절바 + 우측 사진 / 세로 모드: 위쪽 표 + 상하 조절바 + 아래쪽 사진) */
-    #main-split {
-      flex: 1;
-      display: flex;
-      flex-direction: row;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-    }
-    #left-list-pane {
-      width: 48%;
-      height: 100%;
-      overflow: auto;
-      background: #ffffff;
-      flex-shrink: 0;
-      -webkit-overflow-scrolling: touch;
-    }
-    #resizer-bar {
-      position: relative;
-      z-index: 30;
-      width: 26px;
-      height: 100%;
-      background: #cfd8dc;
-      cursor: ew-resize;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      user-select: none;
-      -webkit-user-select: none;
-      touch-action: none;
-      border-left: 1px solid #90a4ae;
-      border-right: 1px solid #90a4ae;
-      flex-shrink: 0;
-    }
-    /* 모바일 가로보기에서도 손가락으로 쉽게 잡히도록 좌우/상하 투명 터치 영역 확장 */
-    #resizer-bar::before {
-      content: '';
-      position: absolute;
-      top: -10px;
-      bottom: -10px;
-      left: -14px;
-      right: -14px;
-      z-index: 31;
-    }
-    #resizer-handle-content {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    #resizer-pill {
-      width: 4px;
-      height: 44px;
-      background: #1e3a8a;
-      border-radius: 999px;
-    }
-    #resizer-text {
-      display: none;
-      font-size: 11px;
-      font-weight: 600;
-      color: #263238;
-      white-space: nowrap;
-    }
-    #right-photo-pane {
-      flex: 1;
-      width: auto;
-      height: 100%;
-      background: #0f172a;
-      position: relative;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      touch-action: none;
-    }
-
-    #main-split.portrait-mode {
-      flex-direction: column;
-    }
-    #main-split.portrait-mode #left-list-pane {
-      width: 100% !important;
-      height: 44%;
-    }
-    #main-split.portrait-mode #resizer-bar {
-      width: 100%;
-      height: 24px;
-      cursor: ns-resize;
-      border-left: none;
-      border-right: none;
-      border-top: 1px solid #90a4ae;
-      border-bottom: 1px solid #90a4ae;
-    }
-    #main-split.portrait-mode #resizer-pill {
-      display: none;
-    }
-    #main-split.portrait-mode #resizer-text {
-      display: inline-block;
-    }
-    #main-split.portrait-mode #right-photo-pane {
-      width: 100%;
-      height: auto;
-      flex: 1;
-    }
-
-    #left-list-pane.grab-scrolling {
-      cursor: grabbing !important;
-      user-select: none;
-    }
-
-    /* 5) 앱의 _buildFixedHeaderCell & _buildFixedDataCell + 마우스 셀 가로 폭 조절 + 상단 제목행 완벽 고정(sticky) */
-    table.app-fixed-table {
-      table-layout: fixed;
-      border-collapse: separate;
-      border-spacing: 0;
-      text-align: center;
-    }
-    table.app-fixed-table thead th {
-      position: relative;
-      background: #e2e8f0;
-      color: #1e293b;
-      font-size: 11px;
-      line-height: 1.2;
-      font-weight: 700;
-      padding: 7px 6px 7px 4px;
-      border-right: 1px solid #94a3b8;
-      border-bottom: 2px solid #64748b;
-      position: -webkit-sticky;
-      position: sticky;
-      top: 0;
-      z-index: 15;
-      word-break: keep-all;
-      overflow-wrap: break-word;
-      user-select: none;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-    }
-    table.app-fixed-table thead th.sortable-th {
-      cursor: pointer;
-    }
-    table.app-fixed-table thead th.sortable-th:hover {
-      background: #cbd5e1;
-    }
-    table.app-fixed-table thead th.sorted-active {
-      background: #dbeafe;
-      color: #1e3a8a;
-    }
-    .col-resizer {
-      position: absolute;
-      top: 0;
-      right: 0;
-      width: 7px;
-      height: 100%;
-      cursor: col-resize;
-      z-index: 20;
-      touch-action: none;
-    }
-    .col-resizer:hover, .col-resizer.resizing {
-      background: rgba(37, 99, 235, 0.45);
-    }
-    table.app-fixed-table td {
-      padding: 7px 4px;
-      border-right: 1px solid #cbd5e1;
-      border-bottom: 1px solid #cbd5e1;
-      color: #0f172a;
-      font-size: 11px;
-      line-height: 1.25;
-      font-weight: 500;
-      cursor: pointer;
-      word-break: keep-all;
-      overflow-wrap: break-word;
-      vertical-align: middle;
-    }
-    table.app-fixed-table tr:hover td { background: #f8fafc; }
-    table.app-fixed-table tr.active td {
-      background: #dbeafe;
-      font-weight: 700;
-    }
-    .row-btn {
-      border: none;
-      background: transparent;
-      cursor: pointer;
-      font-size: 13px;
-      padding: 2px 4px;
-      border-radius: 4px;
-    }
-    .row-btn:hover { background: rgba(0,0,0,0.08); }
-
-    /* 6) 우측/하단 InteractiveViewer 사진 확대·축소·드래그·손가락 2개 핀치줌 컨트롤 */
-    #photo-viewport {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      cursor: grab;
-      touch-action: none;
-    }
-    #photo-viewport:active { cursor: grabbing; }
-    #preview-img {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      transform-origin: center center;
-      transition: transform 0.05s ease-out;
-      user-select: none;
-      -webkit-user-drag: none;
-    }
-    #zoom-controls {
-      position: absolute;
-      right: 10px;
-      bottom: 10px;
-      display: flex;
-      gap: 4px;
-      background: rgba(15, 23, 42, 0.78);
-      padding: 4px 6px;
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.2);
-      z-index: 10;
-    }
-    .zoom-btn {
-      background: #1e3a8a;
-      color: #ffffff;
-      border: none;
-      border-radius: 5px;
-      padding: 4px 8px;
-      font-size: 11.5px;
-      font-weight: 700;
-      cursor: pointer;
-    }
-
-    /* 7) 항목 수정 모달 다이얼로그 */
-    #edit-modal-backdrop {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.55);
-      z-index: 100;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-    }
-    #edit-modal-box {
-      background: #ffffff;
-      border-radius: 12px;
-      width: 100%;
-      max-width: 420px;
-      max-height: 88vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-    }
-    #edit-modal-header {
-      background: #1e3a8a;
-      color: #ffffff;
-      padding: 11px 14px;
-      font-size: 14px;
-      font-weight: 700;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    #edit-modal-body {
-      padding: 14px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 9px;
-    }
-    .field-group {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-    }
-    .field-group label {
-      font-size: 11.5px;
-      font-weight: 700;
-      color: #334155;
-    }
-    .field-group input, .field-group select {
-      border: 1px solid #cbd5e1;
-      border-radius: 6px;
-      padding: 7px 9px;
-      font-size: 12.5px;
-      color: #0f172a;
-    }
-    #edit-modal-footer {
-      padding: 10px 14px;
-      border-top: 1px solid #e2e8f0;
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      background: #f8fafc;
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif; background: #f8fafc; color: #0f172a; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    header { background: #1e3a8a; color: #fff; padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-shrink: 0; }
+    .hdr-title { font-size: 14px; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hdr-btns { display: flex; gap: 5px; flex-shrink: 0; }
+    .hdr-btn { border: none; border-radius: 6px; padding: 6px 10px; font-size: 11.5px; font-weight: 800; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .hdr-btn.pdf { background: #f59e0b; color: #fff; }
+    .hdr-btn.save { background: #fff; color: #1e3a8a; }
+    .chip-bar { background: #fff; padding: 5px 8px; border-bottom: 1px solid #cbd5e1; display: flex; gap: 6px; overflow-x: auto; flex-shrink: 0; align-items: center; }
+    .chip-btn { border: 1px solid #94a3b8; background: #fff; color: #1e293b; padding: 4px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .chip-btn.active { background: #dbeafe; color: #1e3a8a; border-color: #1e3a8a; }
+    .summary-panel { background: #f8fafc; padding: 6px 10px; border-bottom: 1px solid #cbd5e1; flex-shrink: 0; display: flex; flex-direction: column; gap: 5px; }
+    .sum-title { font-size: 13px; font-weight: 900; color: #1e3a8a; }
+    .sum-sub { font-size: 11px; font-weight: 800; color: #92400e; }
+    .sub-row { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; align-items: center; }
+    #workspace { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    @media (orientation: landscape) { #workspace { flex-direction: row; } }
+    #list-pane { flex: 0 0 46%; overflow: auto; background: #fff; }
+    #resizer-bar { background: #cbd5e1; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 900; color: #1e3a8a; user-select: none; -webkit-user-select: none; touch-action: none; flex-shrink: 0; z-index: 10; border-top: 1px solid #94a3b8; border-bottom: 1px solid #94a3b8; }
+    @media (orientation: portrait) { #resizer-bar { height: 28px; cursor: row-resize; } }
+    @media (orientation: landscape) { #resizer-bar { width: 26px; writing-mode: vertical-rl; cursor: col-resize; } }
+    #photo-pane { flex: 1; background: #0f172a; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+    #photo-page-bar { background: rgba(15,23,42,0.92); padding: 6px 8px; display: none; gap: 6px; overflow-x: auto; align-items: center; border-bottom: 1px solid #334155; z-index: 5; }
+    .page-tab { border: 1px solid #475569; background: #334155; color: #e2e8f0; padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 800; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .page-tab.active { background: #2563eb; color: #fff; border-color: #60a5fa; }
+    .page-del { background: #dc2626; color: #fff; border: none; border-radius: 4px; padding: 1px 5px; font-size: 10px; font-weight: 900; cursor: pointer; margin-left: 2px; }
+    .page-add { background: #f59e0b; color: #0f172a; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11.5px; font-weight: 900; cursor: pointer; white-space: nowrap; }
+    #photo-viewport { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; touch-action: none; user-select: none; -webkit-user-select: none; }
+    #preview-img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center center; will-change: transform; pointer-events: none; }
+    .zoom-box { position: absolute; right: 10px; bottom: 10px; background: rgba(15,23,42,0.85); border: 1px solid #334155; border-radius: 8px; padding: 4px; display: flex; gap: 4px; z-index: 6; }
+    .zoom-btn { background: #1e3a8a; color: #fff; border: none; border-radius: 5px; padding: 4px 8px; font-size: 11px; font-weight: 800; cursor: pointer; }
+    table { width: max-content; min-width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th { position: sticky; top: 0; background: #e2e8f0; color: #1e293b; font-size: 11.5px; font-weight: 900; border: 1px solid #cbd5e1; padding: 7px 4px; text-align: center; cursor: pointer; z-index: 2; user-select: none; }
+    th.hi-group { background: #fef3c7; color: #92400e; }
+    th.sorted-col { background: #dbeafe; color: #1e3a8a; }
+    td { border: 1px solid #e2e8f0; padding: 7px 6px; font-size: 11.5px; font-weight: 600; text-align: center; word-break: break-word; white-space: normal; line-height: 1.3; }
+    tr.selected { background: #dbeafe !important; }
+    @media print {
+      header, .chip-bar, .summary-panel, #list-pane, #resizer-bar, #photo-page-bar, .zoom-box { display: none !important; }
     }
   </style>
 </head>
 <body>
-  <header class="app-bar">
-    <div class="title-wrap">
-      <span>증빙서류 스냅 - [현장공유방/테스트현장] 자재송장</span>
-      <span style="font-size:12px; font-weight:500; color:#fde047;">(<span id="count-label">4</span>건)</span>
-    </div>
-    <div class="bar-actions" style="display:flex; gap:6px; align-items:center;">
-      <button class="app-btn merge" onclick="exportFilteredPdfInHtml()" title="현재 조회된 증빙서류와 병원비 추가 증빙첨부 사진을 한 묶음 PDF로 인쇄/저장">📄 PDF 내보내기</button>
-      <button class="app-btn save" onclick="downloadMergedHtml()" title="수정한 내용이나 삭제한 내역이 반영된 HTML 파일 저장">💾 수정본 HTML 저장</button>
+  <header>
+    <div class="hdr-title">증빙서류 스냅 - 자재송장_통합</div>
+    <div class="hdr-btns">
+      <button class="hdr-btn pdf" onclick="exportPdfPrint()">📄 PDF 내보내기</button>
+      <button class="hdr-btn save" onclick="downloadModifiedHtml()">💾 수정본 HTML 저장</button>
     </div>
   </header>
-  <input type="file" id="proof-file-input" accept="image/*" multiple style="display:none;" onchange="handleProofFilesAdded(this.files)" />
-
-  <!-- 1) 앱과 100% 동일한 상단 카테고리 탭 바 -->
-  <div id="major-tabs-bar"></div>
-
-  <!-- 2) 앱과 100% 동일한 상단 요약/기간필터/서브카테고리/구분/품목 필터 영역 -->
-  <div id="summary-filter-bar" style="display:none;"></div>
-
-  <!-- 3) 앱과 100% 동일한 상하(세로)/좌우(가로) 분할 리스트 & 사진 뷰어 -->
-  <div id="main-split">
-    <div id="left-list-pane"><table class="app-fixed-table" style="width:780px;"><thead><tr><th style="width:64px;">날짜</th><th style="width:72px;">제품명</th><th style="width:62px;">규격명</th><th style="width:44px;">단위</th><th style="width:64px;">수량</th><th style="width:68px;">누적수량</th><th style="width:78px;">공급자</th><th style="width:122px;">주문송장번호</th><th style="width:64px;">올린사람</th><th style="width:74px;">결재</th><th style="width:68px;">수정/삭제</th></tr></thead><tbody><tr class="active" data-id="c2359ef5-74d2-43f5-95fd-2f2766323e64" onclick="selectRow('c2359ef5-74d2-43f5-95fd-2f2766323e64')"><td style="width:64px;">2026.06.25</td><td style="width:72px;">PC기둥</td><td style="width:62px;">800×300×6750</td><td style="width:44px;">매</td><td style="width:64px;">5</td><td style="width:68px; color:#1e3a8a; font-weight:700;">5</td><td style="width:78px;">(주) 창영</td><td style="width:122px;">13-211-0100</td><td style="width:64px; color:#1e3a8a; font-weight:700;">이경훈</td><td style="width:74px; font-weight:700;" onclick="event.stopPropagation(); onTapApprovalCellInHtml('c2359ef5-74d2-43f5-95fd-2f2766323e64')">결재</td><td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal('c2359ef5-74d2-43f5-95fd-2f2766323e64')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow('c2359ef5-74d2-43f5-95fd-2f2766323e64')">🗑️</button></td></tr><tr class="" data-id="7fc121d9-911c-4d54-a262-e76390eb9899" onclick="selectRow('7fc121d9-911c-4d54-a262-e76390eb9899')"><td style="width:64px;">2020.09.30</td><td style="width:72px;">레미콘</td><td style="width:62px;">25-24-500</td><td style="width:44px;">m3</td><td style="width:64px;">6.00</td><td style="width:68px; color:#1e3a8a; font-weight:700;">6</td><td style="width:78px;">선일레미콘(주)</td><td style="width:122px;">82</td><td style="width:64px; color:#1e3a8a; font-weight:700;">이경훈</td><td style="width:74px; font-weight:700;" onclick="event.stopPropagation(); onTapApprovalCellInHtml('7fc121d9-911c-4d54-a262-e76390eb9899')">결재</td><td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal('7fc121d9-911c-4d54-a262-e76390eb9899')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow('7fc121d9-911c-4d54-a262-e76390eb9899')">🗑️</button></td></tr><tr class="" data-id="15f80de4-a737-434f-9155-761438b6fe86" onclick="selectRow('15f80de4-a737-434f-9155-761438b6fe86')"><td style="width:64px;">2021.09.08</td><td style="width:72px;">고장력철근</td><td style="width:62px;">D16MM</td><td style="width:44px;">ton</td><td style="width:64px;">3.744</td><td style="width:68px; color:#1e3a8a; font-weight:700;">3.744</td><td style="width:78px;">현대제철</td><td style="width:122px;">I-1-20210908-01205</td><td style="width:64px; color:#1e3a8a; font-weight:700;">이경훈</td><td style="width:74px; font-weight:700;" onclick="event.stopPropagation(); onTapApprovalCellInHtml('15f80de4-a737-434f-9155-761438b6fe86')">결재</td><td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal('15f80de4-a737-434f-9155-761438b6fe86')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow('15f80de4-a737-434f-9155-761438b6fe86')">🗑️</button></td></tr><tr class="" data-id="1609b22a-bc48-4c81-a590-45c24c24eede" onclick="selectRow('1609b22a-bc48-4c81-a590-45c24c24eede')"><td style="width:64px;">2021.09.08</td><td style="width:72px;">고장력철근</td><td style="width:62px;">D32MM</td><td style="width:44px;">ton</td><td style="width:64px;">15.952</td><td style="width:68px; color:#1e3a8a; font-weight:700;">15.952</td><td style="width:78px;">현대제철</td><td style="width:122px;">I-1-20210908-01205</td><td style="width:64px; color:#1e3a8a; font-weight:700;">이경훈</td><td style="width:74px; font-weight:700;" onclick="event.stopPropagation(); onTapApprovalCellInHtml('1609b22a-bc48-4c81-a590-45c24c24eede')">결재</td><td style="width:68px;"><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal('1609b22a-bc48-4c81-a590-45c24c24eede')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow('1609b22a-bc48-4c81-a590-45c24c24eede')">🗑️</button></td></tr></tbody></table></div>
-    <div id="resizer-bar" title="끌어서 리스트와 사진 크기 조절">
-      <div id="resizer-handle-content">
-        <div id="resizer-pill"></div>
-        <span id="resizer-text">☰ 위아래로 끌어서 화면 크기 조절 (표는 좌우로 드래그 가능)</span>
-      </div>
-    </div>
-    <div id="right-photo-pane">
-      <div id="photo-tabs-bar" style="display:none; position:absolute; top:8px; left:8px; right:8px; z-index:12; overflow-x:auto; white-space:nowrap;"></div>
+  <div id="major-tabs-bar" class="chip-bar"></div>
+  <div id="summary-bar" class="summary-panel" style="display:none;"></div>
+  <div id="workspace">
+    <div id="list-pane"><table id="doc-table"><thead id="doc-thead"></thead><tbody id="doc-tbody"></tbody></table></div>
+    <div id="resizer-bar">≡ 위아래로 끌어서 화면 크기 조절 (표는 좌우로 드래그 가능)</div>
+    <div id="photo-pane">
+      <div id="photo-page-bar"></div>
       <div id="photo-viewport">
-        <img id="preview-img" src="photos/doc_c2359ef5-74d2-43f5-95fd-2f2766323e64.jpg" style="display:block;" alt="증빙서류 사진" />
-        <div id="empty-photo-msg" style="display:none; color:#cbd5e1; font-size:13px; text-align:center; padding:16px;">
-          목록에서 항목을 선택하면<br/>이곳에 증빙사진이 크게 표시됩니다.
-        </div>
+        <img id="preview-img" alt="미리보기" />
       </div>
-      <div id="zoom-controls">
-        <button class="zoom-btn" onclick="zoomPhoto(-0.35)">－ 축소</button>
-        <button class="zoom-btn" onclick="resetPhotoZoom()">100%</button>
-        <button class="zoom-btn" onclick="zoomPhoto(0.35)">＋ 확대</button>
+      <div class="zoom-box">
+        <button class="zoom-btn" onclick="changeZoom(-0.3)">－ 축소</button>
+        <button class="zoom-btn" id="zoom-label" onclick="resetZoom()">100%</button>
+        <button class="zoom-btn" onclick="changeZoom(0.3)">＋ 확대</button>
       </div>
     </div>
   </div>
-
-  <!-- 4) 앱과 동일한 항목 수정 모달 -->
-  <div id="edit-modal-backdrop" onclick="if(event.target===this) closeEditModal()">
-    <div id="edit-modal-box">
-      <div id="edit-modal-header">
-        <span>항목 수정</span>
-        <button onclick="closeEditModal()" style="background:none; border:none; color:#fff; font-size:16px; cursor:pointer;">✕</button>
-      </div>
-      <div id="edit-modal-body"></div>
-      <div id="edit-modal-footer">
-        <button class="chip-btn" onclick="closeEditModal()">취소</button>
-        <button class="app-btn merge" style="background:#1e3a8a; color:#fff; padding:6px 14px;" onclick="saveEditedRecord()">저장</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 5) 검토·결재 이력 전용 열람 모달 (HTML 내보내기 파일에서는 결재자 이름을 임의로 수정할 수 없도록 읽기 전용으로 표시) -->
-  <div id="approval-modal-backdrop" onclick="if(event.target===this) closeApprovalModal()" style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.55); z-index:950; align-items:center; justify-content:center; padding:14px;">
-    <div style="background:#ffffff; width:100%; max-width:380px; border-radius:14px; overflow:hidden; box-shadow:0 20px 35px rgba(0,0,0,0.3); display:flex; flex-direction:column;">
-      <div id="approval-modal-header" style="background:#1e3a8a; color:#fff; padding:12px 15px; display:flex; align-items:center; justify-content:space-between; font-weight:700; font-size:14px;">
-        <span id="approval-modal-title">검토 및 결재 현황 확인</span>
-        <button onclick="closeApprovalModal()" style="background:none; border:none; color:#fff; font-size:16px; cursor:pointer;">✕</button>
-      </div>
-      <div id="approval-modal-body" style="padding:14px; max-height:68vh; overflow-y:auto; display:flex; flex-direction:column; gap:8px;"></div>
-      <div id="approval-modal-footer" style="padding:10px 14px; border-top:1px solid #e2e8f0; display:flex; justify-content:flex-end; gap:8px; background:#f8fafc;">
-        <button class="chip-btn" onclick="closeApprovalModal()">닫기</button>
-      </div>
-    </div>
-  </div>
-
+  <input type="file" id="extra-file-input" accept="image/*" multiple style="display:none;" onchange="handleExtraFilesSelected(event)" />
   <script>
-    const archiveRecords = /*ARCHIVE_DATA_START*/ [{"id":"c2359ef5-74d2-43f5-95fd-2f2766323e64","category":"자재송장","createdAt":"2026-11-04 18:58:23","imagePath":"photos/doc_c2359ef5-74d2-43f5-95fd-2f2766323e64.jpg","remoteImagePath":"photos/doc_c2359ef5-74d2-43f5-95fd-2f2766323e64.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2026.06.25","orderNumber":"13-211-0100","productName":"PC기둥","specName":"800×300×6750","unit":"매","quantity":"5","weight":"5","supplierName":"(주) 창영","amount":"0","remoteImagePath":"photos/doc_c2359ef5-74d2-43f5-95fd-2f2766323e64.jpg"}},{"id":"7fc121d9-911c-4d54-a262-e76390eb9899","category":"자재송장","createdAt":"2026-11-04 18:53:36","imagePath":"photos/doc_7fc121d9-911c-4d54-a262-e76390eb9899.jpg","remoteImagePath":"photos/doc_7fc121d9-911c-4d54-a262-e76390eb9899.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2020.09.30","orderNumber":"82","productName":"레미콘","specName":"25-24-500","unit":"m3","quantity":"6.00","weight":"6.00","supplierName":"선일레미콘(주)","amount":"0","remoteImagePath":"photos/doc_7fc121d9-911c-4d54-a262-e76390eb9899.jpg"}},{"id":"15f80de4-a737-434f-9155-761438b6fe86","category":"자재송장","createdAt":"2026-11-01 16:22:30","imagePath":"photos/doc_15f80de4-a737-434f-9155-761438b6fe86.jpg","remoteImagePath":"photos/doc_15f80de4-a737-434f-9155-761438b6fe86.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2021.09.08","orderNumber":"I-1-20210908-01205","productName":"고장력철근","specName":"D16MM","unit":"ton","quantity":"3.744","weight":"3.744","supplierName":"현대제철","amount":"0","remoteImagePath":"photos/doc_15f80de4-a737-434f-9155-761438b6fe86.jpg"}},{"id":"1609b22a-bc48-4c81-a590-45c24c24eede","category":"자재송장","createdAt":"2026-11-01 16:22:30","imagePath":"photos/doc_1609b22a-bc48-4c81-a590-45c24c24eede.jpg","remoteImagePath":"photos/doc_1609b22a-bc48-4c81-a590-45c24c24eede.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2021.09.08","orderNumber":"I-1-20210908-01205","productName":"고장력철근","specName":"D32MM","unit":"ton","quantity":"15.952","weight":"15.952","supplierName":"현대제철","amount":"0","remoteImagePath":"photos/doc_1609b22a-bc48-4c81-a590-45c24c24eede.jpg"}}] /*ARCHIVE_DATA_END*/;
-    let currentAppUserName = localStorage.getItem('doc_snap_user_name') || "이경훈" || '';
+    const archiveRecords = /*ARCHIVE_DATA_START*/ [{"id":"c2359ef5-74d2-43f5-95fd-2f2766323e64","category":"자재송장","createdAt":"2026-11-04 18:58:23","imagePath":"photos/doc_c2359ef5-74d2-43f5-95fd-2f2766323e64.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2026.06.25","orderNumber":"13-211-0100","productName":"PC기둥","specName":"800×300×6750","unit":"매","quantity":"5","weight":"5","supplierName":"(주) 창영","amount":"0","remoteImagePath":"photos/doc_c2359ef5-74d2-43f5-95fd-2f2766323e64.jpg"}},{"id":"7fc121d9-911c-4d54-a262-e76390eb9899","category":"자재송장","createdAt":"2026-11-04 18:53:36","imagePath":"photos/doc_7fc121d9-911c-4d54-a262-e76390eb9899.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2020.09.30","orderNumber":"82","productName":"레미콘","specName":"25-24-500","unit":"m3","quantity":"6.00","weight":"6.00","supplierName":"선일레미콘(주)","amount":"0","remoteImagePath":"photos/doc_7fc121d9-911c-4d54-a262-e76390eb9899.jpg"}},{"id":"15f80de4-a737-434f-9155-761438b6fe86","category":"자재송장","createdAt":"2026-11-01 16:22:30","imagePath":"photos/doc_15f80de4-a737-434f-9155-761438b6fe86.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2021.09.08","orderNumber":"I-1-20210908-01205","productName":"고장력철근","specName":"D16MM","unit":"ton","quantity":"3.744","weight":"3.744","supplierName":"현대제철","amount":"0","remoteImagePath":"photos/doc_15f80de4-a737-434f-9155-761438b6fe86.jpg"}},{"id":"1609b22a-bc48-4c81-a590-45c24c24eede","category":"자재송장","createdAt":"2026-11-01 16:22:30","imagePath":"photos/doc_1609b22a-bc48-4c81-a590-45c24c24eede.jpg","base64Image":"","fields":{"subCategory":"","uploaderName":"이경훈","arrivalDate":"2021.09.08","orderNumber":"I-1-20210908-01205","productName":"고장력철근","specName":"D32MM","unit":"ton","quantity":"15.952","weight":"15.952","supplierName":"현대제철","amount":"0","remoteImagePath":"photos/doc_1609b22a-bc48-4c81-a590-45c24c24eede.jpg"}}] /*ARCHIVE_DATA_END*/;
     const ALL_TABS = ["자재송장"];
-    const TRAVEL_DIVS = ['전체', '자차', '택시', '기차', '식대', '통행료'];
-    const IS_ALL_OFFICIAL_DOC = archiveRecords.length > 0 && archiveRecords.every(function(r) {
-      return r.category === '공문(수신)' || r.category === '공문(발신)';
-    });
-
-    let selectedCategoryFilter = "자재송장";
-    if (!ALL_TABS.includes(selectedCategoryFilter)) {
-      selectedCategoryFilter = ALL_TABS[0];
-    } else if (selectedCategoryFilter !== '전체' && !archiveRecords.some(function(r) { return r.category === selectedCategoryFilter; })) {
-      selectedCategoryFilter = ALL_TABS[0];
-    }
-
-    let selectedSubCategoryFilter = '전체';
-    let selectedTravelDivisionFilter = '전체';
-    let selectedInvoiceProductFilter = '전체';
-    let businessCardSearchQuery = '';
-    let selectedMedicalClaimFilter = '전체'; // '전체' | '미청구' | '청구완료'
-
-    // ★ 병원비(카테고리 / 환자성명 / 청구여부) & 자재송장(제품명 / 규격명) 열 제목 클릭 합산 기준 상태
+    const EXPORTER_USER = "이경훈";
+    let selectedCategoryFilter = ALL_TABS[0] || '자재송장';
+    let selectedSubCat = '전체';
+    let selectedClaimFilter = '전체';
+    let selectedTravelDiv = '전체';
+    let selectedProductFilter = '전체';
+    let sortCol = 'date';
+    let sortAsc = false;
     let medSumByCat = true;
     let medSumByPatient = false;
-    let medSumByClaim = false;
-    let invSumByProduct = true;
-    let invSumBySpec = false;
+    let invGroupProduct = true;
+    let invGroupSpec = false;
+    let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
+    let selectedPageIdx = 0;
 
-    function isDirectorUserName(name) {
-      if (!name) return false;
-      return String(name).indexOf('소장') !== -1;
+    // 줌 & 패닝 상태 (두 손가락 핀치 줌 + 한 손가락 이동 + 마우스 휠)
+    let currentZoom = 1.0;
+    let panX = 0;
+    let panY = 0;
+
+    function escapeHtml(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function parseApprovalEntries(item) {
-      const f = (item && item.fields) || {};
-      const raw = f.approvalsJson || '';
-      if (!raw) return [];
-      try {
-        const arr = JSON.parse(raw);
-        if (!Array.isArray(arr)) return [];
-        const reviewers = [];
-        const directors = [];
-        arr.forEach(function(e) {
-          if (!e || typeof e !== 'object') return;
-          const nm = String(e.name || '').trim();
-          if (!nm) return;
-          const dt = dotDate(e.date || '');
-          const isDir = isDirectorUserName(nm) || e.role === '결재';
-          const entry = {
-            name: nm,
-            date: dt === '-' ? '' : dt,
-            role: isDir ? '결재' : '검토'
-          };
-          if (isDir) directors.push(entry);
-          else reviewers.push(entry);
-        });
-        return reviewers.concat(directors);
-      } catch (_) {
-        return [];
-      }
+    function fmtNum(n) {
+      const v = parseInt(String(n || '0').replace(/[^0-9-]/g, ''), 10) || 0;
+      return v.toLocaleString('ko-KR');
     }
 
-    function isDirectorApproved(item) {
-      const list = parseApprovalEntries(item);
-      return list.some(function(e) { return isDirectorUserName(e.name) || e.role === '결재'; });
+    function fmtQty(val) {
+      const v = parseFloat(String(val || '0').replace(/[^0-9.-]/g, '')) || 0;
+      if (Math.abs(v - Math.round(v)) < 0.0005) return Math.round(v).toLocaleString('ko-KR');
+      return Number(v.toFixed(3)).toString();
     }
 
-    function buildApprovalCellHtml(item) {
-      const list = parseApprovalEntries(item);
-      const isComp = isDirectorApproved(item);
-      const hasRev = list.length > 0;
-      const bg = isComp ? '#dcfce7' : (hasRev ? '#dbeafe' : '#f8fafc');
-      const bd = isComp ? '#22c55e' : (hasRev ? '#3b82f6' : '#94a3b8');
-      const col = isComp ? '#166534' : (hasRev ? '#1e3a8a' : '#334155');
-      const primary = isComp ? '결재완료' : (hasRev ? ('검토(' + list.length + ')') : '결재');
-      let sub = '';
-      if (hasRev) {
-        const last = list[list.length - 1];
-        const shortDt = (last.date && last.date.length >= 5) ? last.date.substring(5) : '';
-        sub = last.name + (shortDt ? (' ' + shortDt) : '');
-      }
-      const sid = escapeHtml(item.id);
-      return '<td onclick="event.stopPropagation(); onTapApprovalCellInHtml(\'' + sid + '\')" style="cursor:pointer; padding:4px 3px;">' +
-        '<div style="background:' + bg + '; border:1px solid ' + bd + '; color:' + col + '; border-radius:6px; padding:3px 4px; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.15;">' +
-        '<span style="font-size:10.5px; font-weight:700;">' + escapeHtml(primary) + '</span>' +
-        (hasRev ? ('<span style="font-size:9px; font-weight:600; opacity:0.88; margin-top:1px; max-width:66px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(sub) + '</span>') : '') +
-        '</div></td>';
+    function parseInvoiceQty(r) {
+      const f = r.fields || {};
+      return parseFloat(String(f.quantity || '0').replace(/,/g, '').replace(/[^0-9.-]/g, '')) || 0;
     }
 
-    let currentApprovalModalRecordId = null;
-
-    function onTapApprovalCellInHtml(id) {
-      openApprovalModalInHtml(id);
-    }
-
-    function openApprovalModalInHtml(id) {
-      const rec = archiveRecords.find(function(r) { return r.id === id; });
-      if (!rec) return;
-      currentApprovalModalRecordId = id;
-      const list = parseApprovalEntries(rec);
-      const isComp = isDirectorApproved(rec);
-      const titleEl = document.getElementById('approval-modal-title');
-      if (titleEl) {
-        titleEl.textContent = isComp
-          ? '✅ 결재완료 확인 (검토·결재 이력)'
-          : (list.length > 0 ? ('📋 검토 및 결재 현황 (' + list.length + '명)') : '📋 결재 대기 중 (미결재)');
-      }
-      const bodyEl = document.getElementById('approval-modal-body');
-      let bHtml = '<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:7px 10px; font-size:12px; font-weight:700; color:#1e293b;">' +
-        escapeHtml(getDisplayTitle(rec)) + '</div>';
-      bHtml += '<div style="font-size:11px; color:#475569; line-height:1.35;">▼ 위에서 아래로 검토한 사람과 날짜가 순서대로 표시되며, <b>"소장"</b>이 포함된 결재자는 맨 아래(최종 결재)에 표시됩니다.</div>';
-      if (list.length === 0) {
-        bHtml += '<div style="padding:18px 10px; text-align:center; color:#64748b; font-size:12px; background:#f8fafc; border-radius:8px; border:1px dashed #cbd5e1;">아직 검토 또는 결재한 내역이 없습니다.<br/>(결재 및 결재취소는 앱에서 진행해 주세요)</div>';
+    function getInvoiceGroupKey(r) {
+      const f = r.fields || {};
+      const prod = (f.productName || '').trim() || '기타자재';
+      const spec = (f.specName || '').trim();
+      if (invGroupProduct && invGroupSpec) {
+        return spec ? (prod + ' (' + spec + ')') : prod;
+      } else if (!invGroupProduct && invGroupSpec) {
+        return spec || '(규격미상)';
       } else {
-        list.forEach(function(e, idx) {
-          const isDir = isDirectorUserName(e.name) || e.role === '결재';
-          const rowBg = isDir ? '#f0fdf4' : '#eff6ff';
-          const rowBd = isDir ? '#86efac' : '#bfdbfe';
-          const badgeBg = isDir ? '#15803d' : '#1e3a8a';
-          const badgeTxt = isDir ? '최종결재' : ('검토 ' + (idx + 1));
-          bHtml += '<div style="display:flex; align-items:center; gap:8px; background:' + rowBg + '; border:1.2px solid ' + rowBd + '; border-radius:8px; padding:8px 10px;">' +
-            '<span style="background:' + badgeBg + '; color:#fff; font-size:10.5px; font-weight:700; padding:3px 7px; border-radius:6px;">' + badgeTxt + '</span>' +
-            '<span style="flex:1; font-size:13px; font-weight:700; color:#0f172a; user-select:none;">🔒 ' + escapeHtml(e.name) + '</span>' +
-            '<span style="font-size:11.5px; font-weight:600; color:#334155;">' + escapeHtml(e.date || '-') + '</span>' +
-            '</div>';
-        });
+        return prod;
       }
-      bHtml += '<div style="margin-top:4px; padding:7px 9px; background:#fffbeb; border:1px solid #fde68a; border-radius:7px; font-size:11px; color:#92400e; font-weight:600;">🔒 보안 안내: HTML 내보내기 파일에서는 결재자 이름을 고치거나 임의로 수정할 수 없습니다.</div>';
-      bodyEl.innerHTML = bHtml;
-      document.getElementById('approval-modal-backdrop').style.display = 'flex';
     }
 
-    function closeApprovalModal() {
-      currentApprovalModalRecordId = null;
-      document.getElementById('approval-modal-backdrop').style.display = 'none';
-    }
-
-    function isRecordMedicalClaimed(item) {
-      const f = (item && item.fields) || {};
-      const raw = String(f.isClaimed || '').trim().toUpperCase();
-      return raw === 'Y' || raw === 'TRUE' || raw === '1' || raw === '청구완료';
-    }
-
-    function getMedicalClaimLabel(item) {
-      return isRecordMedicalClaimed(item) ? '청구완료' : '미청구';
-    }
-
-    function getInvoiceGroupKey(item) {
-      const f = (item && item.fields) || {};
-      const prod = (f.productName || '').trim() || '미지정';
-      const spec = (f.specName || '').trim() || '규격미상';
-      if (invSumByProduct && invSumBySpec) return prod + '-' + spec;
-      if (invSumBySpec) return spec;
-      return prod;
-    }
-
-    function getMedicalGroupKey(item) {
-      const f = (item && item.fields) || {};
-      const cat = (f.subCategory || '').trim() || '미지정';
-      const pat = (f.patientName || '').trim() || '환자미상';
-      const clm = getMedicalClaimLabel(item);
-      const parts = [];
-      if (medSumByCat) parts.push(cat);
-      if (medSumByPatient) parts.push(pat);
-      if (medSumByClaim) parts.push(clm);
-      if (parts.length === 0) return cat;
-      return parts.join('-');
-    }
-
-    function toggleInvoiceGroup(fieldType) {
-      if (fieldType === 'product') {
-        if (invSumByProduct && invSumBySpec) {
-          invSumByProduct = false;
-        } else if (invSumByProduct && !invSumBySpec) {
-          invSumByProduct = true;
-        } else {
-          invSumByProduct = true;
-        }
-      } else if (fieldType === 'spec') {
-        if (invSumByProduct && invSumBySpec) {
-          invSumBySpec = false;
-        } else if (!invSumByProduct && invSumBySpec) {
-          invSumByProduct = true;
-          invSumBySpec = false;
-        } else {
-          invSumByProduct = false;
-          invSumBySpec = true;
-        }
+    function toggleInvoiceGroup(col) {
+      if (col === 'product') {
+        invGroupProduct = !invGroupProduct;
+        if (!invGroupProduct && !invGroupSpec) invGroupSpec = true;
+      } else if (col === 'spec') {
+        invGroupSpec = !invGroupSpec;
+        if (!invGroupProduct && !invGroupSpec) invGroupProduct = true;
       }
-      if (!invSumByProduct && !invSumBySpec) invSumByProduct = true;
-      selectedInvoiceProductFilter = '전체';
+      selectedProductFilter = '전체';
+      toggleSort(col);
+    }
+
+    function computeInvoiceCumulativeMap() {
+      const invList = archiveRecords.filter(function(r) { return r.category === '자재송장'; }).slice();
+      invList.sort(function(a, b) {
+        const da = (a.fields && a.fields.arrivalDate) || a.createdAt || '';
+        const db = (b.fields && b.fields.arrivalDate) || b.createdAt || '';
+        const c = da.localeCompare(db);
+        return c !== 0 ? c : String(a.id).localeCompare(String(b.id));
+      });
+      const running = {};
+      const out = {};
+      invList.forEach(function(r) {
+        const key = getInvoiceGroupKey(r);
+        running[key] = (running[key] || 0) + parseInvoiceQty(r);
+        out[r.id] = fmtQty(running[key]);
+      });
+      return out;
+    }
+
+    function getExtraArray(r) {
+      const f = (r && r.fields) ? r.fields : {};
+      const keys = ['proofImagesJson', 'extraProofImagesJson', 'extraImagesJson', 'proofImages', 'extraProofImages'];
+      for (let i = 0; i < keys.length; i++) {
+        const raw = f[keys[i]];
+        if (!raw) continue;
+        try {
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        } catch (_) {}
+      }
+      return [];
+    }
+
+    function setExtraArray(r, arr) {
+      if (!r.fields) r.fields = {};
+      if (arr && arr.length > 0) {
+        r.fields.proofImagesJson = JSON.stringify(arr);
+        r.fields.proofStatus = '첨부(' + arr.length + '장)';
+      } else {
+        delete r.fields.proofImagesJson;
+        delete r.fields.proofPathsJson;
+        delete r.fields.proofStatus;
+      }
+    }
+
+    function getRecordAmount(r) {
+      const f = r.fields || {};
+      const raw = r.category === '병원비' ? (f.totalPaid || '0') : (f.totalAmount || f.amount || '0');
+      return parseInt(String(raw).replace(/[^0-9]/g, ''), 10) || 0;
+    }
+
+    function isClaimed(r) {
+      const f = r.fields || {};
+      const v = String(f.isClaimed || '').trim().toUpperCase();
+      return v === 'Y' || v === 'TRUE' || v === '1' || v === '청구완료';
+    }
+
+    function toggleClaimed(id, ev) {
+      if (ev) ev.stopPropagation();
+      const rec = archiveRecords.find(function(x) { return x.id === id; });
+      if (!rec) return;
+      if (!rec.fields) rec.fields = {};
+      rec.fields.isClaimed = isClaimed(rec) ? 'N' : 'Y';
       render();
     }
 
-    function toggleMedicalGroup(fieldType) {
-      if (fieldType === 'cat') {
-        medSumByCat = true;
-        medSumByPatient = false;
-        medSumByClaim = false;
-      } else if (fieldType === 'patient') {
-        if (!medSumByPatient && !medSumByClaim) {
+    function toggleSort(col) {
+      if (sortCol === col) {
+        sortAsc = !sortAsc;
+      } else {
+        sortCol = col;
+        sortAsc = (col === 'date' || col === 'amount' || col === 'quantity' || col === 'pageCount' || col === 'claimed') ? false : true;
+      }
+      render();
+    }
+
+    function sortArrow(col) {
+      if (sortCol !== col) return ' ↕';
+      return sortAsc ? ' ▲' : ' ▼';
+    }
+
+    function thClass(col, isHi) {
+      const classes = [];
+      if (isHi) classes.push('hi-group');
+      if (sortCol === col) classes.push('sorted-col');
+      return classes.join(' ');
+    }
+
+    function getMajorRecords() {
+      return archiveRecords.filter(function(r) { return r.category === selectedCategoryFilter; });
+    }
+
+    function getFiltered() {
+      let list = getMajorRecords();
+      if (selectedCategoryFilter === '병원비') {
+        if (selectedSubCat !== '전체') {
+          list = list.filter(function(r) {
+            return getMedicalGroupKey(r) === selectedSubCat;
+          });
+        }
+        if (selectedClaimFilter === '미청구') {
+          list = list.filter(function(r) { return !isClaimed(r); });
+        } else if (selectedClaimFilter === '청구완료') {
+          list = list.filter(function(r) { return isClaimed(r); });
+        }
+      } else if (selectedCategoryFilter === '출장비') {
+        if (selectedSubCat !== '전체') {
+          list = list.filter(function(r) {
+            const sc = ((r.fields && r.fields.subCategory) || '').trim() || '미지정';
+            return sc === selectedSubCat;
+          });
+        }
+        if (selectedTravelDiv !== '전체') {
+          list = list.filter(function(r) {
+            return ((r.fields && r.fields.travelDivision) || '식대') === selectedTravelDiv;
+          });
+        }
+      } else if (selectedCategoryFilter === '자재송장') {
+        if (selectedProductFilter !== '전체') {
+          list = list.filter(function(r) {
+            return getInvoiceGroupKey(r) === selectedProductFilter;
+          });
+        }
+      }
+
+      list = list.slice().sort(function(a, b) {
+        const fa = a.fields || {};
+        const fb = b.fields || {};
+        let cmp = 0;
+        if (sortCol === 'amount') {
+          cmp = getRecordAmount(a) - getRecordAmount(b);
+        } else if (sortCol === 'quantity') {
+          cmp = parseInvoiceQty(a) - parseInvoiceQty(b);
+        } else if (sortCol === 'product') {
+          cmp = (fa.productName || '').localeCompare(fb.productName || '', 'ko');
+        } else if (sortCol === 'spec') {
+          cmp = (fa.specName || '').localeCompare(fb.specName || '', 'ko');
+        } else if (sortCol === 'unit') {
+          cmp = (fa.unit || '').localeCompare(fb.unit || '', 'ko');
+        } else if (sortCol === 'supplier') {
+          cmp = (fa.supplierName || '').localeCompare(fb.supplierName || '', 'ko');
+        } else if (sortCol === 'orderNumber') {
+          cmp = (fa.orderNumber || '').localeCompare(fb.orderNumber || '', 'ko');
+        } else if (sortCol === 'uploader') {
+          cmp = (fa.uploader || '').localeCompare(fb.uploader || '', 'ko');
+        } else if (sortCol === 'docNumber') {
+          cmp = (fa.docNumber || '').localeCompare(fb.docNumber || '', 'ko');
+        } else if (sortCol === 'replyDocNumber') {
+          cmp = (fa.replyDocNumber || '').localeCompare(fb.replyDocNumber || '', 'ko');
+        } else if (sortCol === 'title') {
+          cmp = (fa.title || '').localeCompare(fb.title || '', 'ko');
+        } else if (sortCol === 'aiSummary') {
+          cmp = (fa.aiSummary || '').localeCompare(fb.aiSummary || '', 'ko');
+        } else if (sortCol === 'replyDeadline') {
+          cmp = (fa.replyDeadline || '').localeCompare(fb.replyDeadline || '');
+        } else if (sortCol === 'clinic') {
+          const ca = fa.clinicName || fa.merchantName || fa.sender || fa.recipient || '';
+          const cb = fb.clinicName || fb.merchantName || fb.sender || fb.recipient || '';
+          cmp = ca.localeCompare(cb, 'ko');
+        } else if (sortCol === 'patient') {
+          cmp = (fa.patientName || '').localeCompare(fb.patientName || '', 'ko');
+        } else if (sortCol === 'subCategory') {
+          cmp = (fa.subCategory || '').localeCompare(fb.subCategory || '', 'ko');
+        } else if (sortCol === 'travelDivision') {
+          cmp = (fa.travelDivision || '').localeCompare(fb.travelDivision || '', 'ko');
+        } else if (sortCol === 'bizRegNumber') {
+          cmp = (fa.bizRegNumber || '').localeCompare(fb.bizRegNumber || '');
+        } else if (sortCol === 'claimed') {
+          cmp = (isClaimed(a) ? 1 : 0) - (isClaimed(b) ? 1 : 0);
+        } else if (sortCol === 'companyName') {
+          cmp = (fa.companyName || '').localeCompare(fb.companyName || '', 'ko');
+        } else if (sortCol === 'siteName') {
+          cmp = (fa.siteName || '').localeCompare(fb.siteName || '', 'ko');
+        } else if (sortCol === 'personName') {
+          cmp = (fa.personName || '').localeCompare(fb.personName || '', 'ko');
+        } else if (sortCol === 'mobilePhone') {
+          cmp = (fa.mobilePhone || '').localeCompare(fb.mobilePhone || '');
+        } else if (sortCol === 'email') {
+          cmp = (fa.email || '').localeCompare(fb.email || '');
+        } else if (sortCol === 'pdfFileName') {
+          cmp = (fa.pdfFileName || '').localeCompare(fb.pdfFileName || '', 'ko');
+        } else if (sortCol === 'pageCount') {
+          cmp = (1 + getExtraArray(a).length) - (1 + getExtraArray(b).length);
+        } else {
+          const da = fa.issueDate || fa.date || fa.arrivalDate || fa.sentDate || fa.cardDate || fa.pdfDate || a.createdAt || '';
+          const db = fb.issueDate || fb.date || fb.arrivalDate || fb.sentDate || fb.cardDate || fb.pdfDate || b.createdAt || '';
+          cmp = da.localeCompare(db);
+        }
+        return sortAsc ? cmp : -cmp;
+      });
+      return list;
+    }
+
+    function selectRow(id) {
+      if (selectedId !== id) {
+        selectedId = id;
+        selectedPageIdx = 0;
+        resetZoom();
+      }
+      render();
+    }
+
+    function selectRowPage(id, pIdx, ev) {
+      if (ev) ev.stopPropagation();
+      selectedId = id;
+      selectedPageIdx = pIdx;
+      resetZoom();
+      render();
+    }
+
+    function getMedicalGroupKey(r) {
+      const f = r.fields || {};
+      const sc = (f.subCategory || '').trim() || '미지정';
+      const pat = (f.patientName || '').trim() || '환자미상';
+      if (medSumByCat && medSumByPatient) return sc + '. ' + pat;
+      if (medSumByPatient) return pat;
+      return sc;
+    }
+
+    function toggleMedicalGroup(col) {
+      if (col === 'cat') {
+        if (!medSumByCat && medSumByPatient) {
+          medSumByCat = true;
+        } else {
+          medSumByCat = true;
+          medSumByPatient = false;
+        }
+        selectedSubCat = '전체';
+        toggleSort('subCategory');
+      } else if (col === 'patient') {
+        if (medSumByCat && !medSumByPatient) {
           medSumByCat = false;
           medSumByPatient = true;
-          medSumByClaim = false;
-        } else if (medSumByPatient && !medSumByCat && !medSumByClaim) {
+        } else if (!medSumByCat && medSumByPatient) {
           medSumByCat = true;
           medSumByPatient = true;
         } else {
           medSumByCat = false;
           medSumByPatient = true;
-          medSumByClaim = false;
         }
-      } else if (fieldType === 'claim') {
-        if (!medSumByClaim) {
-          medSumByCat = false;
-          medSumByPatient = false;
-          medSumByClaim = true;
-        } else if (medSumByClaim && !medSumByPatient && !medSumByCat) {
-          medSumByPatient = true;
-          medSumByClaim = true;
-        } else {
-          medSumByCat = false;
-          medSumByPatient = false;
-          medSumByClaim = true;
-        }
-      }
-      if (!medSumByCat && !medSumByPatient && !medSumByClaim) medSumByCat = true;
-      selectedSubCategoryFilter = '전체';
-      render();
-    }
-
-    function toggleSingleMedicalClaimInHtml(id) {
-      const rec = archiveRecords.find(function(r) { return r.id === id; });
-      if (!rec) return;
-      if (!rec.fields) rec.fields = {};
-      rec.fields.isClaimed = isRecordMedicalClaimed(rec) ? 'N' : 'Y';
-      render();
-    }
-
-    function toggleAllFilteredMedicalClaimInHtml() {
-      const items = getFilteredRecords().filter(function(r) { return r.category === '병원비'; });
-      if (!items || items.length === 0) return;
-      const allClaimed = items.every(function(r) { return isRecordMedicalClaimed(r); });
-      const nextVal = allClaimed ? 'N' : 'Y';
-      items.forEach(function(r) {
-        if (!r.fields) r.fields = {};
-        r.fields.isClaimed = nextVal;
-      });
-      render();
-    }
-
-    // 기간 필터 상태 (자재송장 월 단위 이동 / 병원비 시작일~종료일 지정)
-    let periodAllMap = { '자재송장': true, '병원비': true };
-    let invoiceAnchorYear = new Date().getFullYear();
-    let invoiceAnchorMonth = new Date().getMonth() + 1;
-    let invoiceAnchorDay = 1;
-    let medicalStartDate = '';
-    let medicalEndDate = '';
-
-    let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
-    let editingRecordId = null;
-
-    // ★ 정렬 상태 (기본: 날짜 최신순 = 'date', sortAscending = false)
-    let sortColumn = 'date';
-    let sortAscending = false;
-    // ★ 사용자가 마우스로 조절한 열 너비 저장 맵 (탭_열인덱스 -> px)
-    const customColWidths = {};
-
-    // -------------------------------------------------------------------------
-    // A. 분할 화면 리사이저 (세로/가로 방향 전환 시 좌/우 ↔ 상/하 즉시 자동 전환)
-    // -------------------------------------------------------------------------
-    const resizerBar = document.getElementById('resizer-bar');
-    const leftPane = document.getElementById('left-list-pane');
-    const mainSplit = document.getElementById('main-split');
-    let isResizing = false;
-    let savedPortraitHeightPct = 44;
-    let savedLandscapeWidthPct = 48;
-
-    function isPortraitMode() {
-      return window.innerHeight >= window.innerWidth;
-    }
-
-    function applyOrientationLayout() {
-      if (isPortraitMode()) {
-        mainSplit.classList.add('portrait-mode');
-        leftPane.style.width = '100%';
-        leftPane.style.height = savedPortraitHeightPct + '%';
-      } else {
-        mainSplit.classList.remove('portrait-mode');
-        leftPane.style.height = '100%';
-        leftPane.style.width = savedLandscapeWidthPct + '%';
+        selectedSubCat = '전체';
+        toggleSort('patient');
       }
     }
 
-    window.addEventListener('resize', applyOrientationLayout);
-    window.addEventListener('orientationchange', function() {
-      setTimeout(applyOrientationLayout, 80);
-    });
-    applyOrientationLayout();
+    function buildPageButtonsHtml(r, totalPages) {
+      return '<div style="white-space:nowrap; display:inline-flex; align-items:center; gap:3px;">' +
+        '<span style="font-weight:900; color:#0f766e;">' + totalPages + '장</span>' +
+        '<button style="border:1px solid #93c5fd; background:#eff6ff; color:#1e3a8a; border-radius:4px; padding:1px 5px; font-size:10px; font-weight:900; cursor:pointer;" onclick="selectRow('' + r.id + ''); triggerAddExtraPage(); event.stopPropagation();">+</button>' +
+        '</div>';
+    }
 
-    function updateSplitByCoord(clientX, clientY) {
-      const rect = mainSplit.getBoundingClientRect();
-      if (isPortraitMode()) {
-        if (rect.height <= 0) return;
-        const newH = Math.max(18, Math.min(82, ((clientY - rect.top) / rect.height) * 100));
-        savedPortraitHeightPct = newH;
-        leftPane.style.width = '100%';
-        leftPane.style.height = newH + '%';
-      } else {
-        if (rect.width <= 0) return;
-        const newW = Math.max(18, Math.min(82, ((clientX - rect.left) / rect.width) * 100));
-        savedLandscapeWidthPct = newW;
-        leftPane.style.height = '100%';
-        leftPane.style.width = newW + '%';
+    function changeZoom(delta) {
+      currentZoom = Math.min(6.0, Math.max(0.2, currentZoom + delta));
+      applyZoom();
+    }
+    function resetZoom() {
+      currentZoom = 1.0;
+      panX = 0;
+      panY = 0;
+      applyZoom();
+    }
+    function applyZoom() {
+      const img = document.getElementById('preview-img');
+      const lbl = document.getElementById('zoom-label');
+      if (img) {
+        img.style.transform = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + currentZoom + ')';
+      }
+      if (lbl) lbl.textContent = Math.round(currentZoom * 100) + '%';
+    }
+
+    function removeExtraPage(idx, ev) {
+      if (ev) ev.stopPropagation();
+      const cur = archiveRecords.find(function(r) { return r.id === selectedId; });
+      if (!cur) return;
+      const arr = getExtraArray(cur).slice();
+      if (idx >= 0 && idx < arr.length) {
+        arr.splice(idx, 1);
+        setExtraArray(cur, arr);
+        selectedPageIdx = 0;
+        render();
       }
     }
 
-    // 1) 모바일 터치 (세로·가로 보기 모두 손가락 드래그 완벽 작동)
-    resizerBar.addEventListener('touchstart', function(e) {
-      if (e.touches.length === 1) {
-        isResizing = true;
-        if (e.cancelable) e.preventDefault();
-        e.stopPropagation();
-      }
-    }, { passive: false });
-
-    window.addEventListener('touchmove', function(e) {
-      if (!isResizing || e.touches.length < 1) return;
-      if (e.cancelable) e.preventDefault();
-      updateSplitByCoord(e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: false });
-
-    window.addEventListener('touchend', function() {
-      if (isResizing) isResizing = false;
-    });
-    window.addEventListener('touchcancel', function() {
-      if (isResizing) isResizing = false;
-    });
-
-    // 2) PC 마우스 & 포인터 드래그 (화면 밖으로 빠르게 움직여도 끊기지 않도록 window에서 수신)
-    resizerBar.addEventListener('pointerdown', function(e) {
-      if (e.pointerType === 'touch') return; // 터치는 위 touch 이벤트에서 전담 처리
-      isResizing = true;
-      e.preventDefault();
-      if (resizerBar.setPointerCapture) {
-        try { resizerBar.setPointerCapture(e.pointerId); } catch (_) {}
-      }
-    });
-    window.addEventListener('pointermove', function(e) {
-      if (!isResizing || e.pointerType === 'touch') return;
-      updateSplitByCoord(e.clientX, e.clientY);
-    });
-    window.addEventListener('pointerup', function() {
-      if (isResizing) isResizing = false;
-    });
-
-    // ★ 리스트가 길어져서 화면을 넘어갈 때 마우스로 잡고 위아래/좌우로 끌어 스크롤 (상단 제목행은 고정!)
-    let isListDragScrolling = false;
-    let listDragMoved = false;
-    let listStartX = 0;
-    let listStartY = 0;
-    let listScrollLeftStart = 0;
-    let listScrollTopStart = 0;
-
-    leftPane.addEventListener('mousedown', function(e) {
-      if (e.button !== 0) return;
-      if (e.target.closest('.col-resizer') || e.target.closest('button') || e.target.closest('thead')) return;
-      isListDragScrolling = true;
-      listDragMoved = false;
-      listStartX = e.pageX;
-      listStartY = e.pageY;
-      listScrollLeftStart = leftPane.scrollLeft;
-      listScrollTopStart = leftPane.scrollTop;
-    });
-    window.addEventListener('mousemove', function(e) {
-      if (!isListDragScrolling) return;
-      const dx = e.pageX - listStartX;
-      const dy = e.pageY - listStartY;
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
-        listDragMoved = true;
-        leftPane.classList.add('grab-scrolling');
-      }
-      if (listDragMoved) {
-        leftPane.scrollLeft = listScrollLeftStart - dx;
-        leftPane.scrollTop = listScrollTopStart - dy;
-      }
-    });
-    window.addEventListener('mouseup', function() {
-      if (isListDragScrolling) {
-        isListDragScrolling = false;
-        leftPane.classList.remove('grab-scrolling');
-        setTimeout(function() { listDragMoved = false; }, 50);
-      }
-    });
-
-    // -------------------------------------------------------------------------
-    // B. 우측/하단 사진 뷰어: 손가락 2개 핀치 줌(확대/축소) + 1손가락/마우스 드래그 이동 + 휠 줌
-    // -------------------------------------------------------------------------
-    const photoViewport = document.getElementById('photo-viewport');
-    const previewImg = document.getElementById('preview-img');
-    let photoScale = 1;
-    let photoTx = 0;
-    let photoTy = 0;
-    let isPanningPhoto = false;
-    let panStartX = 0;
-    let panStartY = 0;
-
-    // 멀티터치(손가락 2개 핀치 줌) 상태 변수
-    let isPinchingPhoto = false;
-    let pinchStartDist = 0;
-    let pinchStartScale = 1;
-    let pinchStartMidX = 0;
-    let pinchStartMidY = 0;
-    let pinchStartTx = 0;
-    let pinchStartTy = 0;
-
-    function applyPhotoTransform() {
-      previewImg.style.transform = 'translate(' + photoTx + 'px, ' + photoTy + 'px) scale(' + photoScale + ')';
-    }
-    function zoomPhoto(delta) {
-      photoScale = Math.max(0.5, Math.min(8.0, photoScale + delta));
-      if (Math.abs(photoScale - 1) < 0.05) { photoScale = 1; photoTx = 0; photoTy = 0; }
-      applyPhotoTransform();
-    }
-    function resetPhotoZoom() {
-      photoScale = 1;
-      photoTx = 0;
-      photoTy = 0;
-      applyPhotoTransform();
+    function triggerAddExtraPage() {
+      const inp = document.getElementById('extra-file-input');
+      if (inp) { inp.value = ''; inp.click(); }
     }
 
-    function getTouchDistance(t1, t2) {
-      const dx = t1.clientX - t2.clientX;
-      const dy = t1.clientY - t2.clientY;
-      return Math.hypot(dx, dy);
-    }
-
-    // 1) 모바일/태블릿 터치 이벤트: 손가락 2개 핀치 확대·축소 + 손가락 1개 드래그 이동 완벽 지원!
-    photoViewport.addEventListener('touchstart', function(e) {
-      if (e.target.tagName === 'BUTTON') return;
-      if (e.touches.length >= 2) {
-        e.preventDefault();
-        isPinchingPhoto = true;
-        isPanningPhoto = false;
-        previewImg.style.transition = 'none';
-        pinchStartDist = getTouchDistance(e.touches[0], e.touches[1]);
-        pinchStartScale = photoScale;
-        pinchStartMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        pinchStartMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        pinchStartTx = photoTx;
-        pinchStartTy = photoTy;
-      } else if (e.touches.length === 1) {
-        isPinchingPhoto = false;
-        isPanningPhoto = true;
-        previewImg.style.transition = 'none';
-        panStartX = e.touches[0].clientX - photoTx;
-        panStartY = e.touches[0].clientY - photoTy;
-      }
-    }, { passive: false });
-
-    photoViewport.addEventListener('touchmove', function(e) {
-      if (isPinchingPhoto && e.touches.length >= 2) {
-        e.preventDefault();
-        const dist = getTouchDistance(e.touches[0], e.touches[1]);
-        if (pinchStartDist > 5) {
-          const ratio = dist / pinchStartDist;
-          photoScale = Math.max(0.5, Math.min(8.0, pinchStartScale * ratio));
-        }
-        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        photoTx = pinchStartTx + (midX - pinchStartMidX);
-        photoTy = pinchStartTy + (midY - pinchStartMidY);
-        applyPhotoTransform();
-      } else if (isPanningPhoto && e.touches.length === 1) {
-        e.preventDefault();
-        photoTx = e.touches[0].clientX - panStartX;
-        photoTy = e.touches[0].clientY - panStartY;
-        applyPhotoTransform();
-      }
-    }, { passive: false });
-
-    photoViewport.addEventListener('touchend', function(e) {
-      if (e.touches.length < 2) {
-        isPinchingPhoto = false;
-      }
-      if (e.touches.length === 1) {
-        isPanningPhoto = true;
-        panStartX = e.touches[0].clientX - photoTx;
-        panStartY = e.touches[0].clientY - photoTy;
-      } else if (e.touches.length === 0) {
-        isPanningPhoto = false;
-        previewImg.style.transition = 'transform 0.05s ease-out';
-      }
-    });
-
-    // 2) PC 마우스 휠 확대·축소 및 마우스 드래그 이동
-    photoViewport.addEventListener('wheel', function(e) {
-      e.preventDefault();
-      zoomPhoto(e.deltaY < 0 ? 0.25 : -0.25);
-    }, { passive: false });
-
-    photoViewport.addEventListener('mousedown', function(e) {
-      if (e.button !== 0 || e.target.tagName === 'BUTTON') return;
-      isPanningPhoto = true;
-      previewImg.style.transition = 'none';
-      panStartX = e.clientX - photoTx;
-      panStartY = e.clientY - photoTy;
-    });
-    window.addEventListener('mousemove', function(e) {
-      if (!isPanningPhoto || isPinchingPhoto) return;
-      photoTx = e.clientX - panStartX;
-      photoTy = e.clientY - panStartY;
-      applyPhotoTransform();
-    });
-    window.addEventListener('mouseup', function() {
-      if (isPanningPhoto && !isPinchingPhoto) {
-        isPanningPhoto = false;
-        previewImg.style.transition = 'transform 0.05s ease-out';
-      }
-    });
-    photoViewport.addEventListener('dblclick', function() {
-      if (photoScale > 1.05) resetPhotoZoom();
-      else { photoScale = 2.2; applyPhotoTransform(); }
-    });
-
-    // -------------------------------------------------------------------------
-    // C. 앱과 100% 동일한 날짜/숫자/공문번호/누적수량 계산 함수들
-    // -------------------------------------------------------------------------
-    function dotDate(raw) {
-      if (!raw) return '-';
-      const m = String(raw).match(/(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})/);
-      if (m) return m[1] + '.' + String(m[2]).padStart(2, '0') + '.' + String(m[3]).padStart(2, '0');
-      return String(raw);
-    }
-
-    function parseRecordDateObj(item) {
-      const f = item.fields || {};
-      let raw = '';
-      if (item.category === '공문(수신)' || item.category === '공문(발신)') raw = f.sentDate || '';
-      else if (item.category === '자재송장') raw = f.arrivalDate || '';
-      else if (item.category === '출장비') raw = f.date || '';
-      else if (item.category === '병원비') raw = f.issueDate || '';
-      else if (item.category === '명함관리') raw = f.cardDate || '';
-      if (!raw && item.createdAt) raw = String(item.createdAt).split(' ')[0];
-      const m = String(raw).match(/(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})/);
-      if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-      return null;
-    }
-
-    function normalizeDocKey(raw) {
-      if (!raw) return '';
-      const c = String(raw).replace(/\s+/g, '');
-      const m = c.match(/([가-힣A-Za-z0-9]+?)[-~—–_.:]([0-9]+)/);
-      if (m) {
-        const dept = m[1].replace(/(?:과|팀|실|부|처|국|단|소|청)$/, '');
-        const num = m[2].replace(/^0+/, '') || '0';
-        return dept + '-' + num;
-      }
-      const d = c.match(/\d{4,7}/);
-      return d ? d[0] : c;
-    }
-
-    function computeRepliedKeySet() {
-      const set = new Set();
-      archiveRecords.forEach(function(r) {
-        if (r.category === '공문(발신)' && r.fields && r.fields.replyDocNumber) {
-          const k = normalizeDocKey(r.fields.replyDocNumber);
-          if (k) set.add(k);
-        }
-      });
-      return set;
-    }
-
-    function getNumericAmount(item) {
-      const f = item.fields || {};
-      let raw = '0';
-      if (item.category === '병원비') raw = f.totalPaid || '0';
-      else if (item.category === '출장비') raw = f.totalAmount || '0';
-      else raw = f.amount || '0';
-      const digits = String(raw).replace(/[^0-9]/g, '');
-      return digits ? parseInt(digits, 10) : 0;
-    }
-
-    function getNumericQty(item) {
-      const f = item.fields || {};
-      const raw = String(f.quantity || f.weight || '0').replace(/,/g, '');
-      const m = raw.match(/[-+]?\d+(?:\.\d+)?/);
-      return m ? parseFloat(m[0]) : 0;
-    }
-
-    function formatNumber(n) {
-      return Number(n || 0).toLocaleString('ko-KR');
-    }
-
-    function formatQtyNum(val) {
-      return Number(val || 0).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
-    }
-
-    function computeInvoiceCumulativeMap() {
-      const map = {};
-      const invoices = archiveRecords.filter(function(r) { return r.category === '자재송장'; }).slice();
-      invoices.sort(function(a, b) {
-        const da = dotDate((a.fields || {}).arrivalDate);
-        const db = dotDate((b.fields || {}).arrivalDate);
-        const cmp = da.localeCompare(db);
-        if (cmp !== 0) return cmp;
-        return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
-      });
-      const running = {};
-      invoices.forEach(function(inv) {
-        const f = inv.fields || {};
-        const prod = (f.productName || '-').trim();
-        const spec = (f.specName || '-').trim();
-        const key = prod + '||' + spec;
-        const nextVal = (running[key] || 0) + getNumericQty(inv);
-        running[key] = nextVal;
-        map[inv.id] = formatQtyNum(nextVal);
-      });
-      return map;
-    }
-
-    function escapeHtml(str) {
-      return String(str == null ? '' : str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    }
-
-    // -------------------------------------------------------------------------
-    // D. 기간 필터 및 카테고리 필터링 (앱의 _filteredRecords와 100% 동일)
-    // -------------------------------------------------------------------------
-    function getInvoicePeriodBounds() {
-      const start = new Date(invoiceAnchorYear, invoiceAnchorMonth - 1, invoiceAnchorDay);
-      const end = new Date(invoiceAnchorYear, invoiceAnchorMonth, invoiceAnchorDay - 1, 23, 59, 59);
-      return { start: start, end: end };
-    }
-
-    function matchesPeriod(item) {
-      const cat = selectedCategoryFilter;
-      if (cat !== '자재송장' && cat !== '병원비') return true;
-      if (periodAllMap[cat]) return true;
-      const d = parseRecordDateObj(item);
-      if (!d) return true;
-      if (cat === '자재송장') {
-        const b = getInvoicePeriodBounds();
-        return d >= b.start && d <= b.end;
-      } else if (cat === '병원비') {
-        if (medicalStartDate) {
-          const s = new Date(medicalStartDate + 'T00:00:00');
-          if (d < s) return false;
-        }
-        if (medicalEndDate) {
-          const e = new Date(medicalEndDate + 'T23:59:59');
-          if (d > e) return false;
-        }
-        return true;
-      }
-      return true;
-    }
-
-    function getRecordsInMajorCategory() {
-      if (selectedCategoryFilter === '전체') return archiveRecords.slice();
-      return archiveRecords.filter(function(r) {
-        return r.category === selectedCategoryFilter && matchesPeriod(r);
-      });
-    }
-
-    function extractSortableDateKey(item) {
-      const f = item.fields || {};
-      let raw = '';
-      if (item.category === '공문(수신)' || item.category === '공문(발신)') raw = f.sentDate || '';
-      else if (item.category === '자재송장') raw = f.arrivalDate || '';
-      else if (item.category === '출장비') raw = f.date || '';
-      else if (item.category === '병원비') raw = f.issueDate || '';
-      else if (item.category === '명함관리') raw = f.cardDate || '';
-      const d = dotDate(raw);
-      if (/^\d{4}\.\d{2}\.\d{2}$/.test(d)) return d;
-      return dotDate((item.createdAt || '').split(' ')[0]);
-    }
-
-    function toggleSort(colKey) {
-      if (sortColumn === colKey) {
-        sortAscending = !sortAscending;
-      } else {
-        sortColumn = colKey;
-        sortAscending = (colKey !== 'date' && colKey !== 'amount');
-      }
-      render();
-    }
-    function getFilteredRecords() {
-      const base = getRecordsInMajorCategory();
-      const filtered = base.filter(function(r) {
-        const f = r.fields || {};
-        if (selectedCategoryFilter === '출장비') {
-          if (selectedSubCategoryFilter !== '전체') {
-            const sub = (f.subCategory || '').trim() || '미지정';
-            if (sub !== selectedSubCategoryFilter) return false;
-          }
-        } else if (selectedCategoryFilter === '병원비') {
-          if (selectedSubCategoryFilter !== '전체') {
-            if (getMedicalGroupKey(r) !== selectedSubCategoryFilter) return false;
-          }
-          if (selectedMedicalClaimFilter !== '전체') {
-            if (getMedicalClaimLabel(r) !== selectedMedicalClaimFilter) return false;
-          }
-        }
-        if (selectedCategoryFilter === '출장비' && selectedTravelDivisionFilter !== '전체') {
-          const div = (f.travelDivision || '식대').trim();
-          if (div !== selectedTravelDivisionFilter) return false;
-        }
-        if (selectedCategoryFilter === '자재송장' && selectedInvoiceProductFilter !== '전체') {
-          if (getInvoiceGroupKey(r) !== selectedInvoiceProductFilter) return false;
-        }
-        if (selectedCategoryFilter === '명함관리' && businessCardSearchQuery.trim() !== '') {
-          const q = businessCardSearchQuery.trim().toLowerCase();
-          const qNoSpace = q.replace(/s+/g, '');
-          const comp = String(f.companyName || '').toLowerCase();
-          const site = String(f.siteName || '').toLowerCase();
-          const name = String(f.personName || '').toLowerCase();
-          const comb = comp + ' ' + site + ' ' + name;
-          const combNoSpace = comb.replace(/s+/g, '');
-          if (comb.indexOf(q) === -1 && combNoSpace.indexOf(qNoSpace) === -1) return false;
-        }
-        return true;
-      });
-
-      const repliedKeys = computeRepliedKeySet();
-      filtered.sort(function(a, b) {
-        const fa = a.fields || {};
-        const fb = b.fields || {};
-        let cmp = 0;
-        if (sortColumn === 'docNumber') {
-          cmp = String(fa.docNumber || '').trim().localeCompare(String(fb.docNumber || '').trim(), 'ko');
-        } else if (sortColumn === 'replied') {
-          const ka = normalizeDocKey(fa.docNumber);
-          const kb = normalizeDocKey(fb.docNumber);
-          const ra = (ka && repliedKeys.has(ka)) ? 0 : 1;
-          const rb = (kb && repliedKeys.has(kb)) ? 0 : 1;
-          cmp = ra - rb;
-        } else if (sortColumn === 'uploader') {
-          cmp = String(fa.uploaderName || '-').trim().localeCompare(String(fb.uploaderName || '-').trim(), 'ko');
-        } else if (sortColumn === 'approval') {
-          const sa = isDirectorApproved(a) ? 2 : (parseApprovalEntries(a).length > 0 ? 1 : 0);
-          const sb = isDirectorApproved(b) ? 2 : (parseApprovalEntries(b).length > 0 ? 1 : 0);
-          cmp = sa - sb;
-          if (cmp === 0) cmp = parseApprovalEntries(a).length - parseApprovalEntries(b).length;
-        } else if (sortColumn === 'subCategory') {
-          const ca = (fa.subCategory || '').trim() || '미지정';
-          const cb = (fb.subCategory || '').trim() || '미지정';
-          cmp = ca.localeCompare(cb, 'ko');
-        } else if (sortColumn === 'patientName') {
-          const pa = (fa.patientName || '').trim() || '-';
-          const pb = (fb.patientName || '').trim() || '-';
-          cmp = pa.localeCompare(pb, 'ko');
-        } else if (sortColumn === 'claimed') {
-          const ca = isRecordMedicalClaimed(a) ? 1 : 0;
-          const cb = isRecordMedicalClaimed(b) ? 1 : 0;
-          cmp = ca - cb;
-        } else if (sortColumn === 'merchant') {
-          const ma = (fa.clinicName || fa.merchantName || fa.supplierName || '').trim();
-          const mb = (fb.clinicName || fb.merchantName || fb.supplierName || '').trim();
-          cmp = ma.localeCompare(mb, 'ko');
-        } else if (sortColumn === 'amount') {
-          cmp = getNumericAmount(a) - getNumericAmount(b);
-        } else if (sortColumn === 'productName') {
-          cmp = String(fa.productName || '').trim().localeCompare(String(fb.productName || '').trim(), 'ko');
-        } else if (sortColumn === 'specName') {
-          cmp = String(fa.specName || '').trim().localeCompare(String(fb.specName || '').trim(), 'ko');
-        } else if (sortColumn === 'companyName') {
-          cmp = String(fa.companyName || '').trim().localeCompare(String(fb.companyName || '').trim(), 'ko');
-        } else if (sortColumn === 'siteName') {
-          cmp = String(fa.siteName || '').trim().localeCompare(String(fb.siteName || '').trim(), 'ko');
-        } else if (sortColumn === 'personName') {
-          cmp = String(fa.personName || '').trim().localeCompare(String(fb.personName || '').trim(), 'ko');
-        } else if (sortColumn === 'mobilePhone') {
-          cmp = String(fa.mobilePhone || '').trim().localeCompare(String(fb.mobilePhone || '').trim(), 'ko');
-        } else if (sortColumn === 'email') {
-          cmp = String(fa.email || '').trim().localeCompare(String(fb.email || '').trim(), 'ko');
-        } else {
-          cmp = extractSortableDateKey(a).localeCompare(extractSortableDateKey(b));
-        }
-        if (cmp === 0) {
-          cmp = extractSortableDateKey(a).localeCompare(extractSortableDateKey(b));
-        }
-        if (cmp === 0) {
-          cmp = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
-        }
-        return sortAscending ? cmp : -cmp;
-      });
-      return filtered;
-    }
-
-    // -------------------------------------------------------------------------
-    // E. 상단 탭 바 + 요약/필터 바 + 테이블 전체 렌더링
-    // -------------------------------------------------------------------------
-    function setMajorTab(cat) {
-      selectedCategoryFilter = cat;
-      selectedSubCategoryFilter = '전체';
-      selectedTravelDivisionFilter = '전체';
-      selectedInvoiceProductFilter = '전체';
-      const list = getFilteredRecords();
-      if (!list.some(function(r) { return r.id === selectedId; })) {
-        selectedId = list.length > 0 ? list[0].id : null;
-      }
-      render();
-    }
-
-    function shiftInvoiceMonth(delta) {
-      periodAllMap['자재송장'] = false;
-      const d = new Date(invoiceAnchorYear, invoiceAnchorMonth - 1 + delta, 1);
-      invoiceAnchorYear = d.getFullYear();
-      invoiceAnchorMonth = d.getMonth() + 1;
-      render();
-    }
-
-    function renderMajorTabsBar() {
-      const bar = document.getElementById('major-tabs-bar');
-      let html = '';
-      ALL_TABS.forEach(function(cat) {
-        const cnt = cat === '전체'
-          ? archiveRecords.length
-          : archiveRecords.filter(function(r) { return r.category === cat; }).length;
-        const activeCls = (cat === selectedCategoryFilter) ? 'active' : '';
-        html += '<button class="chip-btn ' + activeCls + '" onclick="setMajorTab(\'' + cat + '\')">' +
-          escapeHtml(cat) + ' (' + cnt + ')</button>';
-      });
-      bar.innerHTML = html;
-    }
-
-    function renderSummaryAndFilterBar() {
-      const bar = document.getElementById('summary-filter-bar');
-      const cat = selectedCategoryFilter;
-      if (cat === '공문(수신)' || cat === '공문(발신)' || (cat === '전체' && IS_ALL_OFFICIAL_DOC)) {
-        bar.style.display = 'none';
-        return;
-      }
-      bar.style.display = 'flex';
-      const majorList = getRecordsInMajorCategory();
-      let html = '';
-
-      // 1) 기간 필터 줄 (자재송장 / 병원비)
-      if (cat === '자재송장') {
-        const isAll = periodAllMap['자재송장'];
-        const b = getInvoicePeriodBounds();
-        const sStr = b.start.getFullYear() + '.' + String(b.start.getMonth()+1).padStart(2,'0') + '.' + String(b.start.getDate()).padStart(2,'0');
-        const eStr = b.end.getFullYear() + '.' + String(b.end.getMonth()+1).padStart(2,'0') + '.' + String(b.end.getDate()).padStart(2,'0');
-        html += '<div class="period-bar">' +
-          '<span class="period-badge">📅 기간필터: ' + (isAll ? '전체기간' : (invoiceAnchorYear + '.' + String(invoiceAnchorMonth).padStart(2,'0') + '월')) + '</span>' +
-          '<button class="period-nav-btn" onclick="shiftInvoiceMonth(-1)">◀ 이전달</button>' +
-          '<button class="period-nav-btn" onclick="shiftInvoiceMonth(1)">다음달 ▶</button>' +
-          '<span style="color:#1e3a8a; font-weight:600;">' + (isAll ? '전체 날짜 조회 중' : (sStr + ' ~ ' + eStr)) + '</span>' +
-          (!isAll ? '<button class="period-nav-btn" style="color:#dc2626; border-color:#fca5a5;" onclick="periodAllMap[\'자재송장\']=true; render();">전체보기</button>' : '') +
-          '</div>';
-      } else if (cat === '병원비') {
-        const isAll = periodAllMap['병원비'];
-        html += '<div class="period-bar">' +
-          '<span class="period-badge">📅 날짜필터: ' + (isAll ? '전체날짜' : '기간지정') + '</span>' +
-          '<input type="date" class="period-input" value="' + medicalStartDate + '" onchange="medicalStartDate=this.value; periodAllMap[\'병원비\']=false; render();" />' +
-          '<span>~</span>' +
-          '<input type="date" class="period-input" value="' + medicalEndDate + '" onchange="medicalEndDate=this.value; periodAllMap[\'병원비\']=false; render();" />' +
-          (!isAll ? '<button class="period-nav-btn" style="color:#dc2626; border-color:#fca5a5;" onclick="periodAllMap[\'병원비\']=true; medicalStartDate=\'\'; medicalEndDate=\'\'; render();">전체보기</button>' : '') +
-          '</div>';
-      }
-
-      // 2) 자재송장: 제품명 / 규격명 / 제품명-규격별 합계수량 칩
-      if (cat === '자재송장') {
-        const modeLabel = (invSumByProduct && invSumBySpec) ? '제품명-규격별' : (invSumBySpec ? '규격명별' : '제품명별');
-        html += '<div style="font-size:11px; color:#475569; margin-bottom:2px;"><strong style="color:#92400e; background:#fef3c7; padding:1px 6px; border-radius:4px;">📊 합산기준: ' + modeLabel + '</strong> (표의 [제품명]·[규격명] 제목을 누르면 합산 기준이 바뀝니다)</div>';
-        const prodSet = new Set();
-        majorList.forEach(function(r) {
-          prodSet.add(getInvoiceGroupKey(r));
-        });
-        const prods = ['전체'].concat(Array.from(prodSet));
-        html += '<div class="chip-scroll-row">';
-        prods.forEach(function(p) {
-          const matched = majorList.filter(function(r) {
-            return p === '전체' || getInvoiceGroupKey(r) === p;
-          });
-          const sumByUnit = {};
-          matched.forEach(function(r) {
-            const q = getNumericQty(r);
-            const prod = (r.fields && r.fields.productName) ? r.fields.productName : '';
-            const u = (r.fields && r.fields.unit) ? r.fields.unit : (prod.indexOf('철근') !== -1 ? 'ton' : '매');
-            sumByUnit[u] = (sumByUnit[u] || 0) + q;
-          });
-          const unitParts = Object.keys(sumByUnit).map(function(u) { return formatQtyNum(sumByUnit[u]) + u; }).join(' / ') || '0';
-          const label = p === '전체'
-            ? ('전체 (' + matched.length + '건 · ' + unitParts + ')')
-            : (p + '(' + unitParts + ')');
-          const cls = (selectedInvoiceProductFilter === p) ? 'active' : '';
-          html += '<button class="amber-chip ' + cls + '" onclick="selectedInvoiceProductFilter=\'' + escapeHtml(p) + '\'; render();">' + escapeHtml(label) + '</button>';
-        });
-        html += '</div>';
-      }
-
-      // 3) 출장비 / 병원비 / 전체: 금액 합계 및 서브카테고리/환자성명 칩
-      if (cat === '출장비' || cat === '병원비' || cat === '전체') {
-        let majorSum = 0;
-        majorList.forEach(function(r) { majorSum += getNumericAmount(r); });
-        let subSum = 0;
-        majorList.forEach(function(r) {
-          const gk = (cat === '병원비') ? getMedicalGroupKey(r) : (((r.fields || {}).subCategory || '').trim() || '미지정');
-          if (selectedSubCategoryFilter === '전체' || gk === selectedSubCategoryFilter) {
-            subSum += getNumericAmount(r);
-          }
-        });
-        const medModeParts = [];
-        if (medSumByCat) medModeParts.push('카테고리');
-        if (medSumByPatient) medModeParts.push('환자');
-        if (medSumByClaim) medModeParts.push('청구여부');
-        const medModeStr = (cat === '병원비')
-          ? (' [' + (medModeParts.length > 0 ? medModeParts.join('-') : '카테고리') + '별]')
-          : '';
-        html += '<div class="summary-row">' +
-          '<span class="summary-title">' + escapeHtml(cat) + ' 합계' + medModeStr + ' (' + majorList.length + '건): ' + formatNumber(majorSum) + '원</span>' +
-          ((cat !== '전체' && selectedSubCategoryFilter !== '전체')
-            ? '<span class="summary-sub">[' + escapeHtml(selectedSubCategoryFilter) + ' 합계: ' + formatNumber(subSum) + '원]</span>'
-            : '') +
-          '</div>';
-
-        if (cat === '출장비' || cat === '병원비') {
-          const subSet = new Set();
-          majorList.forEach(function(r) {
-            const s = (cat === '병원비') ? getMedicalGroupKey(r) : (((r.fields || {}).subCategory || '').trim() || '미지정');
-            subSet.add(s);
-          });
-          const subs = ['전체'].concat(Array.from(subSet));
-          if (subs.length > 1 || cat === '병원비') {
-            html += '<div class="chip-scroll-row">';
-            subs.forEach(function(s) {
-              const matched = majorList.filter(function(r) {
-                const rs = (cat === '병원비') ? getMedicalGroupKey(r) : (((r.fields || {}).subCategory || '').trim() || '미지정');
-                return s === '전체' || rs === s;
-              });
-              let sum = 0;
-              matched.forEach(function(r) { sum += getNumericAmount(r); });
-              const cls = (selectedSubCategoryFilter === s) ? 'active' : '';
-              html += '<button class="sub-chip ' + cls + '" onclick="selectedSubCategoryFilter=\'' + escapeHtml(s) + '\'; render();">' +
-                escapeHtml(s) + ' (' + matched.length + '건 · ' + formatNumber(sum) + '원)</button>';
-            });
-            html += '</div>';
-          }
-        }
-
-        if (cat === '출장비') {
-          html += '<div class="chip-scroll-row">';
-          TRAVEL_DIVS.forEach(function(div) {
-            const matched = majorList.filter(function(r) {
-              const sub = ((r.fields || {}).subCategory || '').trim() || '미지정';
-              if (selectedSubCategoryFilter !== '전체' && sub !== selectedSubCategoryFilter) return false;
-              const rdiv = ((r.fields || {}).travelDivision || '식대').trim();
-              return div === '전체' || rdiv === div;
-            });
-            let sum = 0;
-            matched.forEach(function(r) { sum += getNumericAmount(r); });
-            const label = div === '전체'
-              ? ('구분전체 (' + matched.length + '건)')
-              : (div + ' (' + formatNumber(sum) + '원)');
-            const cls = (selectedTravelDivisionFilter === div) ? 'active' : '';
-            html += '<button class="amber-chip ' + cls + '" onclick="selectedTravelDivisionFilter=\'' + escapeHtml(div) + '\'; render();">' +
-              escapeHtml(label) + '</button>';
-          });
-          html += '</div>';
-        }
-
-        if (cat === '병원비') {
-          html += '<div class="chip-scroll-row">';
-          ['전체', '미청구', '청구완료'].forEach(function(st) {
-            const matched = majorList.filter(function(r) {
-              if (selectedSubCategoryFilter !== '전체' && getMedicalGroupKey(r) !== selectedSubCategoryFilter) return false;
-              return st === '전체' || getMedicalClaimLabel(r) === st;
-            });
-            let sum = 0;
-            matched.forEach(function(r) { sum += getNumericAmount(r); });
-            const isSel = (selectedMedicalClaimFilter === st);
-            const label = (st === '전체')
-              ? ('청구전체 (' + matched.length + '건)')
-              : (st + ' (' + matched.length + '건 · ' + formatNumber(sum) + '원)');
-            const bg = isSel
-              ? (st === '청구완료' ? '#bbf7d0' : (st === '미청구' ? '#fecdd3' : '#e0e7ff'))
-              : (st === '청구완료' ? '#f0fdf4' : (st === '미청구' ? '#fff1f2' : '#f1f5f9'));
-            const col = st === '청구완료' ? '#166534' : (st === '미청구' ? '#be123c' : '#1e293b');
-            html += '<button class="sub-chip" style="background:' + bg + '; color:' + col + '; font-weight:' + (isSel ? '700' : '500') + ';" onclick="selectedMedicalClaimFilter=\'' + st + '\'; render();">' +
-              escapeHtml(label) + '</button>';
-          });
-          const curItems = getFilteredRecords();
-          const allClaimed = curItems.length > 0 && curItems.every(function(r) { return isRecordMedicalClaimed(r); });
-          html += '<button class="sub-chip" style="background:#1e3a8a; color:#fff; font-weight:700;" onclick="toggleAllFilteredMedicalClaimInHtml()">' +
-            (allClaimed ? ('☐ 현재목록 일괄해제 (' + curItems.length + '건)') : ('☑ 현재목록 일괄체크 (' + curItems.length + '건)')) +
-            '</button>';
-          html += '</div>';
-        }
-      }
-
-      // 4) 명함관리: 회사명 · 현장명 · 이름 실시간 검색 바
-      if (cat === '명함관리') {
-        const curItems = getFilteredRecords();
-        const existingInput = document.getElementById('bizcard-search-input');
-        const wasFocused = existingInput && (document.activeElement === existingInput);
-        html += '<div style="display:flex; align-items:center; gap:6px; width:100%;">' +
-          '<input id="bizcard-search-input" type="text" placeholder="🔍 회사명, 현장명, 이름으로 명함 검색..." value="' + escapeHtml(businessCardSearchQuery) + '" ' +
-          'oninput="onBizCardSearchInput(this.value)" ' +
-          'style="flex:1; height:32px; padding:0 10px; border:1px solid #93c5fd; border-radius:7px; font-size:12px; font-weight:600; outline:none;" />' +
-          (businessCardSearchQuery.trim() !== ''
-            ? '<button class="period-nav-btn" style="color:#dc2626; border-color:#fca5a5;" onclick="onBizCardSearchInput(\x27\x27)">지우기 ✕</button>'
-            : '') +
-          '<span class="period-badge" style="padding:5px 9px;">' +
-          (businessCardSearchQuery.trim() === ''
-            ? ('총 ' + curItems.length + '명')
-            : ('검색 ' + curItems.length + '명 / 전체 ' + majorList.length + '명')) +
-          '</span></div>';
-        bar.innerHTML = html;
-        if (wasFocused) {
-          const newInp = document.getElementById('bizcard-search-input');
-          if (newInp) {
-            newInp.focus();
-            const len = newInp.value.length;
-            newInp.setSelectionRange(len, len);
-          }
-        }
-        return;
-      }
-
-      bar.innerHTML = html;
-    }
-
-    function onBizCardSearchInput(val) {
-      businessCardSearchQuery = val || '';
-      render();
-    }
-
-    function getDisplayTitle(item) {
-      const f = item.fields || {};
-      if (item.category === '공문(수신)' || item.category === '공문(발신)') return f.title || '제목 없음';
-      if (item.category === '자재송장') return ((f.productName || '품목 미상') + ' (' + (f.specName || '-') + ')').trim();
-      if (item.category === '출장비') {
-        const sub = f.subCategory ? ('[' + f.subCategory + '] ') : '';
-        const div = f.travelDivision || '자차';
-        if (div === '자차') {
-          const mult = f.carMultiplier || '2';
-          const rate = f.carUnitPrice || '300';
-          return sub + '자차 (' + (f.distanceKm || '0') + 'km × ' + mult + ' × ' + rate + '원)';
-        }
-        return sub + div + ' - ' + (f.merchantName || '상호 미상');
-      }
-      if (item.category === '병원비') {
-        const sub = f.subCategory ? ('[' + f.subCategory + '] ') : '';
-        return sub + (f.clinicName || '병원/약국명 미상');
-      }
-      if (item.category === '명함관리') {
-        const comp = (f.companyName || '').trim();
-        const site = (f.siteName || '').trim();
-        const name = (f.personName || '').trim() || '명함';
-        const pfx = comp ? (site ? ('[' + comp + ' · ' + site + '] ') : ('[' + comp + '] ')) : (site ? ('[' + site + '] ') : '');
-        return pfx + name;
-      }
-      return '-';
-    }
-
-    function getDisplaySubtitle(item) {
-      const f = item.fields || {};
-      if (item.category === '공문(수신)' || item.category === '공문(발신)') {
-        const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
-        const partyLabel = isOut ? '받는사람' : '보낸사람';
-        const partyVal = isOut ? (f.recipient || '-') : (f.sender || '-');
-        return '공문번호: ' + (f.docNumber || '-') + ' | ' + partyLabel + ': ' + partyVal + ' | ' + (f.aiSummary || '-');
-      }
-      if (item.category === '자재송장') {
-        return '수량: ' + (f.quantity || '-') + ' ' + (f.unit || 'ton') + ' | 공급자: ' + (f.supplierName || '-') + ' | 송장번호: ' + (f.orderNumber || '-');
-      }
-      if (item.category === '출장비') {
-        return '구분: ' + (f.travelDivision || '-') + ' | 금액: ' + formatNumber(getNumericAmount(item)) + '원 | 일자: ' + dotDate(f.date);
-      }
-      if (item.category === '병원비') {
-        return '수납액: ' + formatNumber(getNumericAmount(item)) + '원 | 사업자번호: ' + (f.bizRegNumber || '-');
-      }
-      if (item.category === '명함관리') {
-        return '휴대폰: ' + (f.mobilePhone || '-') + ' | 이메일: ' + (f.email || '-');
-      }
-      return '';
-    }
-
-    function buildHeaderCell(label, defaultWidth, colIdx, sortKey, groupKey, isGroupActive) {
-      const wKey = selectedCategoryFilter + '_' + colIdx;
-      const w = customColWidths[wKey] || defaultWidth;
-      const isSortable = Boolean(sortKey);
-      const isActive = isSortable && (sortColumn === sortKey);
-      const arrow = isActive ? (sortAscending ? ' ▲' : ' ▼') : (isSortable ? ' ↕' : '');
-      const groupMark = groupKey ? (isGroupActive ? ' ✓' : '') : '';
-      const cls = ((isSortable || groupKey) ? 'sortable-th' : '') + (isActive ? ' sorted-active' : '');
-      const extraStyle = isGroupActive ? ' background:#fef3c7; color:#92400e;' : '';
-      let clickAttr = '';
-      const sortCall = isSortable ? ('toggleSort(\'' + sortKey + '\');') : '';
-      if (groupKey === 'inv_product') clickAttr = ' onclick="' + sortCall + 'toggleInvoiceGroup(\'product\')"';
-      else if (groupKey === 'inv_spec') clickAttr = ' onclick="' + sortCall + 'toggleInvoiceGroup(\'spec\')"';
-      else if (groupKey === 'med_cat') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\'cat\')"';
-      else if (groupKey === 'med_patient') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\'patient\')"';
-      else if (groupKey === 'med_claim') clickAttr = ' onclick="' + sortCall + 'toggleMedicalGroup(\'claim\')"';
-      else if (isSortable) clickAttr = ' onclick="' + sortCall + '"';
-      return '<th class="' + cls + '" data-col-idx="' + colIdx + '" style="width:' + w + 'px;' + extraStyle + '"' + clickAttr + '>' +
-        escapeHtml(label) + groupMark + arrow +
-        '<div class="col-resizer" onmousedown="startColResize(event, ' + colIdx + ')" onclick="event.stopPropagation()"></div>' +
-        '</th>';
-    }
-
-    function getColWidth(defaultWidth, colIdx) {
-      const wKey = selectedCategoryFilter + '_' + colIdx;
-      return customColWidths[wKey] || defaultWidth;
-    }
-
-    function buildTableColGroup(defaultWidths) {
-      let totalW = 0;
-      let colsHtml = '<colgroup>';
-      defaultWidths.forEach(function(dw, idx) {
-        const w = getColWidth(dw, idx);
-        totalW += w;
-        colsHtml += '<col id="col-def-' + idx + '" style="width:' + w + 'px;" />';
-      });
-      colsHtml += '</colgroup>';
-      return { totalWidth: totalW, colGroupHtml: colsHtml };
-    }
-
-    let activeResizeColIdx = -1;
-    let resizeStartX = 0;
-    let resizeStartWidth = 0;
-    let resizeTableStartWidth = 0;
-
-    function startColResize(e, colIdx) {
-      e.stopPropagation();
-      e.preventDefault();
-      const table = leftPane.querySelector('table.app-fixed-table');
-      const colEl = document.getElementById('col-def-' + colIdx);
-      if (!table || !colEl) return;
-      activeResizeColIdx = colIdx;
-      resizeStartX = e.clientX;
-      resizeStartWidth = parseFloat(colEl.style.width) || colEl.offsetWidth || 64;
-      resizeTableStartWidth = parseFloat(table.style.width) || table.offsetWidth || 600;
-      if (e.target && e.target.classList) e.target.classList.add('resizing');
-    }
-
-    window.addEventListener('mousemove', function(e) {
-      if (activeResizeColIdx === -1) return;
-      const dx = e.clientX - resizeStartX;
-      const newW = Math.max(38, Math.round(resizeStartWidth + dx));
-      const delta = newW - resizeStartWidth;
-      const wKey = selectedCategoryFilter + '_' + activeResizeColIdx;
-      customColWidths[wKey] = newW;
-
-      const table = leftPane.querySelector('table.app-fixed-table');
-      const colEl = document.getElementById('col-def-' + activeResizeColIdx);
-      const thEl = leftPane.querySelector('th[data-col-idx="' + activeResizeColIdx + '"]');
-      if (colEl) colEl.style.width = newW + 'px';
-      if (thEl) thEl.style.width = newW + 'px';
-      if (table) table.style.width = (resizeTableStartWidth + delta) + 'px';
-    });
-
-    window.addEventListener('mouseup', function() {
-      if (activeResizeColIdx !== -1) {
-        const rEls = leftPane.querySelectorAll('.col-resizer.resizing');
-        rEls.forEach(function(el) { el.classList.remove('resizing'); });
-        activeResizeColIdx = -1;
-      }
-    });
-
-    function render() {
-      renderMajorTabsBar();
-      renderSummaryAndFilterBar();
-
-      const prevScrollTop = leftPane.scrollTop;
-      const prevScrollLeft = leftPane.scrollLeft;
-
-      const items = getFilteredRecords();
-      document.getElementById('count-label').textContent = items.length;
-      if (!items.some(function(r) { return r.id === selectedId; })) {
-        selectedId = items.length > 0 ? items[0].id : null;
-      }
-
-      if (items.length === 0) {
-        leftPane.innerHTML = '<div style="padding:28px; text-align:center; color:#64748b; font-size:13px;">조건에 맞는 증빙서류가 없습니다.</div>';
-        selectRow(null);
-        return;
-      }
-
-      const cumMap = computeInvoiceCumulativeMap();
-      const repliedKeys = computeRepliedKeySet();
-      const cat = selectedCategoryFilter;
-      let html = '';
-
-      if (cat === '공문(수신)' || cat === '공문(발신)' || (cat === '전체' && IS_ALL_OFFICIAL_DOC)) {
-        const isOutTab = (cat === '공문(발신)');
-        const partyHeader = (cat === '전체') ? '보낸/받는사람' : (isOutTab ? '받는사람' : '보낸사람');
-        const defaultWidths = isOutTab
-          ? [64, 76, 68, 76, 118, 152, 64, 64, 74, 68]
-          : [64, 76, 68, 118, 152, 64, 56, 64, 74, 68];
-        const cg = buildTableColGroup(defaultWidths);
-        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>';
-        if (isOutTab) {
-          html += buildHeaderCell('날짜', 64, 0, 'date') +
-            buildHeaderCell('공문번호', 76, 1, 'docNumber') +
-            buildHeaderCell(partyHeader, 68, 2, null) +
-            buildHeaderCell('회신번호', 76, 3, null) +
-            buildHeaderCell('제목', 118, 4, null) +
-            buildHeaderCell('내용', 152, 5, null) +
-            buildHeaderCell('회신요청일', 64, 6, null) +
-            buildHeaderCell('올린사람', 64, 7, 'uploader') +
-            buildHeaderCell('결재', 74, 8, 'approval') +
-            buildHeaderCell('수정/삭제', 68, 9, null);
-        } else {
-          html += buildHeaderCell('날짜', 64, 0, 'date') +
-            buildHeaderCell('공문번호', 76, 1, 'docNumber') +
-            buildHeaderCell(partyHeader, 68, 2, null) +
-            buildHeaderCell('제목', 118, 3, null) +
-            buildHeaderCell('내용', 152, 4, null) +
-            buildHeaderCell('회신요청일', 64, 5, null) +
-            buildHeaderCell('회신완료', 56, 6, 'replied') +
-            buildHeaderCell('올린사람', 64, 7, 'uploader') +
-            buildHeaderCell('결재', 74, 8, 'approval') +
-            buildHeaderCell('수정/삭제', 68, 9, null);
-        }
-        html += '</tr></thead><tbody>';
-        items.forEach(function(item) {
-          const f = item.fields || {};
-          const isOut = item.category === '공문(발신)' || f.docDirection === '발신';
-          const partyVal = isOut ? (f.recipient || '-') : (f.sender || '-');
-          const replyNum = f.replyDocNumber || '-';
-          const uploaderVal = f.uploaderName || '-';
-          const myKey = normalizeDocKey(f.docNumber);
-          const isReplied = Boolean(myKey && repliedKeys.has(myKey));
-          const cls = item.id === selectedId ? 'active' : '';
-          const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
-            '<td>' + escapeHtml(dotDate(f.sentDate)) + '</td>' +
-            '<td>' + escapeHtml(f.docNumber || '-') + '</td>' +
-            '<td>' + escapeHtml(partyVal) + '</td>' +
-            (isOutTab ? '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(replyNum) + '</td>' : '') +
-            '<td>' + escapeHtml(f.title || '-') + '</td>' +
-            '<td>' + escapeHtml(f.aiSummary || '-') + '</td>' +
-            '<td>' + escapeHtml(dotDate(f.replyDeadline)) + '</td>' +
-            (!isOutTab ? '<td style="color:#16a34a; font-weight:700; font-size:14px;">' + (isReplied ? '○' : '') + '</td>' : '') +
-            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            buildApprovalCellHtml(item) +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
-            '</tr>';
-        });
-        html += '</tbody></table>';
-      } else if (cat === '자재송장') {
-        const defaultWidths = [64, 72, 62, 44, 64, 68, 78, 122, 64, 74, 68];
-        const cg = buildTableColGroup(defaultWidths);
-        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('날짜', 64, 0, 'date') +
-          buildHeaderCell('제품명', 72, 1, null, 'inv_product', invSumByProduct) +
-          buildHeaderCell('규격명', 62, 2, null, 'inv_spec', invSumBySpec) +
-          buildHeaderCell('단위', 44, 3, null) +
-          buildHeaderCell('수량', 64, 4, null) +
-          buildHeaderCell('누적수량', 68, 5, null) +
-          buildHeaderCell('공급자', 78, 6, null) +
-          buildHeaderCell('주문송장번호', 122, 7, null) +
-          buildHeaderCell('올린사람', 64, 8, 'uploader') +
-          buildHeaderCell('결재', 74, 9, 'approval') +
-          buildHeaderCell('수정/삭제', 68, 10, null) +
-          '</tr></thead><tbody>';
-        items.forEach(function(item) {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          const cumVal = cumMap[item.id] || f.quantity || '-';
-          const uploaderVal = f.uploaderName || '-';
-          const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
-            '<td>' + escapeHtml(dotDate(f.arrivalDate)) + '</td>' +
-            '<td>' + escapeHtml(f.productName || '-') + '</td>' +
-            '<td>' + escapeHtml(f.specName || '-') + '</td>' +
-            '<td>' + escapeHtml(f.unit || 'ton') + '</td>' +
-            '<td>' + escapeHtml(f.quantity || '-') + '</td>' +
-            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(cumVal) + '</td>' +
-            '<td>' + escapeHtml(f.supplierName || '-') + '</td>' +
-            '<td>' + escapeHtml(f.orderNumber || '-') + '</td>' +
-            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(uploaderVal) + '</td>' +
-            buildApprovalCellHtml(item) +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
-            '</tr>';
-        });
-        html += '</tbody></table>';
-      } else if (cat === '출장비') {
-        const defaultWidths = [100, 58, 136, 84, 68];
-        const cg = buildTableColGroup(defaultWidths);
-        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('카테고리(날짜)', 100, 0, 'date') +
-          buildHeaderCell('구분', 58, 1, null) +
-          buildHeaderCell('상호', 136, 2, null) +
-          buildHeaderCell('금액', 84, 3, null) +
-          buildHeaderCell('수정/삭제', 68, 4, null) +
-          '</tr></thead><tbody>';
-        items.forEach(function(item) {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          const sub = (f.subCategory || '').trim() || '미지정';
-          const dateStr = dotDate(f.date || (item.createdAt || '').split(' ')[0]);
-          const div = f.travelDivision || '식대';
-          const mult = f.carMultiplier || '2';
-          const rate = f.carUnitPrice || '300';
-          const desc = div === '자차'
-            ? (f.merchantName ? f.merchantName : ((f.distanceKm || '0') + 'km × ' + mult + ' × ' + rate + '원'))
-            : (f.merchantName || '-');
-          const amt = formatNumber(getNumericAmount(item)) + '원';
-          const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
-            '<td>' + escapeHtml(sub) + '<br/>(' + escapeHtml(dateStr) + ')</td>' +
-            '<td style="color:#451a03; font-weight:700;">' + escapeHtml(div) + '</td>' +
-            '<td>' + escapeHtml(desc) + '</td>' +
-            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
-            '</tr>';
-        });
-        html += '</tbody></table>';
-      } else if (cat === '병원비') {
-        const defaultWidths = [74, 64, 68, 104, 80, 98, 72, 76, 68];
-        const cg = buildTableColGroup(defaultWidths);
-        const allClaimed = items.length > 0 && items.every(function(r) { return isRecordMedicalClaimed(r); });
-        const w6 = getColWidth(72, 6);
-        const claimSortArrow = (sortColumn === 'claimed') ? (sortAscending ? ' ▲' : ' ▼') : ' ↕';
-        const claimGroupMark = medSumByClaim ? ' ✓' : '';
-        const claimHdrBg = medSumByClaim ? 'background:#fef3c7; color:#92400e;' : (sortColumn === 'claimed' ? 'background:#dbeafe; color:#1e3a8a;' : '');
-        const claimHeaderTh = '<th class="sortable-th" data-col-idx="6" style="width:' + w6 + 'px;' + claimHdrBg + '">' +
-          '<div onclick="toggleSort(\'claimed\'); toggleMedicalGroup(\'claim\');" style="cursor:pointer;">청구여부' + claimGroupMark + claimSortArrow + '</div>' +
-          '<button onclick="event.stopPropagation(); toggleAllFilteredMedicalClaimInHtml();" style="margin-top:2px; border:1px solid ' + (allClaimed ? '#15803d' : '#64748b') + '; background:' + (allClaimed ? '#16a34a' : '#fff') + '; color:' + (allClaimed ? '#fff' : '#334155') + '; border-radius:4px; padding:1px 4px; font-size:9px; font-weight:700; cursor:pointer;">' + (allClaimed ? '☑ 전체해제' : '☐ 일괄체크') + '</button>' +
-          '<div class="col-resizer" onmousedown="startColResize(event, 6)" onclick="event.stopPropagation()"></div>' +
-          '</th>';
-        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('카테고리', 74, 0, 'subCategory', 'med_cat', medSumByCat) +
-          buildHeaderCell('환자성명', 64, 1, 'patientName', 'med_patient', medSumByPatient) +
-          buildHeaderCell('날짜', 68, 2, 'date') +
-          buildHeaderCell('상호', 104, 3, 'merchant') +
-          buildHeaderCell('금액', 80, 4, 'amount') +
-          buildHeaderCell('사업자등록번호', 98, 5, null) +
-          claimHeaderTh +
-          buildHeaderCell('증빙첨부', 76, 7, null) +
-          buildHeaderCell('수정/삭제', 68, 8, null) +
-          '</tr></thead><tbody>';
-        items.forEach(function(item) {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          const sub = (f.subCategory || '').trim() || '미지정';
-          const patientName = (f.patientName || '').trim() || '-';
-          const dateStr = dotDate(f.issueDate || (item.createdAt || '').split(' ')[0]);
-          const amt = formatNumber(getNumericAmount(item)) + '원';
-          const claimed = isRecordMedicalClaimed(item);
-          const claimBadge = claimed
-            ? '<span style="display:inline-block; background:#dcfce7; color:#166534; border:1px solid #16a34a; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">☑ 청구완료</span>'
-            : '<span style="display:inline-block; background:#fff1f2; color:#be123c; border:1px solid #fda4af; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">☐ 미청구</span>';
-          const proofs = getExtraProofImages(item);
-          const proofBadge = proofs.length > 0
-            ? ('<span style="display:inline-block; background:#dcfce7; color:#166534; border:1px solid #16a34a; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">📎 첨부(' + proofs.length + ')</span>')
-            : '<span style="display:inline-block; background:#f1f5f9; color:#334155; border:1px solid #94a3b8; border-radius:4px; padding:2px 5px; font-size:10px; font-weight:700;">+ 증빙추가</span>';
-          const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
-            '<td>' + escapeHtml(sub) + '</td>' +
-            '<td style="font-weight:600;">' + escapeHtml(patientName) + '</td>' +
-            '<td>' + escapeHtml(dateStr) + '</td>' +
-            '<td>' + escapeHtml(f.clinicName || '-') + '</td>' +
-            '<td style="color:#1e3a8a; font-weight:700;">' + escapeHtml(amt) + '</td>' +
-            '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
-            '<td onclick="event.stopPropagation(); toggleSingleMedicalClaimInHtml(\'' + sid + '\');" style="cursor:pointer;">' + claimBadge + '</td>' +
-            '<td onclick="event.stopPropagation(); selectRow(\'' + sid + '\'); triggerAddProofForRecord(\'' + sid + '\');">' + proofBadge + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
-            '</tr>';
-        });
-        html += '</tbody></table>';
-      } else if (cat === '명함관리') {
-        const defaultWidths = [68, 108, 108, 68, 124, 160, 68];
-        const cg = buildTableColGroup(defaultWidths);
-        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('날짜', 68, 0, 'date') +
-          buildHeaderCell('회사명', 108, 1, 'companyName') +
-          buildHeaderCell('현장명', 108, 2, 'siteName') +
-          buildHeaderCell('이름', 68, 3, 'personName') +
-          buildHeaderCell('휴대폰번호 (📞전화)', 124, 4, 'mobilePhone') +
-          buildHeaderCell('이메일주소 (✉️메일)', 160, 5, 'email') +
-          buildHeaderCell('수정/삭제', 68, 6, null) +
-          '</tr></thead><tbody>';
-        items.forEach(function(item) {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          const dateStr = dotDate(f.cardDate || (item.createdAt || '').split(' ')[0]);
-          const comp = (f.companyName || '').trim() || '-';
-          const site = (f.siteName || '').trim() || '-';
-          const name = (f.personName || '').trim() || '-';
-          const phone = (f.mobilePhone || '').trim();
-          const email = (f.email || '').trim();
-          const phoneDigits = phone.replace(/[^0-9+]/g, '');
-          const phoneHtml = (phone && phone !== '-')
-            ? ('<a href="tel:' + escapeHtml(phoneDigits) + '" onclick="event.stopPropagation();" style="color:#15803d; font-weight:700; text-decoration:underline;">📞 ' + escapeHtml(phone) + '</a>')
-            : '-';
-          const emailHtml = (email && email !== '-')
-            ? ('<a href="mailto:' + escapeHtml(email) + '" onclick="event.stopPropagation();" style="color:#1d4ed8; font-weight:700; text-decoration:underline;">✉️ ' + escapeHtml(email) + '</a>')
-            : '-';
-          const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
-            '<td>' + escapeHtml(dateStr) + '</td>' +
-            '<td style="font-weight:700;">' + escapeHtml(comp) + '</td>' +
-            '<td>' + escapeHtml(site) + '</td>' +
-            '<td style="font-weight:700;">' + escapeHtml(name) + '</td>' +
-            '<td>' + phoneHtml + '</td>' +
-            '<td>' + emailHtml + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
-            '</tr>';
-        });
-        html += '</tbody></table>';
-      } else {
-        const defaultWidths = [72, 68, 150, 132, 68];
-        const cg = buildTableColGroup(defaultWidths);
-        html += '<table class="app-fixed-table" style="width:' + cg.totalWidth + 'px;">' + cg.colGroupHtml + '<thead><tr>' +
-          buildHeaderCell('분류', 72, 0, null) +
-          buildHeaderCell('날짜', 68, 1, 'date') +
-          buildHeaderCell('제목 / 상호 / 품목', 150, 2, null) +
-          buildHeaderCell('상세 / 금액 / 수량', 132, 3, null) +
-          buildHeaderCell('수정/삭제', 68, 4, null) +
-          '</tr></thead><tbody>';
-        items.forEach(function(item) {
-          const f = item.fields || {};
-          const cls = item.id === selectedId ? 'active' : '';
-          let dateStr = (item.createdAt || '').split(' ')[0];
-          if (item.category === '공문(수신)' || item.category === '공문(발신)') dateStr = dotDate(f.sentDate);
-          else if (item.category === '자재송장') dateStr = dotDate(f.arrivalDate);
-          else if (item.category === '출장비') dateStr = dotDate(f.date);
-          else if (item.category === '병원비') dateStr = dotDate(f.issueDate);
-          else if (item.category === '명함관리') dateStr = dotDate(f.cardDate || (item.createdAt || '').split(' ')[0]);
-          const sid = escapeHtml(item.id);
-          html += '<tr class="' + cls + '" data-id="' + sid + '" onclick="if(!listDragMoved) selectRow(\'' + sid + '\')">' +
-            '<td>' + escapeHtml(item.category) + '</td>' +
-            '<td>' + escapeHtml(dateStr) + '</td>' +
-            '<td>' + escapeHtml(getDisplayTitle(item)) + '</td>' +
-            '<td>' + escapeHtml(getDisplaySubtitle(item)) + '</td>' +
-            '<td><button class="row-btn edit" onclick="event.stopPropagation(); openEditModal(\'' + sid + '\')">✏️</button><button class="row-btn del" onclick="event.stopPropagation(); deleteRow(\'' + sid + '\')">🗑️</button></td>' +
-            '</tr>';
-        });
-        html += '</tbody></table>';
-      }
-
-      leftPane.innerHTML = html;
-      leftPane.scrollTop = prevScrollTop;
-      leftPane.scrollLeft = prevScrollLeft;
-      selectRow(selectedId);
-    }
-
-    let selectedPhotoIdx = 0;
-    let proofTargetRecordId = null;
-
-    function getExtraProofImages(item) {
-      if (!item || !item.fields || !item.fields.proofImagesJson) return [];
-      try {
-        const arr = JSON.parse(item.fields.proofImagesJson);
-        if (Array.isArray(arr)) {
-          return arr.filter(function(s) { return typeof s === 'string' && s.trim().length > 0; });
-        }
-      } catch (_) {}
-      return [];
-    }
-
-    function setExtraProofImages(item, arr) {
-      if (!item.fields) item.fields = {};
-      if (!arr || arr.length === 0) {
-        delete item.fields.proofImagesJson;
-        item.fields.proofStatus = '';
-      } else {
-        item.fields.proofImagesJson = JSON.stringify(arr);
-        item.fields.proofStatus = '첨부(' + arr.length + '장)';
-      }
-    }
-
-    function triggerAddProofForRecord(id) {
-      proofTargetRecordId = id;
-      const inp = document.getElementById('proof-file-input');
-      if (inp) {
-        inp.value = '';
-        inp.click();
-      }
-    }
-
-    function handleProofFilesAdded(fileList) {
-      if (!fileList || fileList.length === 0 || !proofTargetRecordId) return;
-      const rec = archiveRecords.find(function(r) { return r.id === proofTargetRecordId; });
-      if (!rec) return;
-      const proofs = getExtraProofImages(rec);
-      const files = Array.from(fileList);
+    function handleExtraFilesSelected(ev) {
+      const files = ev.target.files;
+      if (!files || files.length === 0) return;
+      const cur = archiveRecords.find(function(r) { return r.id === selectedId; });
+      if (!cur) return;
+      const arr = getExtraArray(cur).slice();
       let loaded = 0;
-      files.forEach(function(file) {
+      for (let i = 0; i < files.length; i++) {
         const reader = new FileReader();
-        reader.onload = function(ev) {
-          const dataUrl = String(ev.target.result || '');
-          const commaIdx = dataUrl.indexOf(',');
-          const b64 = commaIdx !== -1 ? dataUrl.substring(commaIdx + 1) : dataUrl;
-          if (b64) proofs.push(b64);
+        reader.onload = function(e) {
+          const res = String(e.target.result || '');
+          const b64 = res.indexOf(',') !== -1 ? res.split(',').pop() : res;
+          if (b64) arr.push(b64);
           loaded++;
           if (loaded === files.length) {
-            setExtraProofImages(rec, proofs);
-            selectedId = rec.id;
-            selectedPhotoIdx = proofs.length;
+            setExtraArray(cur, arr);
+            selectedPageIdx = arr.length;
             render();
           }
         };
-        reader.readAsDataURL(file);
-      });
-    }
-
-    function removeProofImageAt(id, proofIdx) {
-      const rec = archiveRecords.find(function(r) { return r.id === id; });
-      if (!rec) return;
-      const proofs = getExtraProofImages(rec);
-      if (proofIdx < 0 || proofIdx >= proofs.length) return;
-      if (!confirm('선택한 증빙첨부 ' + (proofIdx + 1) + '번 사진을 삭제하시겠습니까?')) return;
-      proofs.splice(proofIdx, 1);
-      setExtraProofImages(rec, proofs);
-      selectedPhotoIdx = 0;
-      render();
-    }
-
-    function selectPhotoTab(idx) {
-      selectedPhotoIdx = idx;
-      updatePhotoViewerForCurrent();
-    }
-
-    function updatePhotoViewerForCurrent() {
-      const current = archiveRecords.find(function(r) { return r.id === selectedId; });
-      const imgEl = document.getElementById('preview-img');
-      const emptyMsg = document.getElementById('empty-photo-msg');
-      const tabsBar = document.getElementById('photo-tabs-bar');
-      resetPhotoZoom();
-
-      if (!current) {
-        imgEl.style.display = 'none';
-        if (emptyMsg) emptyMsg.style.display = 'block';
-        if (tabsBar) tabsBar.style.display = 'none';
-        return;
+        reader.readAsDataURL(files[i]);
       }
+    }
 
-      const proofs = current.category === '병원비' ? getExtraProofImages(current) : [];
-      if (selectedPhotoIdx > proofs.length) selectedPhotoIdx = 0;
-
-      if (current.category === '병원비' && tabsBar) {
-        const sid = escapeHtml(current.id);
-        let tHtml = '<div style="display:inline-flex; align-items:center; gap:4px; background:rgba(15,23,42,0.84); padding:4px 6px; border-radius:8px; border:1px solid rgba(255,255,255,0.22);">';
-        tHtml += '<button onclick="selectPhotoTab(0)" style="border:none; border-radius:5px; padding:4px 8px; font-size:11px; font-weight:700; cursor:pointer; color:#fff; background:' + (selectedPhotoIdx === 0 ? '#2563eb' : 'transparent') + ';">기본 영수증</button>';
-        proofs.forEach(function(_, pIdx) {
-          const isAct = selectedPhotoIdx === (pIdx + 1);
-          tHtml += '<span style="display:inline-flex; align-items:center; background:' + (isAct ? '#16a34a' : 'rgba(255,255,255,0.12)') + '; border-radius:5px; overflow:hidden;">' +
-            '<button onclick="selectPhotoTab(' + (pIdx + 1) + ')" style="border:none; background:transparent; color:#fff; padding:4px 6px; font-size:11px; font-weight:700; cursor:pointer;">증빙첨부 ' + (pIdx + 1) + '</button>' +
-            '<button onclick="removeProofImageAt(\'' + sid + '\', ' + pIdx + ')" title="이 증빙 사진 삭제" style="border:none; background:rgba(220,38,38,0.85); color:#fff; padding:4px 5px; font-size:10px; font-weight:700; cursor:pointer;">✕</button>' +
-            '</span>';
+    function renderSummaryBar() {
+      const bar = document.getElementById('summary-bar');
+      const majorList = getMajorRecords();
+      if (selectedCategoryFilter === '자재송장') {
+        bar.style.display = 'flex';
+        const groups = {};
+        majorList.forEach(function(r) {
+          const f = r.fields || {};
+          const prod = (f.productName || '').trim();
+          const u = (f.unit || '').trim() || (prod.indexOf('철근') !== -1 ? 'ton' : '매');
+          const q = parseInvoiceQty(r);
+          const gKey = getInvoiceGroupKey(r);
+          if (!groups[gKey]) groups[gKey] = { cnt: 0, sum: 0, unit: u };
+          groups[gKey].cnt++;
+          groups[gKey].sum += q;
         });
-        tHtml += '<button onclick="triggerAddProofForRecord(\'' + sid + '\')" style="border:none; border-radius:5px; padding:4px 8px; font-size:11px; font-weight:700; cursor:pointer; background:#f59e0b; color:#0f172a;">+ 증빙첨부 추가</button>';
-        tHtml += '</div>';
-        tabsBar.innerHTML = tHtml;
-        tabsBar.style.display = 'block';
-      } else if (tabsBar) {
-        tabsBar.style.display = 'none';
-      }
+        const allLabel = '전체 ' + majorList.length + '장';
+        let chipsHtml = '<button class="chip-btn ' + (selectedProductFilter === '전체' ? 'active' : '') + '" onclick="selectedProductFilter='전체'; render();">' + escapeHtml(allLabel) + '</button>';
+        Object.keys(groups).forEach(function(k) {
+          const g = groups[k];
+          const cls = selectedProductFilter === k ? 'chip-btn active' : 'chip-btn';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedProductFilter='' + escapeHtml(k) + ''; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtQty(g.sum) + escapeHtml(g.unit) + ')</button>';
+        });
+        const modeLabel = (invGroupProduct && invGroupSpec) ? '제품명. 규격별' : (invGroupSpec ? '규격명별' : '제품명별');
+        bar.innerHTML =
+          '<div class="sum-sub">📊 합산기준: ' + modeLabel + ' (표의 [제품명]·[규격명] 제목을 누르면 합산 기준 전환)</div>' +
+          '<div class="sub-row">' + chipsHtml + '</div>';
+      } else if (selectedCategoryFilter === '병원비') {
+        bar.style.display = 'flex';
+        const totalSum = majorList.reduce(function(acc, r) { return acc + getRecordAmount(r); }, 0);
+        const groups = {};
+        majorList.forEach(function(r) {
+          const key = getMedicalGroupKey(r);
+          if (!groups[key]) groups[key] = { cnt: 0, sum: 0 };
+          groups[key].cnt++;
+          groups[key].sum += getRecordAmount(r);
+        });
+        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat='전체'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
+        Object.keys(groups).forEach(function(k) {
+          const g = groups[k];
+          const cls = selectedSubCat === k ? 'chip-btn active' : 'chip-btn';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat='' + escapeHtml(k) + ''; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
+        });
 
-      const activeB64 = (selectedPhotoIdx > 0 && selectedPhotoIdx - 1 < proofs.length)
-        ? proofs[selectedPhotoIdx - 1]
-        : (current.base64Image || '');
-      const remoteRel = (selectedPhotoIdx === 0)
-        ? (current.remoteImagePath || (current.fields && current.fields.remoteImagePath) || '')
-        : '';
+        let unclaimedCnt = 0, unclaimedSum = 0, claimedCnt = 0, claimedSum = 0;
+        majorList.forEach(function(r) {
+          if (isClaimed(r)) { claimedCnt++; claimedSum += getRecordAmount(r); }
+          else { unclaimedCnt++; unclaimedSum += getRecordAmount(r); }
+        });
+        const claimHtml =
+          '<button class="chip-btn ' + (selectedClaimFilter === '전체' ? 'active' : '') + '" onclick="selectedClaimFilter='전체'; render();">청구전체 (' + majorList.length + '건)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '미청구' ? 'active' : '') + '" style="color:#be123c;" onclick="selectedClaimFilter='미청구'; render();">미청구 (' + unclaimedCnt + '건 · ' + fmtNum(unclaimedSum) + '원)</button>' +
+          '<button class="chip-btn ' + (selectedClaimFilter === '청구완료' ? 'active' : '') + '" style="color:#15803d;" onclick="selectedClaimFilter='청구완료'; render();">청구완료 (' + claimedCnt + '건 · ' + fmtNum(claimedSum) + '원)</button>';
 
-      if (activeB64) {
-        imgEl.src = activeB64.startsWith('data:') ? activeB64 : ('data:image/jpeg;base64,' + activeB64);
-        imgEl.style.display = 'block';
-        if (emptyMsg) emptyMsg.style.display = 'none';
-      } else if (remoteRel) {
-        imgEl.src = remoteRel;
-        imgEl.style.display = 'block';
-        if (emptyMsg) emptyMsg.style.display = 'none';
+        const medModeStr = (medSumByCat && medSumByPatient) ? '카테고리. 환자별' : (medSumByPatient ? '환자별' : '카테고리별');
+        bar.innerHTML =
+          '<div class="sum-title">병원비 합계 [' + medModeStr + '] (' + majorList.length + '건): ' + fmtNum(totalSum) + '원</div>' +
+          '<div class="sub-row">' + chipsHtml + '</div>' +
+          '<div class="sub-row">' + claimHtml + '</div>';
+      } else if (selectedCategoryFilter === '출장비') {
+        bar.style.display = 'flex';
+        const totalSum = majorList.reduce(function(acc, r) { return acc + getRecordAmount(r); }, 0);
+        const groups = {};
+        majorList.forEach(function(r) {
+          const sc = ((r.fields && r.fields.subCategory) || '').trim() || '미지정';
+          if (!groups[sc]) groups[sc] = { cnt: 0, sum: 0 };
+          groups[sc].cnt++;
+          groups[sc].sum += getRecordAmount(r);
+        });
+        let chipsHtml = '<button class="chip-btn ' + (selectedSubCat === '전체' ? 'active' : '') + '" onclick="selectedSubCat=\'전체\'; render();">전체 (' + majorList.length + '건 · ' + fmtNum(totalSum) + '원)</button>';
+        Object.keys(groups).forEach(function(k) {
+          const g = groups[k];
+          const cls = selectedSubCat === k ? 'chip-btn active' : 'chip-btn';
+          chipsHtml += '<button class="' + cls + '" onclick="selectedSubCat=\'' + escapeHtml(k) + '\'; render();">' + escapeHtml(k) + ' (' + g.cnt + '건 · ' + fmtNum(g.sum) + '원)</button>';
+        });
+        bar.innerHTML =
+          '<div class="sum-title">출장비 합계 (' + majorList.length + '건): ' + fmtNum(totalSum) + '원</div>' +
+          '<div class="sub-row">' + chipsHtml + '</div>';
       } else {
-        imgEl.style.display = 'none';
-        if (emptyMsg) emptyMsg.style.display = 'block';
+        bar.style.display = 'none';
       }
     }
 
-    function selectRow(id) {
-      if (selectedId !== id) {
-        selectedPhotoIdx = 0;
-      }
-      selectedId = id;
-      const rows = leftPane.querySelectorAll('tbody tr');
-      rows.forEach(function(tr) {
-        if (tr.getAttribute('data-id') === id) {
-          tr.classList.add('active');
-        } else {
-          tr.classList.remove('active');
-        }
-      });
-      updatePhotoViewerForCurrent();
-    }
+    function render() {
+      const tabBar = document.getElementById('major-tabs-bar');
+      tabBar.innerHTML = ALL_TABS.map(function(t) {
+        const cnt = archiveRecords.filter(function(r) { return r.category === t; }).length;
+        const cls = t === selectedCategoryFilter ? 'chip-btn active' : 'chip-btn';
+        return '<button class="' + cls + '" onclick="selectedCategoryFilter=\'' + t + '\'; selectedSubCat=\'전체\'; selectedProductFilter=\'전체\'; render();">' + escapeHtml(t) + ' (' + cnt + ')</button>';
+      }).join('');
 
-    // ★ HTML 파일 내부에서도 [PDF 내보내기] 클릭 시 현재 조회된 항목 + 병원비 추가 증빙첨부 사진까지 여러 장 모두 출력!
-    function exportFilteredPdfInHtml() {
-      const items = getFilteredRecords();
-      if (!items || items.length === 0) {
-        alert('내보낼 증빙서류가 없습니다.');
+      renderSummaryBar();
+
+      const list = getFiltered();
+      if (!list.some(function(r) { return r.id === selectedId; })) {
+        selectedId = list.length > 0 ? list[0].id : null;
+        selectedPageIdx = 0;
+      }
+
+      const thead = document.getElementById('doc-thead');
+      const tbody = document.getElementById('doc-tbody');
+
+      if (selectedCategoryFilter === '병원비') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:74px;" class="' + thClass('subCategory', medSumByCat) + '" onclick="toggleMedicalGroup('cat');">카테고리 ' + (medSumByCat ? '✓' : '') + '<br>' + sortArrow('subCategory') + '</th>' +
+          '<th style="width:70px;" class="' + thClass('patient', medSumByPatient) + '" onclick="toggleMedicalGroup('patient');">환자성명 ' + (medSumByPatient ? '✓' : '') + '<br>' + sortArrow('patient') + '</th>' +
+          '<th style="width:88px;" class="' + thClass('date', false) + '" onclick="toggleSort(\'date\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:130px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\'clinic\');">상호' + sortArrow('clinic') + '</th>' +
+          '<th style="width:88px;" class="' + thClass('amount', false) + '" onclick="toggleSort(\'amount\');">금액' + sortArrow('amount') + '</th>' +
+          '<th style="width:108px;" class="' + thClass('bizRegNumber', false) + '" onclick="toggleSort(\'bizRegNumber\');">사업자등록번호' + sortArrow('bizRegNumber') + '</th>' +
+          '<th style="width:82px;" class="' + thClass('claimed', false) + '" onclick="toggleSort(\'claimed\');">청구여부' + sortArrow('claimed') + '</th>' +
+          '<th style="width:82px;">증빙첨부</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const extra = getExtraArray(r);
+          const sel = r.id === selectedId ? 'selected' : '';
+          const claimed = isClaimed(r);
+          return '<tr class="' + sel + '" onclick="selectRow(\'' + r.id + '\')">' +
+            '<td style="font-weight:800;">' + escapeHtml(f.subCategory || '미지정') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.patientName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.issueDate || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.clinicName || '-') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalPaid) + '원</td>' +
+            '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
+            '<td style="font-weight:800; color:' + (claimed ? '#15803d' : '#ea580c') + ';" onclick="toggleClaimed(\'' + r.id + '\', event)">' + (claimed ? '☑ 청구완료' : '☐ 미청구') + '</td>' +
+            '<td>' + buildPageButtonsHtml(r, 1 + extra.length) + '</td>' +
+            '</tr>';
+        }).join('');
+      } else if (selectedCategoryFilter === '출장비') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:110px;" class="' + thClass('date', false) + '" onclick="toggleSort(\'date\');">카테고리(날짜)' + sortArrow('date') + '</th>' +
+          '<th style="width:70px;" class="' + thClass('travelDivision', false) + '" onclick="toggleSort(\'travelDivision\');">구분' + sortArrow('travelDivision') + '</th>' +
+          '<th style="width:155px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\'clinic\');">상호' + sortArrow('clinic') + '</th>' +
+          '<th style="width:95px;" class="' + thClass('amount', false) + '" onclick="toggleSort(\'amount\');">금액' + sortArrow('amount') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const sel = r.id === selectedId ? 'selected' : '';
+          return '<tr class="' + sel + '" onclick="selectRow(\'' + r.id + '\')">' +
+            '<td style="font-weight:800;">' + escapeHtml(f.subCategory || '미지정') + '<br>(' + escapeHtml(f.date || '-') + ')</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.travelDivision || '식대') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.merchantName || '-') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalAmount) + '원</td>' +
+            '</tr>';
+        }).join('');
+      } else if (selectedCategoryFilter === '명함관리') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\'date\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:125px;" class="' + thClass('companyName', false) + '" onclick="toggleSort(\'companyName\');">회사명' + sortArrow('companyName') + '</th>' +
+          '<th style="width:140px;" class="' + thClass('siteName', false) + '" onclick="toggleSort(\'siteName\');">현장명' + sortArrow('siteName') + '</th>' +
+          '<th style="width:80px;" class="' + thClass('personName', false) + '" onclick="toggleSort(\'personName\');">이름' + sortArrow('personName') + '</th>' +
+          '<th style="width:128px;" class="' + thClass('mobilePhone', false) + '" onclick="toggleSort(\'mobilePhone\');">휴대폰번호' + sortArrow('mobilePhone') + '</th>' +
+          '<th style="width:165px;" class="' + thClass('email', false) + '" onclick="toggleSort(\'email\');">이메일주소' + sortArrow('email') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const sel = r.id === selectedId ? 'selected' : '';
+          return '<tr class="' + sel + '" onclick="selectRow(\'' + r.id + '\')">' +
+            '<td>' + escapeHtml(f.cardDate || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.companyName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.siteName || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.personName || '-') + '</td>' +
+            '<td style="font-weight:800; color:#15803d;">' + escapeHtml(f.mobilePhone || '-') + '</td>' +
+            '<td style="color:#1e3a8a;">' + escapeHtml(f.email || '-') + '</td>' +
+            '</tr>';
+        }).join('');
+      } else if (selectedCategoryFilter === 'PDF변환') {
+        thead.innerHTML = '<tr>' +
+          '<th style="width:95px;" class="' + thClass('date', false) + '" onclick="toggleSort(\'date\');">찍은날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:220px;" class="' + thClass('pdfFileName', false) + '" onclick="toggleSort(\'pdfFileName\');">파일명' + sortArrow('pdfFileName') + '</th>' +
+          '<th style="width:76px;" class="' + thClass('pageCount', false) + '" onclick="toggleSort(\'pageCount\');">장수' + sortArrow('pageCount') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const extra = getExtraArray(r);
+          const pages = 1 + extra.length;
+          const sel = r.id === selectedId ? 'selected' : '';
+          return '<tr class="' + sel + '" onclick="selectRow(\'' + r.id + '\')">' +
+            '<td>' + escapeHtml(f.pdfDate || '-') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(f.pdfFileName || '문서스캔') + '.pdf</td>' +
+            '<td>' + buildPageButtonsHtml(r, pages) + '</td></tr>';
+        }).join('');
+      } else if (selectedCategoryFilter === '자재송장') {
+        const cumMap = computeInvoiceCumulativeMap();
+        thead.innerHTML = '<tr>' +
+          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\'date\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:105px;" class="' + thClass('product', invGroupProduct) + '" onclick="toggleInvoiceGroup(\'product\');">제품명 ' + (invGroupProduct ? '✓' : '') + '<br>' + sortArrow('product') + '</th>' +
+          '<th style="width:120px;" class="' + thClass('spec', invGroupSpec) + '" onclick="toggleInvoiceGroup(\'spec\');">규격명 ' + (invGroupSpec ? '✓' : '') + '<br>' + sortArrow('spec') + '</th>' +
+          '<th style="width:56px;" class="' + thClass('unit', false) + '" onclick="toggleSort(\'unit\');">단위' + sortArrow('unit') + '</th>' +
+          '<th style="width:72px;" class="' + thClass('quantity', false) + '" onclick="toggleSort(\'quantity\');">수량' + sortArrow('quantity') + '</th>' +
+          '<th style="width:78px;">누적수량</th>' +
+          '<th style="width:110px;" class="' + thClass('supplier', false) + '" onclick="toggleSort(\'supplier\');">공급자' + sortArrow('supplier') + '</th>' +
+          '<th style="width:125px;" class="' + thClass('orderNumber', false) + '" onclick="toggleSort(\'orderNumber\');">주문송장번호' + sortArrow('orderNumber') + '</th>' +
+          '<th style="width:74px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\'uploader\');">올린사람' + sortArrow('uploader') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const sel = r.id === selectedId ? 'selected' : '';
+          return '<tr class="' + sel + '" onclick="selectRow(\'' + r.id + '\')">' +
+            '<td>' + escapeHtml(f.arrivalDate || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.productName || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.specName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.unit || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.quantity || '-') + '</td>' +
+            '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(cumMap[r.id] || '-') + '</td>' +
+            '<td>' + escapeHtml(f.supplierName || '-') + '</td>' +
+            '<td>' + escapeHtml(f.orderNumber || '-') + '</td>' +
+            '<td>' + escapeHtml(f.uploader || '-') + '</td></tr>';
+        }).join('');
+      } else {
+        const isOut = selectedCategoryFilter === '공문(발신)';
+        thead.innerHTML = '<tr>' +
+          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\'date\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:105px;" class="' + thClass('docNumber', false) + '" onclick="toggleSort(\'docNumber\');">공문번호' + sortArrow('docNumber') + '</th>' +
+          '<th style="width:125px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\'clinic\');">' + (isOut ? '받는사람' : '보낸사람') + sortArrow('clinic') + '</th>' +
+          '<th style="width:200px;" class="' + thClass('title', false) + '" onclick="toggleSort(\'title\');">제목' + sortArrow('title') + '</th>' +
+          '<th style="width:250px;" class="' + thClass('aiSummary', false) + '" onclick="toggleSort(\'aiSummary\');">내용' + sortArrow('aiSummary') + '</th>' +
+          '<th style="width:74px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\'uploader\');">올린사람' + sortArrow('uploader') + '</th>' +
+          '</tr>';
+        tbody.innerHTML = list.map(function(r) {
+          const f = r.fields || {};
+          const sel = r.id === selectedId ? 'selected' : '';
+          return '<tr class="' + sel + '" onclick="selectRow(\'' + r.id + '\')">' +
+            '<td>' + escapeHtml(f.sentDate || '-') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.docNumber || '-') + '</td>' +
+            '<td>' + escapeHtml(isOut ? (f.recipient || f.sender || '-') : (f.sender || '-')) + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.title || '-') + '</td>' +
+            '<td>' + escapeHtml(f.aiSummary || '-') + '</td>' +
+            '<td>' + escapeHtml(f.uploader || '-') + '</td></tr>';
+        }).join('');
+      }
+
+      const cur = list.find(function(r) { return r.id === selectedId; });
+      const imgEl = document.getElementById('preview-img');
+      const pageBar = document.getElementById('photo-page-bar');
+      if (!cur) {
+        imgEl.removeAttribute('src');
+        pageBar.style.display = 'none';
         return;
       }
-      const pages = [];
-      items.forEach(function(rec, idx) {
-        const proofs = rec.category === '병원비' ? getExtraProofImages(rec) : [];
-        const mainSrc = rec.base64Image
-          ? (rec.base64Image.startsWith('data:') ? rec.base64Image : ('data:image/jpeg;base64,' + rec.base64Image))
-          : (rec.remoteImagePath || (rec.fields && rec.fields.remoteImagePath) || '');
-        if (mainSrc) {
-          const badge = proofs.length > 0
-            ? ('[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + ' · 기본영수증 (증빙 ' + proofs.length + '장 포함)] ')
-            : ('[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + '] ');
-          pages.push({
-            header: badge + getDisplayTitle(rec) + ' (' + getDisplaySubtitle(rec) + ')',
-            imgSrc: mainSrc
-          });
-        }
-        proofs.forEach(function(pb64, pIdx) {
-          const pSrc = pb64.startsWith('data:') ? pb64 : ('data:image/jpeg;base64,' + pb64);
-          pages.push({
-            header: '[' + selectedCategoryFilter + ' ' + (idx + 1) + '/' + items.length + ' · 증빙첨부 ' + (pIdx + 1) + '/' + proofs.length + '] ' + getDisplayTitle(rec) + ' (' + getDisplaySubtitle(rec) + ')',
-            imgSrc: pSrc
-          });
+      const mainSrc = cur.base64Image
+        ? (cur.base64Image.indexOf('data:') === 0 ? cur.base64Image : ('data:image/jpeg;base64,' + cur.base64Image))
+        : (cur.imagePath || '');
+      const pages = [mainSrc];
+      const extraArr = getExtraArray(cur);
+      extraArr.forEach(function(b) {
+        const s = String(b || '');
+        pages.push(s.indexOf('data:') === 0 ? s : ('data:image/jpeg;base64,' + s));
+      });
+
+      if (cur.category === '병원비' || cur.category === 'PDF변환' || pages.length > 1) {
+        pageBar.style.display = 'flex';
+        let barHtml = '';
+        pages.forEach(function(_, idx) {
+          const cls = idx === selectedPageIdx ? 'page-tab active' : 'page-tab';
+          const lbl = cur.category === '병원비'
+            ? (idx === 0 ? '기본 영수증' : ('증빙첨부 ' + idx))
+            : ((idx + 1) + '페이지');
+          barHtml += '<button class="' + cls + '" onclick="selectedPageIdx=' + idx + '; resetZoom(); render();">' + lbl;
+          if (idx > 0) {
+            barHtml += ' <span class="page-del" onclick="removeExtraPage(' + (idx - 1) + ', event)">✕</span>';
+          }
+          barHtml += '</button>';
         });
-      });
-      if (pages.length === 0) {
-        alert('출력할 이미지가 없습니다.');
-        return;
+        barHtml += '<button class="page-add" onclick="triggerAddExtraPage()">+ ' + (cur.category === 'PDF변환' ? '페이지 추가' : '증빙첨부 추가') + '</button>';
+        pageBar.innerHTML = barHtml;
+      } else {
+        pageBar.style.display = 'none';
       }
-      const win = window.open('', '_blank');
-      if (!win) {
-        alert('팝업 차단을 해제해 주세요.');
-        return;
-      }
-      let pHtml = '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>증빙서류 PDF 출력 (' + pages.length + '장)</title>';
-      pHtml += '<style>@page { size: A4 portrait; margin: 10mm; } * { box-sizing: border-box; margin:0; padding:0; } body { font-family: "Malgun Gothic", sans-serif; background:#fff; } .pdf-page { width: 100%; height: 272mm; display:flex; flex-direction:column; page-break-after: always; padding: 4mm; } .pdf-page:last-child { page-break-after: auto; } .pdf-hdr { background:#e2e8f0; color:#0f172a; padding:6px 10px; border-radius:4px; font-size:12px; font-weight:700; margin-bottom:8px; display:flex; justify-content:space-between; } .pdf-img-wrap { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; } .pdf-img-wrap img { max-width:100%; max-height:245mm; object-fit:contain; }</style></head><body>';
-      pages.forEach(function(pg, i) {
-        pHtml += '<div class="pdf-page"><div class="pdf-hdr"><span>' + escapeHtml(pg.header) + '</span><span>' + (i + 1) + ' / ' + pages.length + '쪽</span></div><div class="pdf-img-wrap"><img src="' + pg.imgSrc + '" /></div></div>';
-      });
-      pHtml += '<script>window.onload=function(){ setTimeout(function(){ window.print(); }, 350); };<\/script></body></html>';
-      win.document.open();
-      win.document.write(pHtml);
-      win.document.close();
-    }
-    // -------------------------------------------------------------------------
-    // F. HTML 내부에서 직접 항목 수정(✏️) 및 삭제(🗑️)
-    // -------------------------------------------------------------------------
-    function deleteRow(id) {
-      const target = archiveRecords.find(function(r) { return r.id === id; });
-      if (!target) return;
-      if (!confirm('선택한 항목(' + getDisplayTitle(target) + ')을 목록에서 삭제하시겠습니까?\n(삭제 후 우측 상단 [통합본 저장]을 누르면 반영된 파일이 저장됩니다)')) return;
-      const idx = archiveRecords.findIndex(function(r) { return r.id === id; });
-      if (idx !== -1) archiveRecords.splice(idx, 1);
-      render();
+      if (selectedPageIdx >= pages.length) selectedPageIdx = 0;
+      imgEl.src = pages[selectedPageIdx] || pages[0] || '';
     }
 
-    function openEditModal(id) {
-      const rec = archiveRecords.find(function(r) { return r.id === id; });
-      if (!rec) return;
-      editingRecordId = id;
-      const f = rec.fields || {};
-      const body = document.getElementById('edit-modal-body');
-      let html = '';
-
-      function fieldInput(key, label, val) {
-        return '<div class="field-group"><label>' + escapeHtml(label) + '</label>' +
-          '<input type="text" data-field="' + escapeHtml(key) + '" value="' + escapeHtml(val || '') + '" /></div>';
-      }
-
-      if (rec.category === '공문(수신)' || rec.category === '공문(발신)') {
-        const isOut = rec.category === '공문(발신)';
-        html += fieldInput('sentDate', '날짜 (YYYY.MM.DD)', dotDate(f.sentDate));
-        html += fieldInput('docNumber', '공문번호', f.docNumber);
-        html += fieldInput(isOut ? 'recipient' : 'sender', isOut ? '받는사람' : '보낸사람', isOut ? f.recipient : f.sender);
-        if (isOut) html += fieldInput('replyDocNumber', '회신번호 (원본 수신공문 번호)', f.replyDocNumber);
-        html += fieldInput('title', '제목', f.title);
-        html += fieldInput('aiSummary', '내용 (핵심요약)', f.aiSummary);
-        html += fieldInput('replyDeadline', '회신요청일', dotDate(f.replyDeadline));
-        html += fieldInput('uploaderName', '올린사람 (담당자)', f.uploaderName);
-      } else if (rec.category === '자재송장') {
-        html += fieldInput('arrivalDate', '입고날짜 (YYYY.MM.DD)', dotDate(f.arrivalDate));
-        html += fieldInput('productName', '제품명', f.productName);
-        html += fieldInput('specName', '규격명', f.specName);
-        html += fieldInput('unit', '단위', f.unit || 'ton');
-        html += fieldInput('quantity', '수량', f.quantity);
-        html += fieldInput('supplierName', '공급자', f.supplierName);
-        html += fieldInput('orderNumber', '주문송장번호', f.orderNumber);
-        html += fieldInput('uploaderName', '올린사람 (담당자)', f.uploaderName);
-      } else if (rec.category === '출장비') {
-        html += fieldInput('subCategory', '카테고리 (예: 여의도출장)', f.subCategory);
-        html += fieldInput('date', '날짜 (YYYY.MM.DD)', dotDate(f.date));
-        html += fieldInput('travelDivision', '구분 (자차/택시/기차/식대/통행료)', f.travelDivision || '식대');
-        html += fieldInput('merchantName', '상호 / 내역', f.merchantName);
-        html += fieldInput('totalAmount', '금액 (숫자만)', f.totalAmount);
-      } else if (rec.category === '병원비') {
-        html += fieldInput('subCategory', '카테고리 (예: 감기, 치과)', f.subCategory);
-        html += fieldInput('patientName', '환자성명', f.patientName);
-        html += fieldInput('issueDate', '날짜 (YYYY.MM.DD)', dotDate(f.issueDate));
-        html += fieldInput('clinicName', '병원/약국 상호', f.clinicName);
-        html += fieldInput('totalPaid', '수납 금액 (숫자만)', f.totalPaid);
-        html += fieldInput('bizRegNumber', '사업자등록번호', f.bizRegNumber);
-      } else if (rec.category === '명함관리') {
-        html += fieldInput('cardDate', '날짜 (YYYY.MM.DD)', dotDate(f.cardDate || (rec.createdAt || '').split(' ')[0]));
-        html += fieldInput('companyName', '회사명', f.companyName);
-        html += fieldInput('siteName', '현장명 (또는 부서명)', f.siteName);
-        html += fieldInput('personName', '이름', f.personName);
-        html += fieldInput('mobilePhone', '휴대폰번호', f.mobilePhone);
-        html += fieldInput('email', '이메일주소', f.email);
-      }
-
-      body.innerHTML = html;
-      document.getElementById('edit-modal-backdrop').style.display = 'flex';
-    }
-
-    function closeEditModal() {
-      editingRecordId = null;
-      document.getElementById('edit-modal-backdrop').style.display = 'none';
-    }
-
-    function saveEditedRecord() {
-      if (!editingRecordId) return;
-      const rec = archiveRecords.find(function(r) { return r.id === editingRecordId; });
-      if (!rec) return;
-      if (!rec.fields) rec.fields = {};
-      const inputs = document.querySelectorAll('#edit-modal-body input[data-field]');
-      inputs.forEach(function(inp) {
-        const k = inp.getAttribute('data-field');
-        rec.fields[k] = inp.value.trim();
-        if (k === 'quantity') rec.fields['weight'] = inp.value.trim();
-      });
-      closeEditModal();
-      render();
-    }
-
-    // -------------------------------------------------------------------------
-    // G. 외부 HTML 다중 병합 & 통합본 저장
-    // -------------------------------------------------------------------------
-    async function mergeExternalHtmlFiles(fileList) {
-      if (!fileList || fileList.length === 0) return;
-      let addedCount = 0;
-      const existingIds = new Set(archiveRecords.map(function(r) { return r.id; }));
-      const startMarker = '/*ARCHIVE_DATA_START*/';
-      const endMarker = '/*ARCHIVE_DATA_END*/';
-      for (const file of fileList) {
-        const text = await file.text();
-        const sIdx = text.indexOf(startMarker);
-        const eIdx = text.indexOf(endMarker);
-        if (sIdx !== -1 && eIdx !== -1 && eIdx > sIdx) {
-          try {
-            const jsonPart = text.substring(sIdx + startMarker.length, eIdx).trim();
-            const arr = JSON.parse(jsonPart);
-            for (const item of arr) {
-              if (item && item.id && !existingIds.has(item.id)) {
-                archiveRecords.push(item);
-                existingIds.add(item.id);
-                addedCount++;
-              }
-            }
-          } catch (_) {}
-        }
-      }
-      archiveRecords.sort(function(a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
-      if (archiveRecords.length > 0 && !selectedId) selectedId = archiveRecords[0].id;
-      render();
-      alert('외부 HTML 파일에서 신규 ' + addedCount + '건을 합산했습니다! (현재 총 ' + archiveRecords.length + '건)');
-    }
-
-    function downloadMergedHtml() {
+    function downloadModifiedHtml() {
       const jsonStr = JSON.stringify(archiveRecords);
-      const startMarker = '/*ARCHIVE_DATA_START*/';
-      const endMarker = '/*ARCHIVE_DATA_END*/';
-      const rawHtml = document.documentElement.outerHTML;
-      const sIdx = rawHtml.indexOf(startMarker);
-      const eIdx = rawHtml.indexOf(endMarker);
-      let currentHtml = rawHtml;
-      if (sIdx !== -1 && eIdx !== -1 && eIdx > sIdx) {
-        currentHtml = rawHtml.substring(0, sIdx + startMarker.length) + ' ' + jsonStr + ' ' + rawHtml.substring(eIdx);
-      }
-      const blob = new Blob(['<!DOCTYPE html>\n' + currentHtml], { type: 'text/html;charset=utf-8' });
+      const fullHtml = document.documentElement.outerHTML;
+      const sIdx = fullHtml.indexOf('/*ARCHIVE_DATA_START*/');
+      const eIdx = fullHtml.indexOf('/*ARCHIVE_DATA_END*/');
+      if (sIdx === -1 || eIdx === -1) return;
+      const updatedHtml = '<!DOCTYPE html>
+' +
+        fullHtml.substring(0, sIdx + '/*ARCHIVE_DATA_START*/'.length) +
+        ' ' + jsonStr + ' ' +
+        fullHtml.substring(eIdx);
+      const blob = new Blob([updatedHtml], { type: 'text/html;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = document.title.split(' ').join('_') + '_통합본.html';
+      a.download = '증빙서류_' + selectedCategoryFilter + '_수정본.html';
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
     }
 
-    // 초기 구동
+    function exportPdfPrint() {
+      window.print();
+    }
+
+    // ★ 1. 리스트와 사진 사이 조절바 (모바일 touchstart/touchmove + 마우스 완벽 지원)
+    (function initResizer() {
+      const bar = document.getElementById('resizer-bar');
+      const listPane = document.getElementById('list-pane');
+      const ws = document.getElementById('workspace');
+      let dragging = false;
+
+      function updateSplit(clientX, clientY) {
+        const rect = ws.getBoundingClientRect();
+        const isLand = window.matchMedia('(orientation: landscape)').matches;
+        if (isLand) {
+          const pct = Math.min(82, Math.max(18, ((clientX - rect.left) / rect.width) * 100));
+          listPane.style.flex = '0 0 ' + pct + '%';
+        } else {
+          const pct = Math.min(82, Math.max(15, ((clientY - rect.top) / rect.height) * 100));
+          listPane.style.flex = '0 0 ' + pct + '%';
+        }
+      }
+
+      bar.addEventListener('touchstart', function(e) {
+        dragging = true;
+        if (e.cancelable) e.preventDefault();
+      }, { passive: false });
+
+      window.addEventListener('touchmove', function(e) {
+        if (!dragging || !e.touches || e.touches.length === 0) return;
+        if (e.cancelable) e.preventDefault();
+        updateSplit(e.touches[0].clientX, e.touches[0].clientY);
+      }, { passive: false });
+
+      window.addEventListener('touchend', function() { dragging = false; });
+      window.addEventListener('touchcancel', function() { dragging = false; });
+
+      bar.addEventListener('mousedown', function(e) {
+        dragging = true;
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        updateSplit(e.clientX, e.clientY);
+      });
+      window.addEventListener('mouseup', function() { dragging = false; });
+    })();
+
+    // ★ 2. 하단 사진 뷰어 두 손가락 벌려서 확대/축소(Pinch Zoom) + 드래그 이동(Pan) + 더블탭 초기화
+    (function initPhotoPinchAndPan() {
+      const vp = document.getElementById('photo-viewport');
+      let startDist = 0;
+      let startZoom = 1.0;
+      let isPinching = false;
+      let isPanning = false;
+      let startPanX = 0;
+      let startPanY = 0;
+      let lastTapTime = 0;
+
+      function getTouchDist(t1, t2) {
+        const dx = t1.clientX - t2.clientX;
+        const dy = t1.clientY - t2.clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+
+      vp.addEventListener('touchstart', function(e) {
+        if (e.touches.length === 2) {
+          isPinching = true;
+          isPanning = false;
+          startDist = getTouchDist(e.touches[0], e.touches[1]);
+          startZoom = currentZoom;
+          if (e.cancelable) e.preventDefault();
+        } else if (e.touches.length === 1) {
+          const now = Date.now();
+          if (now - lastTapTime < 280) {
+            if (currentZoom > 1.05) resetZoom();
+            else { currentZoom = 2.2; panX = 0; panY = 0; applyZoom(); }
+            lastTapTime = 0;
+            if (e.cancelable) e.preventDefault();
+            return;
+          }
+          lastTapTime = now;
+          isPanning = true;
+          startPanX = e.touches[0].clientX - panX;
+          startPanY = e.touches[0].clientY - panY;
+        }
+      }, { passive: false });
+
+      vp.addEventListener('touchmove', function(e) {
+        if (isPinching && e.touches.length === 2) {
+          if (e.cancelable) e.preventDefault();
+          const dist = getTouchDist(e.touches[0], e.touches[1]);
+          if (startDist > 10) {
+            currentZoom = Math.min(6.0, Math.max(0.2, startZoom * (dist / startDist)));
+            applyZoom();
+          }
+        } else if (isPanning && e.touches.length === 1) {
+          if (e.cancelable) e.preventDefault();
+          panX = e.touches[0].clientX - startPanX;
+          panY = e.touches[0].clientY - startPanY;
+          applyZoom();
+        }
+      }, { passive: false });
+
+      vp.addEventListener('touchend', function(e) {
+        if (e.touches.length < 2) isPinching = false;
+        if (e.touches.length === 0) {
+          isPanning = false;
+        }
+      });
+
+      vp.addEventListener('wheel', function(e) {
+        e.preventDefault();
+        changeZoom(e.deltaY < 0 ? 0.25 : -0.25);
+      }, { passive: false });
+    })();
+
     render();
   </script>
 </body>
