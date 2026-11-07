@@ -1,4 +1,8 @@
-name: Build Flutter Android & iOS
+// ============================================================================
+// 아래 내용(name: 부터 맨 끝까지)을 복사하여 GitHub 저장소의
+// .github/workflows/build.yml 파일에 붙여넣으세요!
+// ============================================================================
+name: Build Flutter Android & iOS (Play Store AAB + App Store IPA)
 
 on:
   push:
@@ -9,7 +13,7 @@ on:
 
 jobs:
   build-android:
-    name: Build APK & Play Store AAB via GitHub Actions
+    name: Build Signed APK & Google Play Store AAB
     runs-on: ubuntu-latest
 
     steps:
@@ -67,7 +71,7 @@ jobs:
             sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/package="com.example.doc_snap_archive"//g' -e 's/package="com.tectura77.doc_snap_archive"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml
           fi
 
-      - name: Prepare 100% Identical Fixed Upload Keystore (Bit-for-Bit Identical Certificate Across Every Build)
+      - name: Prepare 100% Fixed Upload Keystore (Byte-Identical Certificate for Seamless Update & Play Store)
         env:
           KEY_B64: ${{ secrets.KEYSTORE_BASE64 }}
           KEY_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -77,7 +81,7 @@ jobs:
             echo "Using KEYSTORE_BASE64 from GitHub Secrets..."
             echo "$KEY_B64" | tr -d ' \n\r\t' | base64 -d > android/app/upload-keystore.jks
           else
-            echo "KEYSTORE_BASE64 not set; generating 100% bit-for-bit identical X.509 certificate & upload-keystore.jks from KEYSTORE_PASSWORD..."
+            echo "Generating 100% deterministic byte-identical X.509 certificate & upload-keystore.jks..."
             python3 - "$PASS" << 'PYEOF'
           import sys, hashlib, subprocess, base64
 
@@ -161,103 +165,48 @@ jobs:
               body = b''.join(items)
               return b'\x30' + asn1_len(len(body)) + body
 
-          def asn1_set(items):
-              body = b''.join(items)
-              return b'\x31' + asn1_len(len(body)) + body
-
-          def asn1_oid(oid_bytes):
-              return b'\x06' + asn1_len(len(oid_bytes)) + oid_bytes
-
-          def asn1_utf8(s):
-              b = s.encode('utf-8')
-              return b'\x0c' + asn1_len(len(b)) + b
-
-          def asn1_printable(s):
-              b = s.encode('ascii')
-              return b'\x13' + asn1_len(len(b)) + b
-
-          def asn1_utctime(s):
-              b = s.encode('ascii')
-              return b'\x17' + asn1_len(len(b)) + b
-
-          def asn1_gentime(s):
-              b = s.encode('ascii')
-              return b'\x18' + asn1_len(len(b)) + b
-
-          def asn1_bitstring(b):
-              return b'\x03' + asn1_len(len(b) + 1) + b'\x00' + b
-
-          def asn1_ctx_explicit(tag, inner):
-              return bytes([0xa0 | tag]) + asn1_len(len(inner)) + inner
+          def asn1_bitstring(raw_bytes):
+              body = b'\x00' + raw_bytes
+              return b'\x03' + asn1_len(len(body)) + body
 
           rsa_priv = asn1_seq([
               asn1_int(0), asn1_int(n), asn1_int(e), asn1_int(d),
               asn1_int(p), asn1_int(q), asn1_int(dp), asn1_int(dq), asn1_int(qi)
           ])
-          pem_key = "-----BEGIN RSA PRIVATE KEY-----\n" + "\n".join(
+          pem = "-----BEGIN RSA PRIVATE KEY-----\n" + "\n".join(
               base64.b64encode(rsa_priv).decode()[i:i+64] for i in range(0, len(base64.b64encode(rsa_priv)), 64)
           ) + "\n-----END RSA PRIVATE KEY-----\n"
+          open('/tmp/fixed_key.pem', 'w').write(pem)
 
-          # ★ 핵심: openssl req -x509를 쓰면 빌드 시각(초 단위)이 인증서 유효기간(notBefore/notAfter)에 들어가
-          # 매 빌드마다 인증서 SHA-256 지문이 달라져서 안드로이드 업데이트 시 "패키지 충돌"이 발생함!
-          # 따라서 유효기간 시작일(2026-01-01 00:00:00Z)과 종료일(2056-01-01 00:00:00Z)까지 100% 고정하여
-          # 언제 빌드하든 바이트 단위로 완전히 똑같은 인증서 지문(SHA-256)이 생성되도록 직접 생성!
-          oid_sha256WithRSA = bytes([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b])
-          oid_rsaEncryption = bytes([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01])
-          alg_sha256WithRSA = asn1_seq([asn1_oid(oid_sha256WithRSA), b'\x05\x00'])
-          alg_rsaEncryption = asn1_seq([asn1_oid(oid_rsaEncryption), b'\x05\x00'])
-
-          def rdn(oid_b, val_str, printable=False):
-              val_asn1 = asn1_printable(val_str) if printable else asn1_utf8(val_str)
-              return asn1_set([asn1_seq([asn1_oid(oid_b), val_asn1])])
-
-          name_dn = asn1_seq([
-              rdn(bytes([0x55, 0x04, 0x03]), "DocSnapArchive"),
-              rdn(bytes([0x55, 0x04, 0x0b]), "FieldTeam"),
-              rdn(bytes([0x55, 0x04, 0x0a]), "Tectura77"),
-              rdn(bytes([0x55, 0x04, 0x07]), "Seoul"),
-              rdn(bytes([0x55, 0x04, 0x08]), "Seoul"),
-              rdn(bytes([0x55, 0x04, 0x06]), "KR", printable=True),
-          ])
-
-          validity = asn1_seq([
-              asn1_utctime("260101000000Z"),
-              asn1_gentime("20560101000000Z"),
-          ])
-
+          # Fixed validity: 2026-01-01 00:00:00Z to 2056-01-01 00:00:00Z
+          alg_rsa_sha256 = bytes.fromhex("300d06092a864886f70d01010b0500")
+          alg_rsa_enc = bytes.fromhex("300d06092a864886f70d0101010500")
+          rdn_cn = bytes.fromhex("3117301506035504030c0e446f63536e617041726368697665")
+          name_seq = asn1_seq([rdn_cn])
+          validity_seq = bytes.fromhex("3020170d3236303130313030303030305a180f32303536303130313030303030305a")
           rsa_pub = asn1_seq([asn1_int(n), asn1_int(e)])
-          spki = asn1_seq([alg_rsaEncryption, asn1_bitstring(rsa_pub)])
-
+          spki = asn1_seq([alg_rsa_enc, asn1_bitstring(rsa_pub)])
+          version_v3 = bytes.fromhex("a003020102")
           tbs_cert = asn1_seq([
-              asn1_ctx_explicit(0, asn1_int(2)),
+              version_v3,
               asn1_int(1730000001),
-              alg_sha256WithRSA,
-              name_dn,
-              validity,
-              name_dn,
-              spki,
+              alg_rsa_sha256,
+              name_seq,
+              validity_seq,
+              name_seq,
+              spki
           ])
-
           digest = hashlib.sha256(tbs_cert).digest()
           digest_info = bytes.fromhex("3031300d060960864801650304020105000420") + digest
-          k_len = 256
-          ps_len = k_len - len(digest_info) - 3
-          em = b'\x00\x01' + (b'\xff' * ps_len) + b'\x00' + digest_info
+          pad_len = 256 - 3 - len(digest_info)
+          em = b'\x00\x01' + (b'\xff' * pad_len) + b'\x00' + digest_info
           sig_int = pow(int.from_bytes(em, 'big'), d, n)
-          sig_bytes = sig_int.to_bytes(k_len, 'big')
-
-          cert_der = asn1_seq([
-              tbs_cert,
-              alg_sha256WithRSA,
-              asn1_bitstring(sig_bytes),
-          ])
-
-          pem_cert = "-----BEGIN CERTIFICATE-----\n" + "\n".join(
+          sig_bytes = sig_int.to_bytes(256, 'big')
+          cert_der = asn1_seq([tbs_cert, alg_rsa_sha256, asn1_bitstring(sig_bytes)])
+          cert_pem = "-----BEGIN CERTIFICATE-----\n" + "\n".join(
               base64.b64encode(cert_der).decode()[i:i+64] for i in range(0, len(base64.b64encode(cert_der)), 64)
           ) + "\n-----END CERTIFICATE-----\n"
-
-          open('/tmp/fixed_key.pem', 'w').write(pem_key)
-          open('/tmp/fixed_cert.pem', 'w').write(pem_cert)
+          open('/tmp/fixed_cert.pem', 'w').write(cert_pem)
 
           subprocess.run([
               'openssl', 'pkcs12', '-export',
@@ -273,8 +222,6 @@ jobs:
           ], check=True)
           PYEOF
           fi
-          echo "Fixed upload-keystore.jks ready! Verifying SHA-256 certificate fingerprint:"
-          keytool -list -v -keystore android/app/upload-keystore.jks -storepass "$PASS" | grep -E "Alias name:|SHA256:" || true
 
       - name: Configure Gradle, SDK 35, Fixed Release Signing, and Play Store Package ID
         env:
@@ -284,7 +231,6 @@ jobs:
           PASS="${KEY_PASS:-tectura77_doc_snap_fixed_key_2026}"
           DETECTED_ALIAS=$(keytool -list -v -keystore android/app/upload-keystore.jks -storepass "$PASS" 2>/dev/null | awk '/Alias name:/ {print $3; exit}')
           ALIAS_NAME="${KEY_ALIAS_SECRET:-${DETECTED_ALIAS:-upload}}"
-          echo "Using Keystore Alias: $ALIAS_NAME"
 
           printf '\n-dontwarn com.google.mlkit.**\n-keep class com.google.mlkit.** { *; }\n-keep class com.google.android.gms.** { *; }\n-dontwarn javax.annotation.**\n-dontwarn org.codehaus.mojo.animal_sniffer.**\n-dontoptimize\n-dontshrink\n' > android/app/proguard-rules.pro
           find android -maxdepth 2 -name '*gradle*' -type f -exec sed -i -E 's/8\.[0-6]\.[0-9]+/8.7.0/g; s/7\.[0-9]+\.[0-9]+/8.7.0/g; s/1\.[789]\.[0-9]+/2.0.21/g' {} +
@@ -320,43 +266,12 @@ jobs:
           EOF
           fi
 
-          if [ -f android/app/build.gradle ]; then
-            sed -i -E 's/com\.example\.doc_snap_archive/com.tectura77.doc_snap_archive/g' android/app/build.gradle
-            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/compileSdkVersion\s+flutter\.compileSdkVersion/compileSdkVersion 35/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/targetSdkVersion\s+flutter\.targetSdkVersion/targetSdkVersion 35/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 21/g; s/minSdkVersion\s+flutter\.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
-            sed -i -E 's/signingConfig\s+signingConfigs\.debug//g' android/app/build.gradle
-            cat << EOF >> android/app/build.gradle
-
-          android {
-              signingConfigs {
-                  release {
-                      storeFile file("upload-keystore.jks")
-                      storePassword "$PASS"
-                      keyAlias "$ALIAS_NAME"
-                      keyPassword "$PASS"
-                  }
-              }
-              buildTypes {
-                  release {
-                      signingConfig signingConfigs.release
-                      minifyEnabled false
-                      shrinkResources false
-                      proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
-                  }
-              }
-          }
-          dependencies {
-              implementation "com.google.mlkit:text-recognition-korean:16.0.1"
-          }
-          EOF
-          fi
-
       - name: Install Dependencies and Analyze Dart Code
         run: "flutter pub get && dart analyze --no-fatal-warnings lib/main.dart"
 
-      - name: Build Signed Release APK & Play Store App Bundle (AAB) with Auto-Incremented Build Number
+      - name: Build Signed Release APK & Play Store App Bundle (AAB)
         run: |
           BUILD_NUM=$((100 + ${{ github.run_number }}))
-          echo "Building version 1.0.${{ github.run_number }}+$BUILD_NUM ..."
           flutter build apk --release --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --no-tree-shake-icons -Pshrink=false
           flutter build appbundle --release --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --no-tree-shake-icons -Pshrink=false
 
@@ -375,7 +290,7 @@ jobs:
           if-no-files-found: error
 
   build-ios:
-    name: Build iOS App (No Codesign)
+    name: Build iOS App (Supports App Store Signed IPA or Unsigned IPA)
     runs-on: macos-latest
 
     steps:
@@ -402,7 +317,7 @@ jobs:
       - name: Create Flutter iOS Scaffold
         run: "rm -rf ios && flutter create --platforms=ios --org com.tectura77 --project-name doc_snap_archive ."
 
-      - name: Restore Custom Files, Generate iOS App Icon, and Configure iOS Podfile (iOS 15.5)
+      - name: Restore Custom Files, Generate iOS App Icon, and Configure iOS Info.plist Permissions & Podfile (iOS 15.5)
         run: |
           mkdir -p lib
           sed -e '/flutter_web_auth_2/d' /tmp/pubspec.yaml.bak > pubspec.yaml
@@ -420,20 +335,72 @@ jobs:
           fi
           sed -i '' "s/.*platform :ios.*/platform :ios, '15.5'/g" ios/Podfile || true
           sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g" ios/Runner.xcodeproj/project.pbxproj || true
+          # ★ 애플 앱스토어 심사 필수: 카메라 및 사진첩 접근 권한 안내 문구(NSCameraUsageDescription, NSPhotoLibraryUsageDescription) 자동 삽입!
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string '공문, 자재송장, 영수증, 명함 및 PDF 변환할 문서를 촬영하기 위해 카메라 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSCameraUsageDescription '공문, 자재송장, 영수증, 명함 및 PDF 변환할 문서를 촬영하기 위해 카메라 권한이 필요합니다.'" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string '갤러리에 저장된 서류, 영수증, 명함 사진을 불러와 스캔 및 PDF로 변환하기 위해 사진첩 접근 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryUsageDescription '갤러리에 저장된 서류, 영수증, 명함 사진을 불러와 스캔 및 PDF로 변환하기 위해 사진첩 접근 권한이 필요합니다.'" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string '생성된 PDF 및 스캔 문서를 저장하기 위해 사진첩 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName '증빙서류 스냅'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string '증빙서류 스냅'" ios/Runner/Info.plist
 
-      - name: Build iOS App (No Codesign) and Package Unsigned IPA
+      - name: Build iOS App & Upload to App Store Connect (If Apple Secrets Provided) or Build Unsigned IPA
+        env:
+          IOS_CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERT_PASS: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
         run: |
           BUILD_NUM=$((100 + ${{ github.run_number }}))
-          flutter build ios --release --no-codesign --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --no-tree-shake-icons
-          mkdir -p build/ios/ipa/Payload
-          APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
-          echo "Found Runner.app at: $APP_PATH"
-          cp -R "$APP_PATH" build/ios/ipa/Payload/Runner.app
-          cd build/ios/ipa && zip -qry doc-snap-archive-unsigned.ipa Payload
+          if [ -n "$IOS_CERT_B64" ] && [ -n "$IOS_PROFILE_B64" ]; then
+            echo "Apple Signing Secrets detected! Building signed App Store IPA..."
+            security create-keychain -p "buildpass" build.keychain
+            security default-keychain -s build.keychain
+            security unlock-keychain -p "buildpass" build.keychain
+            security set-keychain-settings -t 3600 -u build.keychain
+            echo "$IOS_CERT_B64" | base64 --decode > /tmp/dist.p12
+            security import /tmp/dist.p12 -k build.keychain -P "$IOS_CERT_PASS" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "buildpass" build.keychain
+            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+            echo "$IOS_PROFILE_B64" | base64 --decode > /tmp/profile.mobileprovision
+            UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< $(/usr/bin/security cms -D -i /tmp/profile.mobileprovision))
+            TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" /dev/stdin <<< $(/usr/bin/security cms -D -i /tmp/profile.mobileprovision))
+            cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+            cat <<PLIST > /tmp/ExportOptions.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>teamID</key>
+            <string>$TEAM_ID</string>
+            <key>uploadBitcode</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+            flutter build ipa --release --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --export-options-plist=/tmp/ExportOptions.plist --no-tree-shake-icons
+            mkdir -p build/ios/ipa_out
+            cp build/ios/ipa/*.ipa build/ios/ipa_out/doc-snap-archive-appstore.ipa
+            if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_PRIVATE_KEY" ]; then
+              mkdir -p ~/.appstoreconnect/private_keys
+              echo "$ASC_PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+              xcrun altool --upload-app --type ios -f build/ios/ipa_out/doc-snap-archive-appstore.ipa --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+            fi
+          else
+            echo "Building Unsigned IPA (Add Apple Secrets to sign & auto-upload to App Store Connect)..."
+            flutter build ios --release --no-codesign --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --no-tree-shake-icons
+            mkdir -p build/ios/ipa/Payload build/ios/ipa_out
+            APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
+            cp -R "$APP_PATH" build/ios/ipa/Payload/Runner.app
+            cd build/ios/ipa && zip -qry ../ipa_out/doc-snap-archive-ios.ipa Payload
+          fi
 
-      - name: Upload Unsigned IPA to Artifacts
+      - name: Upload iOS IPA to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: doc-snap-archive-unsigned-ipa
-          path: build/ios/ipa/doc-snap-archive-unsigned.ipa
+          name: doc-snap-archive-ios-ipa
+          path: build/ios/ipa_out/*.ipa
           if-no-files-found: error
