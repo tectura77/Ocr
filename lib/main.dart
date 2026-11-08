@@ -7355,8 +7355,13 @@ class _HomeScreenState extends State<HomeScreen> {
     th.sorted-col { background: #dbeafe; color: #1e3a8a; }
     td { border: 1px solid #e2e8f0; padding: 7px 6px; font-size: 11.5px; font-weight: 600; text-align: center; word-break: break-word; white-space: normal; line-height: 1.3; }
     tr.selected { background: #dbeafe !important; }
+    .appr-badge { display: inline-block; padding: 3px 7px; border-radius: 6px; font-size: 10.5px; font-weight: 800; cursor: pointer; border: 1px solid #94a3b8; background: #f1f5f9; color: #334155; white-space: nowrap; }
+    .appr-badge.review { background: #eff6ff; color: #1e3a8a; border-color: #93c5fd; }
+    .appr-badge.done { background: #f0fdf4; color: #166534; border-color: #86efac; }
+    #appr-modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,0.55); display: none; align-items: center; justify-content: center; z-index: 100; }
+    #appr-modal { background: #fff; border-radius: 14px; width: 340px; max-width: 92vw; padding: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.25); }
     @media print {
-      header, .chip-bar, .summary-panel, #list-pane, #resizer-bar, #photo-page-bar, .zoom-box { display: none !important; }
+      header, .chip-bar, .summary-panel, #list-pane, #resizer-bar, #photo-page-bar, .zoom-box, #appr-modal-bg { display: none !important; }
     }
   </style>
 </head>
@@ -7379,9 +7384,19 @@ class _HomeScreenState extends State<HomeScreen> {
         <img id="preview-img" alt="미리보기" />
       </div>
       <div class="zoom-box">
-        <button class="zoom-btn" onclick="changeZoom(-0.3)">－ 축소</button>
+        <button class="zoom-btn" onclick="changeZoom(-0.25)">－ 축소</button>
         <button class="zoom-btn" id="zoom-label" onclick="resetZoom()">100%</button>
-        <button class="zoom-btn" onclick="changeZoom(0.3)">＋ 확대</button>
+        <button class="zoom-btn" onclick="changeZoom(0.25)">＋ 확대</button>
+      </div>
+    </div>
+  </div>
+  <div id="appr-modal-bg" onclick="closeApprovalModal()">
+    <div id="appr-modal" onclick="event.stopPropagation()">
+      <div id="appr-modal-title" style="font-size:15px; font-weight:900; margin-bottom:10px; color:#0f172a;">결재/검토 이력</div>
+      <div id="appr-modal-list" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:6px;">
+        <button class="chip-btn" onclick="closeApprovalModal()">닫기</button>
+        <button class="chip-btn active" id="appr-add-btn" onclick="addMyApprovalInModal()">+ 내 검토/결재 추가</button>
       </div>
     </div>
   </div>
@@ -7389,7 +7404,7 @@ class _HomeScreenState extends State<HomeScreen> {
   <script>
     const archiveRecords = /*ARCHIVE_DATA_START*/ $recordsJson /*ARCHIVE_DATA_END*/;
     const ALL_TABS = $allowedTabsJson;
-    const EXPORTER_USER = $exporterUserJson;
+    let currentUserName = $exporterUserJson || '';
     let selectedCategoryFilter = ALL_TABS[0] || '$majorCat';
     let selectedSubCat = '전체';
     let selectedClaimFilter = '전체';
@@ -7403,6 +7418,7 @@ class _HomeScreenState extends State<HomeScreen> {
     let invGroupSpec = false;
     let selectedId = archiveRecords.length > 0 ? archiveRecords[0].id : null;
     let selectedPageIdx = 0;
+    let activeApprovalRecId = null;
 
     // 줌 & 패닝 상태 (두 손가락 핀치 줌 + 한 손가락 이동 + 마우스 휠)
     let currentZoom = 1.0;
@@ -7429,14 +7445,157 @@ class _HomeScreenState extends State<HomeScreen> {
       return parseFloat(String(f.quantity || '0').replace(/,/g, '').replace(/[^0-9.-]/g, '')) || 0;
     }
 
+    function normalizeDocNum(raw) {
+      if (!raw) return '';
+      return String(raw).replace(/[^a-zA-Z0-9가-힣]/g, '').toUpperCase();
+    }
+
+    function computeRepliedDocMap() {
+      const keys = {};
+      archiveRecords.forEach(function(r) {
+        if (r.category === '공문(발신)') {
+          const k = normalizeDocNum((r.fields || {}).replyDocNumber);
+          if (k) keys[k] = true;
+        }
+      });
+      return keys;
+    }
+
+    function parseApprovalList(r) {
+      const f = r.fields || {};
+      const raw = (f.approvalsJson || '').trim();
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return arr;
+      } catch (e) {}
+      return [];
+    }
+
+    function isDirector(name) {
+      return String(name || '').indexOf('소장') !== -1;
+    }
+
+    function buildApprovalCellHtml(r) {
+      const list = parseApprovalList(r);
+      const done = list.some(function(e) { return isDirector(e.name) || e.role === '결재'; });
+      let cls = 'appr-badge';
+      let txt = '미결';
+      if (done) {
+        cls = 'appr-badge done';
+        txt = '결재완료';
+      } else if (list.length > 0) {
+        cls = 'appr-badge review';
+        txt = '검토(' + list.length + ')';
+      }
+      return '<td><span class="' + cls + '" onclick="openApprovalModal(\\'' + r.id + '\\', event)">' + txt + '</span></td>';
+    }
+
+    function ensureCurrentUserName() {
+      if (currentUserName && currentUserName.trim()) return currentUserName.trim();
+      const entered = prompt('결재/검토자 이름을 입력하세요 (소장님은 이름에 "소장" 포함):', '');
+      if (entered && entered.trim()) {
+        currentUserName = entered.trim();
+        return currentUserName;
+      }
+      return '';
+    }
+
+    function todayDotStr() {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return yyyy + '.' + mm + '.' + dd;
+    }
+
+    function openApprovalModal(recId, ev) {
+      if (ev) ev.stopPropagation();
+      const r = archiveRecords.find(function(x) { return x.id === recId; });
+      if (!r) return;
+      const list = parseApprovalList(r);
+      if (list.length === 0) {
+        const u = ensureCurrentUserName();
+        if (!u) return;
+        list.push({ name: u, date: todayDotStr(), role: isDirector(u) ? '결재' : '검토' });
+        if (!r.fields) r.fields = {};
+        r.fields.approvalsJson = JSON.stringify(list);
+        render();
+        return;
+      }
+      activeApprovalRecId = recId;
+      renderApprovalModalContent();
+      document.getElementById('appr-modal-bg').style.display = 'flex';
+    }
+
+    function renderApprovalModalContent() {
+      const r = archiveRecords.find(function(x) { return x.id === activeApprovalRecId; });
+      if (!r) return;
+      const list = parseApprovalList(r);
+      const done = list.some(function(e) { return isDirector(e.name) || e.role === '결재'; });
+      document.getElementById('appr-modal-title').textContent = done ? '✅ 결재완료 이력' : ('📝 검토·결재 이력 (' + list.length + '명)');
+      const box = document.getElementById('appr-modal-list');
+      box.innerHTML = list.map(function(e, i) {
+        const dir = isDirector(e.name) || e.role === '결재';
+        const roleTag = dir ? '최종결재' : ('검토 ' + (i + 1));
+        const bg = dir ? '#f0fdf4' : '#eff6ff';
+        const bd = dir ? '#86efac' : '#bfdbfe';
+        const tagBg = dir ? '#15803d' : '#1e3a8a';
+        const canCancel = currentUserName && e.name === currentUserName;
+        return '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:8px; background:' + bg + '; border:1px solid ' + bd + ';">' +
+          '<div><span style="background:' + tagBg + '; color:#fff; padding:2px 6px; border-radius:4px; font-size:10.5px; font-weight:800; margin-right:6px;">' + roleTag + '</span>' +
+          '<strong style="font-size:13px;">' + escapeHtml(e.name) + '</strong></div>' +
+          '<div style="display:flex; align-items:center; gap:6px;"><span style="font-size:11.5px; color:#64748b;">' + escapeHtml(e.date || '-') + '</span>' +
+          (canCancel ? '<button style="border:1px solid #fca5a5; background:#fef2f2; color:#dc2626; border-radius:4px; padding:2px 6px; font-size:10px; font-weight:800; cursor:pointer;" onclick="removeMyApprovalInModal(\\'' + escapeHtml(e.name) + '\\')">결재취소</button>' : '') +
+          '</div></div>';
+      }).join('');
+    }
+
+    function addMyApprovalInModal() {
+      const r = archiveRecords.find(function(x) { return x.id === activeApprovalRecId; });
+      if (!r) return;
+      const u = ensureCurrentUserName();
+      if (!u) return;
+      const list = parseApprovalList(r);
+      if (!list.some(function(e) { return e.name === u; })) {
+        list.push({ name: u, date: todayDotStr(), role: isDirector(u) ? '결재' : '검토' });
+        const reviewers = list.filter(function(e) { return !isDirector(e.name); });
+        const directors = list.filter(function(e) { return isDirector(e.name); });
+        if (!r.fields) r.fields = {};
+        r.fields.approvalsJson = JSON.stringify(reviewers.concat(directors));
+      }
+      renderApprovalModalContent();
+      render();
+    }
+
+    function removeMyApprovalInModal(targetName) {
+      const r = archiveRecords.find(function(x) { return x.id === activeApprovalRecId; });
+      if (!r) return;
+      const list = parseApprovalList(r).filter(function(e) { return e.name !== targetName; });
+      if (!r.fields) r.fields = {};
+      if (list.length === 0) {
+        delete r.fields.approvalsJson;
+        closeApprovalModal();
+      } else {
+        r.fields.approvalsJson = JSON.stringify(list);
+        renderApprovalModalContent();
+      }
+      render();
+    }
+
+    function closeApprovalModal() {
+      document.getElementById('appr-modal-bg').style.display = 'none';
+      activeApprovalRecId = null;
+    }
+
     function getInvoiceGroupKey(r) {
       const f = r.fields || {};
       const prod = (f.productName || '').trim() || '기타자재';
-      const spec = (f.specName || '').trim();
+      const spec = (f.specName || '').trim() || '규격미상';
       if (invGroupProduct && invGroupSpec) {
-        return spec ? (prod + ' (' + spec + ')') : prod;
+        return prod + '. ' + spec;
       } else if (!invGroupProduct && invGroupSpec) {
-        return spec || '(규격미상)';
+        return spec;
       } else {
         return prod;
       }
@@ -7444,79 +7603,171 @@ class _HomeScreenState extends State<HomeScreen> {
 
     function toggleInvoiceGroup(col) {
       if (col === 'product') {
-        invGroupProduct = !invGroupProduct;
-        if (!invGroupProduct && !invGroupSpec) invGroupSpec = true;
+        if (!invGroupProduct && invGroupSpec) {
+          invGroupProduct = true;
+        } else {
+          invGroupProduct = true;
+          invGroupSpec = false;
+        }
+        selectedProductFilter = '전체';
+        toggleSort('product');
       } else if (col === 'spec') {
-        invGroupSpec = !invGroupSpec;
-        if (!invGroupProduct && !invGroupSpec) invGroupProduct = true;
+        if (invGroupProduct && !invGroupSpec) {
+          invGroupSpec = true;
+        } else if (invGroupProduct && invGroupSpec) {
+          invGroupProduct = false;
+          invGroupSpec = true;
+        } else {
+          invGroupProduct = true;
+          invGroupSpec = false;
+        }
+        selectedProductFilter = '전체';
+        toggleSort('spec');
       }
-      selectedProductFilter = '전체';
-      toggleSort(col);
     }
 
     function computeInvoiceCumulativeMap() {
       const invList = archiveRecords.filter(function(r) { return r.category === '자재송장'; }).slice();
       invList.sort(function(a, b) {
-        const da = (a.fields && a.fields.arrivalDate) || a.createdAt || '';
-        const db = (b.fields && b.fields.arrivalDate) || b.createdAt || '';
-        const c = da.localeCompare(db);
-        return c !== 0 ? c : String(a.id).localeCompare(String(b.id));
+        const da = ((a.fields && a.fields.arrivalDate) || '').trim();
+        const db = ((b.fields && b.fields.arrivalDate) || '').trim();
+        if (da !== db) return da.localeCompare(db);
+        return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
       });
-      const running = {};
-      const out = {};
+      const sums = {};
+      const map = {};
       invList.forEach(function(r) {
-        const key = getInvoiceGroupKey(r);
-        running[key] = (running[key] || 0) + parseInvoiceQty(r);
-        out[r.id] = fmtQty(running[key]);
+        const f = r.fields || {};
+        const key = ((f.productName || '').trim() + '|' + (f.specName || '').trim()).toLowerCase();
+        const q = parseInvoiceQty(r);
+        sums[key] = (sums[key] || 0) + q;
+        map[r.id] = fmtQty(sums[key]);
       });
-      return out;
+      return map;
     }
 
     function getExtraArray(r) {
-      const f = (r && r.fields) ? r.fields : {};
-      const keys = ['proofImagesJson', 'extraProofImagesJson', 'extraImagesJson', 'proofImages', 'extraProofImages'];
-      for (let i = 0; i < keys.length; i++) {
-        const raw = f[keys[i]];
-        if (!raw) continue;
-        try {
-          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        } catch (_) {}
-      }
+      if (!r.fields) r.fields = {};
+      const raw = r.fields.proofImagesJson || '';
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
       return [];
     }
 
     function setExtraArray(r, arr) {
       if (!r.fields) r.fields = {};
-      if (arr && arr.length > 0) {
-        r.fields.proofImagesJson = JSON.stringify(arr);
-        r.fields.proofStatus = '첨부(' + arr.length + '장)';
-      } else {
-        delete r.fields.proofImagesJson;
-        delete r.fields.proofPathsJson;
-        delete r.fields.proofStatus;
-      }
+      r.fields.proofImagesJson = JSON.stringify(arr);
+      r.fields.proofStatus = arr.length > 0 ? ('첨부(' + arr.length + '장)') : '미첨부';
     }
 
     function getRecordAmount(r) {
       const f = r.fields || {};
-      const raw = r.category === '병원비' ? (f.totalPaid || '0') : (f.totalAmount || f.amount || '0');
-      return parseInt(String(raw).replace(/[^0-9]/g, ''), 10) || 0;
+      let raw = '0';
+      if (r.category === '병원비') raw = f.totalPaid || '0';
+      else if (r.category === '출장비') raw = f.totalAmount || '0';
+      else raw = f.amount || '0';
+      return parseInt(String(raw).replace(/[^0-9-]/g, ''), 10) || 0;
     }
 
     function isClaimed(r) {
-      const f = r.fields || {};
-      const v = String(f.isClaimed || '').trim().toUpperCase();
+      const v = String((r.fields && r.fields.isClaimed) || '').toUpperCase();
       return v === 'Y' || v === 'TRUE' || v === '1' || v === '청구완료';
     }
 
-    function toggleClaimed(id, ev) {
+    function toggleClaimed(recId, ev) {
       if (ev) ev.stopPropagation();
-      const rec = archiveRecords.find(function(x) { return x.id === id; });
+      const rec = archiveRecords.find(function(x) { return x.id === recId; });
       if (!rec) return;
       if (!rec.fields) rec.fields = {};
       rec.fields.isClaimed = isClaimed(rec) ? 'N' : 'Y';
       render();
+    }
+
+    function getRecordDateStr(r) {
+      const f = r.fields || {};
+      if (r.category === '공문(수신)' || r.category === '공문(발신)') return f.sentDate || '';
+      if (r.category === '자재송장') return f.arrivalDate || '';
+      if (r.category === '출장비') return f.date || '';
+      if (r.category === '병원비') return f.issueDate || '';
+      if (r.category === '명함관리') return f.cardDate || '';
+      if (r.category === 'PDF변환') return f.pdfDate || '';
+      return r.createdAt || '';
+    }
+
+    function getMajorRecords() {
+      return archiveRecords.filter(function(r) {
+        return r.category === selectedCategoryFilter;
+      });
+    }
+
+    function getFiltered() {
+      const repliedMap = computeRepliedDocMap();
+      const list = getMajorRecords().filter(function(r) {
+        const f = r.fields || {};
+        if (selectedCategoryFilter === '병원비') {
+          if (selectedSubCat !== '전체') {
+            const gKey = getMedicalGroupKey(r);
+            if (gKey !== selectedSubCat) return false;
+          }
+          if (selectedClaimFilter === '청구완료' && !isClaimed(r)) return false;
+          if (selectedClaimFilter === '미청구' && isClaimed(r)) return false;
+        } else if (selectedCategoryFilter === '출장비') {
+          if (selectedSubCat !== '전체') {
+            const sc = (f.subCategory || '').trim() || '미지정';
+            if (sc !== selectedSubCat) return false;
+          }
+          if (selectedTravelDiv !== '전체') {
+            if ((f.travelDivision || '기타') !== selectedTravelDiv) return false;
+          }
+        } else if (selectedCategoryFilter === '자재송장') {
+          if (selectedProductFilter !== '전체') {
+            if (getInvoiceGroupKey(r) !== selectedProductFilter) return false;
+          }
+        }
+        return true;
+      });
+
+      list.sort(function(a, b) {
+        const fa = a.fields || {};
+        const fb = b.fields || {};
+        let cmp = 0;
+        if (sortCol === 'date') {
+          cmp = getRecordDateStr(a).localeCompare(getRecordDateStr(b));
+        } else if (sortCol === 'amount') {
+          cmp = getRecordAmount(a) - getRecordAmount(b);
+        } else if (sortCol === 'quantity') {
+          cmp = parseInvoiceQty(a) - parseInvoiceQty(b);
+        } else if (sortCol === 'patient') {
+          cmp = String(fa.patientName || '').localeCompare(String(fb.patientName || ''), 'ko');
+        } else if (sortCol === 'subCategory') {
+          cmp = String(fa.subCategory || '').localeCompare(String(fb.subCategory || ''), 'ko');
+        } else if (sortCol === 'clinic') {
+          const ca = fa.clinicName || fa.merchantName || fa.sender || fa.recipient || '';
+          const cb = fb.clinicName || fb.merchantName || fb.sender || fb.recipient || '';
+          cmp = String(ca).localeCompare(String(cb), 'ko');
+        } else if (sortCol === 'product') {
+          cmp = String(fa.productName || '').localeCompare(String(fb.productName || ''), 'ko');
+          if (cmp === 0) cmp = String(fa.specName || '').localeCompare(String(fb.specName || ''), 'ko');
+        } else if (sortCol === 'spec') {
+          cmp = String(fa.specName || '').localeCompare(String(fb.specName || ''), 'ko');
+          if (cmp === 0) cmp = String(fa.productName || '').localeCompare(String(fb.productName || ''), 'ko');
+        } else if (sortCol === 'claimed') {
+          cmp = (isClaimed(a) ? 1 : 0) - (isClaimed(b) ? 1 : 0);
+        } else if (sortCol === 'replied') {
+          const ra = repliedMap[normalizeDocNum(fa.docNumber)] ? 1 : 0;
+          const rb = repliedMap[normalizeDocNum(fb.docNumber)] ? 1 : 0;
+          cmp = ra - rb;
+        } else if (sortCol === 'approval') {
+          cmp = parseApprovalList(a).length - parseApprovalList(b).length;
+        } else {
+          cmp = String(fa[sortCol] || '').localeCompare(String(fb[sortCol] || ''), 'ko');
+        }
+        return sortAsc ? cmp : -cmp;
+      });
+      return list;
     }
 
     function toggleSort(col) {
@@ -7524,126 +7775,23 @@ class _HomeScreenState extends State<HomeScreen> {
         sortAsc = !sortAsc;
       } else {
         sortCol = col;
-        sortAsc = (col === 'date' || col === 'amount' || col === 'quantity' || col === 'pageCount' || col === 'claimed') ? false : true;
+        sortAsc = true;
       }
       render();
     }
 
     function sortArrow(col) {
-      if (sortCol !== col) return ' ↕';
-      return sortAsc ? ' ▲' : ' ▼';
+      if (sortCol !== col) return '<span style="color:#94a3b8; font-size:10px;"> ↕</span>';
+      return sortAsc
+        ? '<span style="color:#1e3a8a; font-weight:900;"> ▲</span>'
+        : '<span style="color:#1e3a8a; font-weight:900;"> ▼</span>';
     }
 
-    function thClass(col, isHi) {
+    function thClass(col, isGroupActive) {
       const classes = [];
-      if (isHi) classes.push('hi-group');
-      if (sortCol === col) classes.push('sorted-col');
+      if (isGroupActive) classes.push('hi-group');
+      else if (sortCol === col) classes.push('sorted-col');
       return classes.join(' ');
-    }
-
-    function getMajorRecords() {
-      return archiveRecords.filter(function(r) { return r.category === selectedCategoryFilter; });
-    }
-
-    function getFiltered() {
-      let list = getMajorRecords();
-      if (selectedCategoryFilter === '병원비') {
-        if (selectedSubCat !== '전체') {
-          list = list.filter(function(r) {
-            return getMedicalGroupKey(r) === selectedSubCat;
-          });
-        }
-        if (selectedClaimFilter === '미청구') {
-          list = list.filter(function(r) { return !isClaimed(r); });
-        } else if (selectedClaimFilter === '청구완료') {
-          list = list.filter(function(r) { return isClaimed(r); });
-        }
-      } else if (selectedCategoryFilter === '출장비') {
-        if (selectedSubCat !== '전체') {
-          list = list.filter(function(r) {
-            const sc = ((r.fields && r.fields.subCategory) || '').trim() || '미지정';
-            return sc === selectedSubCat;
-          });
-        }
-        if (selectedTravelDiv !== '전체') {
-          list = list.filter(function(r) {
-            return ((r.fields && r.fields.travelDivision) || '식대') === selectedTravelDiv;
-          });
-        }
-      } else if (selectedCategoryFilter === '자재송장') {
-        if (selectedProductFilter !== '전체') {
-          list = list.filter(function(r) {
-            return getInvoiceGroupKey(r) === selectedProductFilter;
-          });
-        }
-      }
-
-      list = list.slice().sort(function(a, b) {
-        const fa = a.fields || {};
-        const fb = b.fields || {};
-        let cmp = 0;
-        if (sortCol === 'amount') {
-          cmp = getRecordAmount(a) - getRecordAmount(b);
-        } else if (sortCol === 'quantity') {
-          cmp = parseInvoiceQty(a) - parseInvoiceQty(b);
-        } else if (sortCol === 'product') {
-          cmp = (fa.productName || '').localeCompare(fb.productName || '', 'ko');
-        } else if (sortCol === 'spec') {
-          cmp = (fa.specName || '').localeCompare(fb.specName || '', 'ko');
-        } else if (sortCol === 'unit') {
-          cmp = (fa.unit || '').localeCompare(fb.unit || '', 'ko');
-        } else if (sortCol === 'supplier') {
-          cmp = (fa.supplierName || '').localeCompare(fb.supplierName || '', 'ko');
-        } else if (sortCol === 'orderNumber') {
-          cmp = (fa.orderNumber || '').localeCompare(fb.orderNumber || '', 'ko');
-        } else if (sortCol === 'uploader') {
-          cmp = (fa.uploader || '').localeCompare(fb.uploader || '', 'ko');
-        } else if (sortCol === 'docNumber') {
-          cmp = (fa.docNumber || '').localeCompare(fb.docNumber || '', 'ko');
-        } else if (sortCol === 'replyDocNumber') {
-          cmp = (fa.replyDocNumber || '').localeCompare(fb.replyDocNumber || '', 'ko');
-        } else if (sortCol === 'title') {
-          cmp = (fa.title || '').localeCompare(fb.title || '', 'ko');
-        } else if (sortCol === 'aiSummary') {
-          cmp = (fa.aiSummary || '').localeCompare(fb.aiSummary || '', 'ko');
-        } else if (sortCol === 'replyDeadline') {
-          cmp = (fa.replyDeadline || '').localeCompare(fb.replyDeadline || '');
-        } else if (sortCol === 'clinic') {
-          const ca = fa.clinicName || fa.merchantName || fa.sender || fa.recipient || '';
-          const cb = fb.clinicName || fb.merchantName || fb.sender || fb.recipient || '';
-          cmp = ca.localeCompare(cb, 'ko');
-        } else if (sortCol === 'patient') {
-          cmp = (fa.patientName || '').localeCompare(fb.patientName || '', 'ko');
-        } else if (sortCol === 'subCategory') {
-          cmp = (fa.subCategory || '').localeCompare(fb.subCategory || '', 'ko');
-        } else if (sortCol === 'travelDivision') {
-          cmp = (fa.travelDivision || '').localeCompare(fb.travelDivision || '', 'ko');
-        } else if (sortCol === 'bizRegNumber') {
-          cmp = (fa.bizRegNumber || '').localeCompare(fb.bizRegNumber || '');
-        } else if (sortCol === 'claimed') {
-          cmp = (isClaimed(a) ? 1 : 0) - (isClaimed(b) ? 1 : 0);
-        } else if (sortCol === 'companyName') {
-          cmp = (fa.companyName || '').localeCompare(fb.companyName || '', 'ko');
-        } else if (sortCol === 'siteName') {
-          cmp = (fa.siteName || '').localeCompare(fb.siteName || '', 'ko');
-        } else if (sortCol === 'personName') {
-          cmp = (fa.personName || '').localeCompare(fb.personName || '', 'ko');
-        } else if (sortCol === 'mobilePhone') {
-          cmp = (fa.mobilePhone || '').localeCompare(fb.mobilePhone || '');
-        } else if (sortCol === 'email') {
-          cmp = (fa.email || '').localeCompare(fb.email || '');
-        } else if (sortCol === 'pdfFileName') {
-          cmp = (fa.pdfFileName || '').localeCompare(fb.pdfFileName || '', 'ko');
-        } else if (sortCol === 'pageCount') {
-          cmp = (1 + getExtraArray(a).length) - (1 + getExtraArray(b).length);
-        } else {
-          const da = fa.issueDate || fa.date || fa.arrivalDate || fa.sentDate || fa.cardDate || fa.pdfDate || a.createdAt || '';
-          const db = fb.issueDate || fb.date || fb.arrivalDate || fb.sentDate || fb.cardDate || fb.pdfDate || b.createdAt || '';
-          cmp = da.localeCompare(db);
-        }
-        return sortAsc ? cmp : -cmp;
-      });
-      return list;
     }
 
     function selectRow(id) {
@@ -7706,7 +7854,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     function changeZoom(delta) {
-      currentZoom = Math.min(6.0, Math.max(0.2, currentZoom + delta));
+      currentZoom = Math.min(8.0, Math.max(0.15, currentZoom + delta));
       applyZoom();
     }
     function resetZoom() {
@@ -7881,9 +8029,10 @@ class _HomeScreenState extends State<HomeScreen> {
           '</tr>';
         tbody.innerHTML = list.map(function(r) {
           const f = r.fields || {};
-          const extra = getExtraArray(r);
           const sel = r.id === selectedId ? 'selected' : '';
           const claimed = isClaimed(r);
+          const extraCnt = getExtraArray(r).length;
+          const totalPages = 1 + extraCnt;
           return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
             '<td style="font-weight:800;">' + escapeHtml(f.subCategory || '미지정') + '</td>' +
             '<td style="font-weight:800;">' + escapeHtml(f.patientName || '-') + '</td>' +
@@ -7892,8 +8041,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalPaid) + '원</td>' +
             '<td>' + escapeHtml(f.bizRegNumber || '-') + '</td>' +
             '<td style="font-weight:800; color:' + (claimed ? '#15803d' : '#ea580c') + ';" onclick="toggleClaimed(\\'' + r.id + '\\', event)">' + (claimed ? '☑ 청구완료' : '☐ 미청구') + '</td>' +
-            '<td>' + buildPageButtonsHtml(r, 1 + extra.length) + '</td>' +
-            '</tr>';
+            '<td>' + buildPageButtonsHtml(r, totalPages) + '</td></tr>';
         }).join('');
       } else if (selectedCategoryFilter === '출장비') {
         thead.innerHTML = '<tr>' +
@@ -7907,10 +8055,9 @@ class _HomeScreenState extends State<HomeScreen> {
           const sel = r.id === selectedId ? 'selected' : '';
           return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
             '<td style="font-weight:800;">' + escapeHtml(f.subCategory || '미지정') + '<br>(' + escapeHtml(f.date || '-') + ')</td>' +
-            '<td style="font-weight:800;">' + escapeHtml(f.travelDivision || '식대') + '</td>' +
+            '<td style="font-weight:800;">' + escapeHtml(f.travelDivision || '-') + '</td>' +
             '<td style="font-weight:800;">' + escapeHtml(f.merchantName || '-') + '</td>' +
-            '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalAmount) + '원</td>' +
-            '</tr>';
+            '<td style="font-weight:800; color:#1e3a8a;">' + fmtNum(f.totalAmount) + '원</td></tr>';
         }).join('');
       } else if (selectedCategoryFilter === '명함관리') {
         thead.innerHTML = '<tr>' +
@@ -7930,8 +8077,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td>' + escapeHtml(f.siteName || '-') + '</td>' +
             '<td style="font-weight:800;">' + escapeHtml(f.personName || '-') + '</td>' +
             '<td style="font-weight:800; color:#15803d;">' + escapeHtml(f.mobilePhone || '-') + '</td>' +
-            '<td style="color:#1e3a8a;">' + escapeHtml(f.email || '-') + '</td>' +
-            '</tr>';
+            '<td style="color:#1e3a8a;">' + escapeHtml(f.email || '-') + '</td></tr>';
         }).join('');
       } else if (selectedCategoryFilter === 'PDF변환') {
         thead.innerHTML = '<tr>' +
@@ -7941,26 +8087,28 @@ class _HomeScreenState extends State<HomeScreen> {
           '</tr>';
         tbody.innerHTML = list.map(function(r) {
           const f = r.fields || {};
-          const extra = getExtraArray(r);
-          const pages = 1 + extra.length;
           const sel = r.id === selectedId ? 'selected' : '';
+          const fn = (f.pdfFileName || '문서스캔').trim();
+          const dispFn = fn.toLowerCase().endsWith('.pdf') ? fn : (fn + '.pdf');
+          const totalPages = 1 + getExtraArray(r).length;
           return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
             '<td>' + escapeHtml(f.pdfDate || '-') + '</td>' +
-            '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(f.pdfFileName || '문서스캔') + '.pdf</td>' +
-            '<td>' + buildPageButtonsHtml(r, pages) + '</td></tr>';
+            '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(dispFn) + '</td>' +
+            '<td>' + buildPageButtonsHtml(r, totalPages) + '</td></tr>';
         }).join('');
       } else if (selectedCategoryFilter === '자재송장') {
         const cumMap = computeInvoiceCumulativeMap();
         thead.innerHTML = '<tr>' +
-          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
-          '<th style="width:105px;" class="' + thClass('product', invGroupProduct) + '" onclick="toggleInvoiceGroup(\\'product\\');">제품명 ' + (invGroupProduct ? '✓' : '') + '<br>' + sortArrow('product') + '</th>' +
-          '<th style="width:120px;" class="' + thClass('spec', invGroupSpec) + '" onclick="toggleInvoiceGroup(\\'spec\\');">규격명 ' + (invGroupSpec ? '✓' : '') + '<br>' + sortArrow('spec') + '</th>' +
-          '<th style="width:56px;" class="' + thClass('unit', false) + '" onclick="toggleSort(\\'unit\\');">단위' + sortArrow('unit') + '</th>' +
-          '<th style="width:72px;" class="' + thClass('quantity', false) + '" onclick="toggleSort(\\'quantity\\');">수량' + sortArrow('quantity') + '</th>' +
-          '<th style="width:78px;">누적수량</th>' +
-          '<th style="width:110px;" class="' + thClass('supplier', false) + '" onclick="toggleSort(\\'supplier\\');">공급자' + sortArrow('supplier') + '</th>' +
-          '<th style="width:125px;" class="' + thClass('orderNumber', false) + '" onclick="toggleSort(\\'orderNumber\\');">주문송장번호' + sortArrow('orderNumber') + '</th>' +
-          '<th style="width:74px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\\'uploader\\');">올린사람' + sortArrow('uploader') + '</th>' +
+          '<th style="width:78px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
+          '<th style="width:88px;" class="' + thClass('product', invGroupProduct) + '" onclick="toggleInvoiceGroup(\\'product\\');">제품명 ' + (invGroupProduct ? '✓' : '') + '<br>' + sortArrow('product') + '</th>' +
+          '<th style="width:102px;" class="' + thClass('spec', invGroupSpec) + '" onclick="toggleInvoiceGroup(\\'spec\\');">규격명 ' + (invGroupSpec ? '✓' : '') + '<br>' + sortArrow('spec') + '</th>' +
+          '<th style="width:48px;" class="' + thClass('unit', false) + '" onclick="toggleSort(\\'unit\\');">단위' + sortArrow('unit') + '</th>' +
+          '<th style="width:62px;" class="' + thClass('quantity', false) + '" onclick="toggleSort(\\'quantity\\');">수량' + sortArrow('quantity') + '</th>' +
+          '<th style="width:68px;">누적수량</th>' +
+          '<th style="width:88px;" class="' + thClass('supplier', false) + '" onclick="toggleSort(\\'supplier\\');">공급자' + sortArrow('supplier') + '</th>' +
+          '<th style="width:102px;" class="' + thClass('orderNumber', false) + '" onclick="toggleSort(\\'orderNumber\\');">주문송장번호' + sortArrow('orderNumber') + '</th>' +
+          '<th style="width:64px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\\'uploader\\');">올린사람' + sortArrow('uploader') + '</th>' +
+          '<th style="width:68px;" class="' + thClass('approval', false) + '" onclick="toggleSort(\\'approval\\');">결재' + sortArrow('approval') + '</th>' +
           '</tr>';
         tbody.innerHTML = list.map(function(r) {
           const f = r.fields || {};
@@ -7974,29 +8122,67 @@ class _HomeScreenState extends State<HomeScreen> {
             '<td style="font-weight:800; color:#1e3a8a;">' + escapeHtml(cumMap[r.id] || '-') + '</td>' +
             '<td>' + escapeHtml(f.supplierName || '-') + '</td>' +
             '<td>' + escapeHtml(f.orderNumber || '-') + '</td>' +
-            '<td>' + escapeHtml(f.uploader || '-') + '</td></tr>';
+            '<td>' + escapeHtml(f.uploader || '-') + '</td>' +
+            buildApprovalCellHtml(r) +
+            '</tr>';
         }).join('');
       } else {
         const isOut = selectedCategoryFilter === '공문(발신)';
-        thead.innerHTML = '<tr>' +
-          '<th style="width:86px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
-          '<th style="width:105px;" class="' + thClass('docNumber', false) + '" onclick="toggleSort(\\'docNumber\\');">공문번호' + sortArrow('docNumber') + '</th>' +
-          '<th style="width:125px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">' + (isOut ? '받는사람' : '보낸사람') + sortArrow('clinic') + '</th>' +
-          '<th style="width:200px;" class="' + thClass('title', false) + '" onclick="toggleSort(\\'title\\');">제목' + sortArrow('title') + '</th>' +
-          '<th style="width:250px;" class="' + thClass('aiSummary', false) + '" onclick="toggleSort(\\'aiSummary\\');">내용' + sortArrow('aiSummary') + '</th>' +
-          '<th style="width:74px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\\'uploader\\');">올린사람' + sortArrow('uploader') + '</th>' +
-          '</tr>';
-        tbody.innerHTML = list.map(function(r) {
-          const f = r.fields || {};
-          const sel = r.id === selectedId ? 'selected' : '';
-          return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
-            '<td>' + escapeHtml(f.sentDate || '-') + '</td>' +
-            '<td style="font-weight:800;">' + escapeHtml(f.docNumber || '-') + '</td>' +
-            '<td>' + escapeHtml(isOut ? (f.recipient || f.sender || '-') : (f.sender || '-')) + '</td>' +
-            '<td style="font-weight:800;">' + escapeHtml(f.title || '-') + '</td>' +
-            '<td>' + escapeHtml(f.aiSummary || '-') + '</td>' +
-            '<td>' + escapeHtml(f.uploader || '-') + '</td></tr>';
-        }).join('');
+        const repliedMap = computeRepliedDocMap();
+        if (!isOut) {
+          thead.innerHTML = '<tr>' +
+            '<th style="width:76px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
+            '<th style="width:90px;" class="' + thClass('docNumber', false) + '" onclick="toggleSort(\\'docNumber\\');">공문번호' + sortArrow('docNumber') + '</th>' +
+            '<th style="width:92px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">보낸사람' + sortArrow('clinic') + '</th>' +
+            '<th style="width:140px;" class="' + thClass('title', false) + '" onclick="toggleSort(\\'title\\');">제목' + sortArrow('title') + '</th>' +
+            '<th style="width:165px;" class="' + thClass('aiSummary', false) + '" onclick="toggleSort(\\'aiSummary\\');">내용' + sortArrow('aiSummary') + '</th>' +
+            '<th style="width:76px;" class="' + thClass('replyDeadline', false) + '" onclick="toggleSort(\\'replyDeadline\\');">회신요청일' + sortArrow('replyDeadline') + '</th>' +
+            '<th style="width:58px;" class="' + thClass('replied', false) + '" onclick="toggleSort(\\'replied\\');">회신완료' + sortArrow('replied') + '</th>' +
+            '<th style="width:64px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\\'uploader\\');">올린사람' + sortArrow('uploader') + '</th>' +
+            '<th style="width:68px;" class="' + thClass('approval', false) + '" onclick="toggleSort(\\'approval\\');">결재' + sortArrow('approval') + '</th>' +
+            '</tr>';
+          tbody.innerHTML = list.map(function(r) {
+            const f = r.fields || {};
+            const sel = r.id === selectedId ? 'selected' : '';
+            const isRep = !!repliedMap[normalizeDocNum(f.docNumber)];
+            return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
+              '<td>' + escapeHtml(f.sentDate || '-') + '</td>' +
+              '<td style="font-weight:800;">' + escapeHtml(f.docNumber || '-') + '</td>' +
+              '<td>' + escapeHtml(f.sender || '-') + '</td>' +
+              '<td style="font-weight:800;">' + escapeHtml(f.title || '-') + '</td>' +
+              '<td>' + escapeHtml(f.aiSummary || '-') + '</td>' +
+              '<td>' + escapeHtml(f.replyDeadline || '-') + '</td>' +
+              '<td style="font-weight:900; color:' + (isRep ? '#15803d' : '#94a3b8') + ';">' + (isRep ? '○' : '-') + '</td>' +
+              '<td>' + escapeHtml(f.uploader || '-') + '</td>' +
+              buildApprovalCellHtml(r) +
+              '</tr>';
+          }).join('');
+        } else {
+          thead.innerHTML = '<tr>' +
+            '<th style="width:76px;" class="' + thClass('date', false) + '" onclick="toggleSort(\\'date\\');">날짜' + sortArrow('date') + '</th>' +
+            '<th style="width:90px;" class="' + thClass('docNumber', false) + '" onclick="toggleSort(\\'docNumber\\');">공문번호' + sortArrow('docNumber') + '</th>' +
+            '<th style="width:92px;" class="' + thClass('clinic', false) + '" onclick="toggleSort(\\'clinic\\');">받는사람' + sortArrow('clinic') + '</th>' +
+            '<th style="width:90px;" class="' + thClass('replyDocNumber', false) + '" onclick="toggleSort(\\'replyDocNumber\\');">회신번호' + sortArrow('replyDocNumber') + '</th>' +
+            '<th style="width:140px;" class="' + thClass('title', false) + '" onclick="toggleSort(\\'title\\');">제목' + sortArrow('title') + '</th>' +
+            '<th style="width:165px;" class="' + thClass('aiSummary', false) + '" onclick="toggleSort(\\'aiSummary\\');">내용' + sortArrow('aiSummary') + '</th>' +
+            '<th style="width:64px;" class="' + thClass('uploader', false) + '" onclick="toggleSort(\\'uploader\\');">올린사람' + sortArrow('uploader') + '</th>' +
+            '<th style="width:68px;" class="' + thClass('approval', false) + '" onclick="toggleSort(\\'approval\\');">결재' + sortArrow('approval') + '</th>' +
+            '</tr>';
+          tbody.innerHTML = list.map(function(r) {
+            const f = r.fields || {};
+            const sel = r.id === selectedId ? 'selected' : '';
+            return '<tr class="' + sel + '" onclick="selectRow(\\'' + r.id + '\\')">' +
+              '<td>' + escapeHtml(f.sentDate || '-') + '</td>' +
+              '<td style="font-weight:800;">' + escapeHtml(f.docNumber || '-') + '</td>' +
+              '<td>' + escapeHtml(f.recipient || f.sender || '-') + '</td>' +
+              '<td>' + escapeHtml(f.replyDocNumber || '-') + '</td>' +
+              '<td style="font-weight:800;">' + escapeHtml(f.title || '-') + '</td>' +
+              '<td>' + escapeHtml(f.aiSummary || '-') + '</td>' +
+              '<td>' + escapeHtml(f.uploader || '-') + '</td>' +
+              buildApprovalCellHtml(r) +
+              '</tr>';
+          }).join('');
+        }
       }
 
       const cur = list.find(function(r) { return r.id === selectedId; });
@@ -8070,31 +8256,17 @@ class _HomeScreenState extends State<HomeScreen> {
       const ws = document.getElementById('workspace');
       let dragging = false;
 
-      function updateSplit(clientX, clientY) {
+      function applyResize(clientX, clientY) {
         const rect = ws.getBoundingClientRect();
-        const isLand = window.matchMedia('(orientation: landscape)').matches;
+        const isLand = window.innerWidth > window.innerHeight;
         if (isLand) {
-          const pct = Math.min(82, Math.max(18, ((clientX - rect.left) / rect.width) * 100));
+          const pct = Math.min(80, Math.max(20, ((clientX - rect.left) / rect.width) * 100));
           listPane.style.flex = '0 0 ' + pct + '%';
         } else {
-          const pct = Math.min(82, Math.max(15, ((clientY - rect.top) / rect.height) * 100));
+          const pct = Math.min(82, Math.max(18, ((clientY - rect.top) / rect.height) * 100));
           listPane.style.flex = '0 0 ' + pct + '%';
         }
       }
-
-      bar.addEventListener('touchstart', function(e) {
-        dragging = true;
-        if (e.cancelable) e.preventDefault();
-      }, { passive: false });
-
-      window.addEventListener('touchmove', function(e) {
-        if (!dragging || !e.touches || e.touches.length === 0) return;
-        if (e.cancelable) e.preventDefault();
-        updateSplit(e.touches[0].clientX, e.touches[0].clientY);
-      }, { passive: false });
-
-      window.addEventListener('touchend', function() { dragging = false; });
-      window.addEventListener('touchcancel', function() { dragging = false; });
 
       bar.addEventListener('mousedown', function(e) {
         dragging = true;
@@ -8102,21 +8274,35 @@ class _HomeScreenState extends State<HomeScreen> {
       });
       window.addEventListener('mousemove', function(e) {
         if (!dragging) return;
-        updateSplit(e.clientX, e.clientY);
+        applyResize(e.clientX, e.clientY);
       });
-      window.addEventListener('mouseup', function() { dragging = false; });
+      window.addEventListener('mouseup', function() {
+        dragging = false;
+      });
+
+      bar.addEventListener('touchstart', function(e) {
+        dragging = true;
+        if (e.cancelable) e.preventDefault();
+      }, { passive: false });
+      window.addEventListener('touchmove', function(e) {
+        if (!dragging || !e.touches || e.touches.length === 0) return;
+        if (e.cancelable) e.preventDefault();
+        applyResize(e.touches[0].clientX, e.touches[0].clientY);
+      }, { passive: false });
+      window.addEventListener('touchend', function() {
+        dragging = false;
+      });
     })();
 
-    // ★ 2. 하단 사진 뷰어 두 손가락 벌려서 확대/축소(Pinch Zoom) + 드래그 이동(Pan) + 더블탭 초기화
-    (function initPhotoPinchAndPan() {
+    // ★ 2. 사진 두 손가락 핀치 확대/축소(15% ~ 800%) + 한 손가락 드래그 이동 (모바일 & PC 완벽 지원)
+    (function initPhotoTouchZoom() {
       const vp = document.getElementById('photo-viewport');
+      let isPinching = false;
       let startDist = 0;
       let startZoom = 1.0;
-      let isPinching = false;
       let isPanning = false;
       let startPanX = 0;
       let startPanY = 0;
-      let lastTapTime = 0;
 
       function getTouchDist(t1, t2) {
         const dx = t1.clientX - t2.clientX;
@@ -8132,15 +8318,6 @@ class _HomeScreenState extends State<HomeScreen> {
           startZoom = currentZoom;
           if (e.cancelable) e.preventDefault();
         } else if (e.touches.length === 1) {
-          const now = Date.now();
-          if (now - lastTapTime < 280) {
-            if (currentZoom > 1.05) resetZoom();
-            else { currentZoom = 2.2; panX = 0; panY = 0; applyZoom(); }
-            lastTapTime = 0;
-            if (e.cancelable) e.preventDefault();
-            return;
-          }
-          lastTapTime = now;
           isPanning = true;
           startPanX = e.touches[0].clientX - panX;
           startPanY = e.touches[0].clientY - panY;
@@ -8152,7 +8329,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (e.cancelable) e.preventDefault();
           const dist = getTouchDist(e.touches[0], e.touches[1]);
           if (startDist > 10) {
-            currentZoom = Math.min(6.0, Math.max(0.2, startZoom * (dist / startDist)));
+            currentZoom = Math.min(8.0, Math.max(0.15, startZoom * (dist / startDist)));
             applyZoom();
           }
         } else if (isPanning && e.touches.length === 1) {
@@ -8181,7 +8358,6 @@ class _HomeScreenState extends State<HomeScreen> {
 </body>
 </html>''';
   }
-
 
   // ---------------------------------------------------------------------------
   // GitHub / OneDrive 현장공유방 연동 (사진 파일 photos/ 분리 업로드 & PC 바로가기)
@@ -8415,6 +8591,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final cur = _filteredRecords;
           if (cur.isNotEmpty) _selectedRecord = cur.first;
         });
+        await _openIntegratedRoomViewerScreen(isOfficialRoom: isOfficialRoom);
       }
     } catch (e) {
       if (mounted) {
@@ -8425,6 +8602,903 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _isBusy = false);
     }
+  }
+
+  final Map<String, Uint8List> _remotePhotoMemoryCache = <String, Uint8List>{};
+
+  Future<Uint8List?> _resolveRecordMainImageOrFetchGithub(DocRecord rec) async {
+    final localBytes = rec.resolveMainImageBytes();
+    if (localBytes != null && localBytes.isNotEmpty) return localBytes;
+    if (_remotePhotoMemoryCache.containsKey(rec.id)) {
+      return _remotePhotoMemoryCache[rec.id];
+    }
+    final repo = _githubRepo.trim();
+    final token = _githubToken.trim();
+    if (repo.isEmpty || token.isEmpty) return null;
+    final effFolder = _buildEffectiveGithubFolder(_githubFolder);
+    final photoPath = '$effFolder/photos/doc_${rec.id}.jpg';
+    try {
+      final encodedPath =
+          photoPath.split('/').map(Uri.encodeComponent).join('/');
+      final uri =
+          Uri.parse('https://api.github.com/repos/$repo/contents/$encodedPath');
+      final resp = await http
+          .get(uri, headers: _githubHeaders(token))
+          .timeout(const Duration(seconds: 12));
+      if (resp.statusCode == 200) {
+        final decoded =
+            jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+        final rawB64 =
+            (decoded['content']?.toString() ?? '').replaceAll(RegExp(r'\s+'), '');
+        if (rawB64.isNotEmpty) {
+          final bytes = base64Decode(rawB64);
+          _remotePhotoMemoryCache[rec.id] = bytes;
+          return bytes;
+        }
+        final dlUrl = decoded['download_url']?.toString() ?? '';
+        if (dlUrl.isNotEmpty) {
+          final r2 =
+              await http.get(Uri.parse(dlUrl)).timeout(const Duration(seconds: 12));
+          if (r2.statusCode == 200 && r2.bodyBytes.isNotEmpty) {
+            _remotePhotoMemoryCache[rec.id] = r2.bodyBytes;
+            return r2.bodyBytes;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// ★ 현장공유 [들어가서 보기] 전용 통합 HTML 뷰어 화면
+  /// - 전처럼 통합 HTML(공문_통합.html / 자재송장_통합.html)에 직접 들어온 것처럼 전용 전체화면 뷰어로 열림!
+  /// - 검토/소장결재 시 GitHub 원격 통합 HTML에도 즉시 자동 반영되며, 상단 [외부 브라우저로 열기] 버튼으로 크롬/삼성인터넷에서도 바로 열 수 있음!
+  Future<void> _openIntegratedRoomViewerScreen({
+    required bool isOfficialRoom,
+  }) async {
+    String roomTab =
+        isOfficialRoom ? DocCategory.officialIn : DocCategory.invoice;
+    String productFilter = '전체';
+    bool sumByProd = true;
+    bool sumBySpec = false;
+    double splitRatio = _listSplitRatio;
+    double horizRatio = _detailHorizSplitRatio;
+    final TransformationController viewerZoomCtrl = TransformationController();
+
+    List<DocRecord> getRoomList() {
+      final base = _records.where((r) {
+        if (isOfficialRoom) {
+          return r.category == roomTab;
+        } else {
+          return r.category == DocCategory.invoice;
+        }
+      }).toList();
+      if (!isOfficialRoom && productFilter != '전체') {
+        base.retainWhere((r) {
+          final prod = (r.fields['productName'] ?? '').trim().isEmpty
+              ? '기타자재'
+              : r.fields['productName']!.trim();
+          final spec = (r.fields['specName'] ?? '').trim().isEmpty
+              ? '규격미상'
+              : r.fields['specName']!.trim();
+          final k = (sumByProd && sumBySpec)
+              ? '$prod. $spec'
+              : (sumBySpec ? spec : prod);
+          return k == productFilter;
+        });
+      }
+      final repliedKeys = _computeRepliedDocNumKeys(_records);
+      _sortRecordList(base, repliedKeys);
+      return base;
+    }
+
+    final initList = getRoomList();
+    DocRecord? curSel = initList.isNotEmpty ? initList.first : null;
+    final effFolder = _buildEffectiveGithubFolder(_githubFolder);
+    final roomFileName = isOfficialRoom ? '공문_통합.html' : '자재송장_통합.html';
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (pageCtx) => StatefulBuilder(
+          builder: (pageCtx, setViewerState) {
+            final list = getRoomList();
+            if (curSel != null && !list.any((r) => r.id == curSel!.id)) {
+              curSel = list.isNotEmpty ? list.first : null;
+            }
+            final bool isLand =
+                MediaQuery.of(pageCtx).orientation == Orientation.landscape;
+            final repliedKeys = _computeRepliedDocNumKeys(_records);
+            final cumMap = _computeInvoiceCumulativeMap(_records);
+
+            void adjustViewerZoom(double factor, {bool reset = false}) {
+              setViewerState(() {
+                if (reset) {
+                  viewerZoomCtrl.value = Matrix4.identity();
+                  return;
+                }
+                final cur = viewerZoomCtrl.value.getMaxScaleOnAxis();
+                final next = (cur * factor).clamp(0.15, 8.0);
+                viewerZoomCtrl.value = Matrix4.identity()..scale(next);
+              });
+            }
+
+            Future<void> pushUpdatedHtmlToGithubQuietly() async {
+              final repo = _githubRepo.trim();
+              final token = _githubToken.trim();
+              if (repo.isEmpty || token.isEmpty) return;
+              final roomRecs = _records.where((r) {
+                return isOfficialRoom
+                    ? DocCategory.isOfficial(r.category)
+                    : r.category == DocCategory.invoice;
+              }).toList();
+              final pathInRepo = '$effFolder/$roomFileName';
+              try {
+                final remoteData = await _fetchGithubFileContentAndSha(
+                  repo: repo,
+                  token: token,
+                  pathInRepo: pathInRepo,
+                );
+                final htmlStr = _buildInteractiveHtmlDocument(
+                  records: roomRecs,
+                  scopeTitle: isOfficialRoom ? '공문_통합' : '자재송장_통합',
+                  majorCat: isOfficialRoom
+                      ? DocCategory.officialIn
+                      : DocCategory.invoice,
+                  embedBase64Images: false,
+                );
+                await _putGithubFileBytes(
+                  repo: repo,
+                  token: token,
+                  pathInRepo: pathInRepo,
+                  bytes: utf8.encode(htmlStr),
+                  message: 'Update approval in $roomFileName',
+                  sha: remoteData?['sha'],
+                );
+              } catch (_) {}
+            }
+
+            Widget buildRoomSummaryBar() {
+              if (isOfficialRoom) {
+                final inCnt = _records
+                    .where((r) => r.category == DocCategory.officialIn)
+                    .length;
+                final outCnt = _records
+                    .where((r) => r.category == DocCategory.officialOut)
+                    .length;
+                return Container(
+                  width: double.infinity,
+                  color: Colors.white,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  child: Row(
+                    children: [
+                      ChoiceChip(
+                        visualDensity:
+                            const VisualDensity(horizontal: -4, vertical: -4),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        showCheckmark: false,
+                        selectedColor: const Color(0xFFDBEAFE),
+                        label: Text(
+                          '공문(수신) ($inCnt)',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: roomTab == DocCategory.officialIn
+                                ? FontWeight.w900
+                                : FontWeight.w700,
+                            color: roomTab == DocCategory.officialIn
+                                ? const Color(0xFF1E3A8A)
+                                : const Color(0xFF1E293B),
+                          ),
+                        ),
+                        selected: roomTab == DocCategory.officialIn,
+                        onSelected: (_) {
+                          setViewerState(() {
+                            roomTab = DocCategory.officialIn;
+                            final next = getRoomList();
+                            curSel = next.isNotEmpty ? next.first : null;
+                            viewerZoomCtrl.value = Matrix4.identity();
+                          });
+                        },
+                      ),
+                      const SizedBox(width: 6),
+                      ChoiceChip(
+                        visualDensity:
+                            const VisualDensity(horizontal: -4, vertical: -4),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        showCheckmark: false,
+                        selectedColor: const Color(0xFFDBEAFE),
+                        label: Text(
+                          '공문(발신) ($outCnt)',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: roomTab == DocCategory.officialOut
+                                ? FontWeight.w900
+                                : FontWeight.w700,
+                            color: roomTab == DocCategory.officialOut
+                                ? const Color(0xFF1E3A8A)
+                                : const Color(0xFF1E293B),
+                          ),
+                        ),
+                        selected: roomTab == DocCategory.officialOut,
+                        onSelected: (_) {
+                          setViewerState(() {
+                            roomTab = DocCategory.officialOut;
+                            final next = getRoomList();
+                            curSel = next.isNotEmpty ? next.first : null;
+                            viewerZoomCtrl.value = Matrix4.identity();
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                );
+              } else {
+                final allInv = _records
+                    .where((r) => r.category == DocCategory.invoice)
+                    .toList();
+                final Map<String, List<DocRecord>> groups = {};
+                for (final r in allInv) {
+                  final prod = (r.fields['productName'] ?? '').trim().isEmpty
+                      ? '기타자재'
+                      : r.fields['productName']!.trim();
+                  final spec = (r.fields['specName'] ?? '').trim().isEmpty
+                      ? '규격미상'
+                      : r.fields['specName']!.trim();
+                  final k = (sumByProd && sumBySpec)
+                      ? '$prod. $spec'
+                      : (sumBySpec ? spec : prod);
+                  groups.putIfAbsent(k, () => []).add(r);
+                }
+                final modeStr = (sumByProd && sumBySpec)
+                    ? '제품명. 규격별'
+                    : (sumBySpec ? '규격명별' : '제품명별');
+                return Container(
+                  width: double.infinity,
+                  color: const Color(0xFFF8FAFC),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '📊 합산기준: $modeStr (표의 [제품명]·[규격명] 제목을 누르면 전환)',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF92400E),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(right: 5),
+                              child: ChoiceChip(
+                                visualDensity: const VisualDensity(
+                                    horizontal: -4, vertical: -4),
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                showCheckmark: false,
+                                selectedColor: Colors.amber.shade200,
+                                label: Text(
+                                  '전체 ${allInv.length}장',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: productFilter == '전체'
+                                        ? FontWeight.w900
+                                        : FontWeight.w700,
+                                  ),
+                                ),
+                                selected: productFilter == '전체',
+                                onSelected: (_) => setViewerState(
+                                    () => productFilter = '전체'),
+                              ),
+                            ),
+                            for (final entry in groups.entries)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 5),
+                                child: ChoiceChip(
+                                  visualDensity: const VisualDensity(
+                                      horizontal: -4, vertical: -4),
+                                  materialTapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  showCheckmark: false,
+                                  selectedColor: Colors.amber.shade200,
+                                  label: Text(
+                                    () {
+                                      final recs = entry.value;
+                                      double qSum = 0;
+                                      String u = '';
+                                      for (final r in recs) {
+                                        qSum += r.numericInvoiceQuantity;
+                                        if (u.isEmpty &&
+                                            (r.fields['unit'] ?? '')
+                                                .trim()
+                                                .isNotEmpty) {
+                                          u = r.fields['unit']!.trim();
+                                        }
+                                      }
+                                      if (u.isEmpty) u = '매';
+                                      final qStr = (qSum - qSum.roundToDouble())
+                                                  .abs() <
+                                              0.0005
+                                          ? NumberFormat('#,###')
+                                              .format(qSum.round())
+                                          : qSum
+                                              .toStringAsFixed(3)
+                                              .replaceAll(RegExp(r'0+$'), '')
+                                              .replaceAll(RegExp(r'\.$'), '');
+                                      return '${entry.key} (${recs.length}건 · $qStr$u)';
+                                    }(),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: productFilter == entry.key
+                                          ? FontWeight.w900
+                                          : FontWeight.w700,
+                                    ),
+                                  ),
+                                  selected: productFilter == entry.key,
+                                  onSelected: (_) => setViewerState(
+                                      () => productFilter = entry.key),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+            }
+
+            Widget buildRoomTable() {
+              if (list.isEmpty) {
+                return const Center(
+                  child: Text(
+                    '통합 공유방에 등록된 문서가 없습니다.',
+                    style: TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                );
+              }
+              return ScrollConfiguration(
+                behavior:
+                    ScrollConfiguration.of(pageCtx).copyWith(scrollbars: false),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: roomTab == DocCategory.officialIn
+                        ? 808
+                        : (roomTab == DocCategory.officialOut ? 766 : 748),
+                    child: Column(
+                      children: [
+                        if (roomTab == DocCategory.officialIn)
+                          Row(
+                            children: [
+                              _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
+                              _buildFixedHeaderCell('공문번호', 82,
+                                  sortKey: 'docNumber'),
+                              _buildFixedHeaderCell('보낸사람', 82,
+                                  sortKey: 'clinic'),
+                              _buildFixedHeaderCell('제목', 126,
+                                  sortKey: 'title'),
+                              _buildFixedHeaderCell('내용', 148,
+                                  sortKey: 'aiSummary'),
+                              _buildFixedHeaderCell('회신요청일', 70,
+                                  sortKey: 'replyDeadline'),
+                              _buildFixedHeaderCell('회신완료', 54,
+                                  sortKey: 'replied'),
+                              _buildFixedHeaderCell('올린사람', 58,
+                                  sortKey: 'uploader'),
+                              _buildFixedHeaderCell('결재', 62,
+                                  sortKey: 'approval'),
+                              _buildFixedHeaderCell('수정/삭제', 56),
+                            ],
+                          )
+                        else if (roomTab == DocCategory.officialOut)
+                          Row(
+                            children: [
+                              _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
+                              _buildFixedHeaderCell('공문번호', 82,
+                                  sortKey: 'docNumber'),
+                              _buildFixedHeaderCell('받는사람', 82,
+                                  sortKey: 'clinic'),
+                              _buildFixedHeaderCell('회신번호', 82,
+                                  sortKey: 'replyDocNumber'),
+                              _buildFixedHeaderCell('제목', 126,
+                                  sortKey: 'title'),
+                              _buildFixedHeaderCell('내용', 148,
+                                  sortKey: 'aiSummary'),
+                              _buildFixedHeaderCell('올린사람', 58,
+                                  sortKey: 'uploader'),
+                              _buildFixedHeaderCell('결재', 62,
+                                  sortKey: 'approval'),
+                              _buildFixedHeaderCell('수정/삭제', 56),
+                            ],
+                          )
+                        else
+                          Row(
+                            children: [
+                              _buildFixedHeaderCell('날짜', 70, sortKey: 'date'),
+                              _buildFixedHeaderCell(
+                                '제품명 ${sumByProd ? "✓" : ""}',
+                                78,
+                                onHeaderTap: () {
+                                  setViewerState(() {
+                                    if (!sumByProd && sumBySpec) {
+                                      sumByProd = true;
+                                    } else {
+                                      sumByProd = true;
+                                      sumBySpec = false;
+                                    }
+                                    productFilter = '전체';
+                                  });
+                                },
+                                isHighlightedGroup: sumByProd,
+                              ),
+                              _buildFixedHeaderCell(
+                                '규격명 ${sumBySpec ? "✓" : ""}',
+                                92,
+                                onHeaderTap: () {
+                                  setViewerState(() {
+                                    if (sumByProd && !sumBySpec) {
+                                      sumBySpec = true;
+                                    } else if (sumByProd && sumBySpec) {
+                                      sumByProd = false;
+                                      sumBySpec = true;
+                                    } else {
+                                      sumByProd = true;
+                                      sumBySpec = false;
+                                    }
+                                    productFilter = '전체';
+                                  });
+                                },
+                                isHighlightedGroup: sumBySpec,
+                              ),
+                              _buildFixedHeaderCell('단위', 44, sortKey: 'unit'),
+                              _buildFixedHeaderCell('수량', 56,
+                                  sortKey: 'quantity'),
+                              _buildFixedHeaderCell('누적수량', 62),
+                              _buildFixedHeaderCell('공급자', 78,
+                                  sortKey: 'supplier'),
+                              _buildFixedHeaderCell('주문송장번호', 92,
+                                  sortKey: 'orderNumber'),
+                              _buildFixedHeaderCell('올린사람', 58,
+                                  sortKey: 'uploader'),
+                              _buildFixedHeaderCell('결재', 62,
+                                  sortKey: 'approval'),
+                              _buildFixedHeaderCell('수정/삭제', 56),
+                            ],
+                          ),
+                        Expanded(
+                          child: ListView.builder(
+                            padding: EdgeInsets.zero,
+                            itemCount: list.length,
+                            itemBuilder: (ctx, idx) {
+                              final r = list[idx];
+                              final f = r.fields;
+                              final isSel = curSel?.id == r.id;
+                              Widget rowW;
+                              if (roomTab == DocCategory.officialIn) {
+                                final rep =
+                                    _isIncomingDocReplied(r, repliedKeys);
+                                rowW = Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _buildFixedDataCell(
+                                        DocRecord.formatDotDate(f['sentDate']),
+                                        70),
+                                    _buildFixedDataCell(
+                                        f['docNumber'] ?? '-', 82,
+                                        bold: true),
+                                    _buildFixedDataCell(
+                                        r.officialCounterpartyValue, 82),
+                                    _buildFixedDataCell(f['title'] ?? '-', 126,
+                                        bold: true),
+                                    _buildFixedDataCell(
+                                        f['aiSummary'] ?? '-', 148),
+                                    _buildFixedDataCell(
+                                        DocRecord.formatDotDate(
+                                            f['replyDeadline']),
+                                        70),
+                                    _buildFixedDataCell(
+                                      rep ? '○' : '-',
+                                      54,
+                                      bold: true,
+                                      textColor: rep
+                                          ? Colors.green.shade700
+                                          : Colors.black38,
+                                    ),
+                                    _buildFixedDataCell(
+                                        _resolveUploaderName(r), 58),
+                                    _buildApprovalCellWithCallback(r, 62,
+                                        (updated) async {
+                                      setViewerState(() => curSel = updated);
+                                      await pushUpdatedHtmlToGithubQuietly();
+                                    }),
+                                    _buildEditDeleteActionCell(r, 56),
+                                  ],
+                                );
+                              } else if (roomTab == DocCategory.officialOut) {
+                                rowW = Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _buildFixedDataCell(
+                                        DocRecord.formatDotDate(f['sentDate']),
+                                        70),
+                                    _buildFixedDataCell(
+                                        f['docNumber'] ?? '-', 82,
+                                        bold: true),
+                                    _buildFixedDataCell(
+                                        r.officialCounterpartyValue, 82),
+                                    _buildFixedDataCell(
+                                        f['replyDocNumber'] ?? '-', 82),
+                                    _buildFixedDataCell(f['title'] ?? '-', 126,
+                                        bold: true),
+                                    _buildFixedDataCell(
+                                        f['aiSummary'] ?? '-', 148),
+                                    _buildFixedDataCell(
+                                        _resolveUploaderName(r), 58),
+                                    _buildApprovalCellWithCallback(r, 62,
+                                        (updated) async {
+                                      setViewerState(() => curSel = updated);
+                                      await pushUpdatedHtmlToGithubQuietly();
+                                    }),
+                                    _buildEditDeleteActionCell(r, 56),
+                                  ],
+                                );
+                              } else {
+                                rowW = Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _buildFixedDataCell(
+                                        DocRecord.formatDotDate(
+                                            f['arrivalDate']),
+                                        70),
+                                    _buildFixedDataCell(
+                                        f['productName'] ?? '-', 78,
+                                        bold: true),
+                                    _buildFixedDataCell(
+                                        f['specName'] ?? '-', 92,
+                                        bold: true),
+                                    _buildFixedDataCell(f['unit'] ?? '-', 44),
+                                    _buildFixedDataCell(
+                                        f['quantity'] ?? '-', 56,
+                                        bold: true),
+                                    _buildFixedDataCell(
+                                      cumMap[r.id] ?? '-',
+                                      62,
+                                      bold: true,
+                                      textColor: const Color(0xFF1E3A8A),
+                                    ),
+                                    _buildFixedDataCell(
+                                        f['supplierName'] ?? '-', 78),
+                                    _buildFixedDataCell(
+                                        f['orderNumber'] ?? '-', 92),
+                                    _buildFixedDataCell(
+                                        _resolveUploaderName(r), 58),
+                                    _buildApprovalCellWithCallback(r, 62,
+                                        (updated) async {
+                                      setViewerState(() => curSel = updated);
+                                      await pushUpdatedHtmlToGithubQuietly();
+                                    }),
+                                    _buildEditDeleteActionCell(r, 56),
+                                  ],
+                                );
+                              }
+                              return GestureDetector(
+                                onTap: () {
+                                  setViewerState(() {
+                                    curSel = r;
+                                    viewerZoomCtrl.value = Matrix4.identity();
+                                  });
+                                },
+                                child: Container(
+                                  constraints: const BoxConstraints(
+                                      minHeight: _kTableDataRowHeight),
+                                  color: isSel
+                                      ? const Color(0xFFDBEAFE)
+                                      : Colors.white,
+                                  child: IntrinsicHeight(child: rowW),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            Widget buildRoomPhotoPane() {
+              final sel = curSel;
+              if (sel == null) {
+                return Container(
+                  color: const Color(0xFF0F172A),
+                  alignment: Alignment.center,
+                  child: const Text(
+                    '목록에서 문서를 선택하면 사진이 표시됩니다.',
+                    style: TextStyle(color: Colors.white70, fontSize: 12.5),
+                  ),
+                );
+              }
+              return Container(
+                color: const Color(0xFF0F172A),
+                child: FutureBuilder<Uint8List?>(
+                  future: _resolveRecordMainImageOrFetchGithub(sel),
+                  builder: (ctx, snap) {
+                    if (snap.connectionState == ConnectionState.waiting) {
+                      return const Center(
+                        child: CircularProgressIndicator(color: Colors.amber),
+                      );
+                    }
+                    final bytes = snap.data;
+                    if (bytes == null || bytes.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          '저장된 사진이 없습니다.',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      );
+                    }
+                    return Stack(
+                      children: [
+                        Positioned.fill(
+                          child: InteractiveViewer(
+                            key: ValueKey<String>('room_photo_${sel.id}'),
+                            transformationController: viewerZoomCtrl,
+                            boundaryMargin:
+                                const EdgeInsets.all(double.infinity),
+                            panEnabled: true,
+                            scaleEnabled: true,
+                            minScale: 0.15,
+                            maxScale: 8.0,
+                            child: Center(
+                              child:
+                                  Image.memory(bytes, fit: BoxFit.contain),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          left: 8,
+                          bottom: 8,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xCC0F172A),
+                              borderRadius: BorderRadius.circular(8),
+                              border:
+                                  Border.all(color: const Color(0xFF334155)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                InkWell(
+                                  onTap: () => adjustViewerZoom(0.75),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 7, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF1E3A8A),
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: const Text(
+                                      '－ 축소',
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w800),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                InkWell(
+                                  onTap: () =>
+                                      adjustViewerZoom(1.0, reset: true),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF334155),
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: const Text(
+                                      '100%',
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w800),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                InkWell(
+                                  onTap: () => adjustViewerZoom(1.3),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 7, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF1E3A8A),
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: const Text(
+                                      '＋ 확대',
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w800),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              );
+            }
+
+            return Scaffold(
+              appBar: AppBar(
+                backgroundColor: const Color(0xFF1E3A8A),
+                foregroundColor: Colors.white,
+                titleSpacing: 4,
+                title: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '☁️ $effFolder/$roomFileName',
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w900),
+                  ),
+                ),
+                actions: [
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.amber.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: () async {
+                        final roomRecs = _records.where((r) {
+                          return isOfficialRoom
+                              ? DocCategory.isOfficial(r.category)
+                              : r.category == DocCategory.invoice;
+                        }).toList();
+                        final htmlStr = _buildInteractiveHtmlDocument(
+                          records: roomRecs,
+                          scopeTitle: isOfficialRoom ? '공문_통합' : '자재송장_통합',
+                          majorCat: isOfficialRoom
+                              ? DocCategory.officialIn
+                              : DocCategory.invoice,
+                          embedBase64Images: true,
+                        );
+                        final tempDir = await getTemporaryDirectory();
+                        final f = File(p.join(tempDir.path, roomFileName));
+                        await f.writeAsString(htmlStr, flush: true);
+                        await Share.shareXFiles([XFile(f.path)]);
+                      },
+                      child: const Text(
+                        '🌐 통합HTML 공유/열기',
+                        style: TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              body: Column(
+                children: [
+                  buildRoomSummaryBar(),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (ctx, constraints) {
+                        if (!isLand) {
+                          final totalH = constraints.maxHeight;
+                          const barH = 26.0;
+                          final listH = ((totalH - barH) * splitRatio)
+                              .clamp(100.0, totalH - 120.0);
+                          return Column(
+                            children: [
+                              SizedBox(
+                                height: listH,
+                                child: buildRoomTable(),
+                              ),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onVerticalDragUpdate: (d) {
+                                  setViewerState(() {
+                                    splitRatio = ((splitRatio * totalH +
+                                                d.delta.dy) /
+                                            totalH)
+                                        .clamp(0.18, 0.82);
+                                  });
+                                },
+                                child: Container(
+                                  height: barH,
+                                  width: double.infinity,
+                                  color: const Color(0xFFCBD5E1),
+                                  alignment: Alignment.center,
+                                  child: const Text(
+                                    '═ 위아래로 끌어서 화면 크기 조절 (표는 좌우로 드래그 가능)',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF1E3A8A),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Expanded(child: buildRoomPhotoPane()),
+                            ],
+                          );
+                        } else {
+                          final totalW = constraints.maxWidth;
+                          const barW = 24.0;
+                          final listW = ((totalW - barW) * horizRatio)
+                              .clamp(180.0, totalW - 180.0);
+                          return Row(
+                            children: [
+                              SizedBox(
+                                width: listW,
+                                child: buildRoomTable(),
+                              ),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onHorizontalDragUpdate: (d) {
+                                  setViewerState(() {
+                                    horizRatio = ((horizRatio * totalW +
+                                                d.delta.dx) /
+                                            totalW)
+                                        .clamp(0.22, 0.78);
+                                  });
+                                },
+                                child: Container(
+                                  width: barW,
+                                  height: double.infinity,
+                                  color: const Color(0xFFCBD5E1),
+                                  alignment: Alignment.center,
+                                  child: const RotatedBox(
+                                    quarterTurns: 1,
+                                    child: Text(
+                                      '═ 좌우 크기 조절',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1E3A8A),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Expanded(child: buildRoomPhotoPane()),
+                            ],
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _exportPcShortcutLauncherHtml() async {
@@ -9094,6 +10168,63 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildApprovalCellWithCallback(
+    DocRecord rec,
+    double width,
+    Future<void> Function(DocRecord updated)? onChangedCallback,
+  ) {
+    final label = rec.approvalStatusLabel;
+    final entries = rec.approvalEntries;
+    final bool isDone = rec.isDirectorApprovalCompleted;
+    final bool hasReview = entries.isNotEmpty;
+
+    Color bg = Colors.grey.shade100;
+    Color fg = Colors.blueGrey.shade800;
+    Color borderCol = Colors.grey.shade400;
+    if (isDone) {
+      bg = Colors.green.shade50;
+      fg = Colors.green.shade800;
+      borderCol = Colors.green.shade400;
+    } else if (hasReview) {
+      bg = Colors.blue.shade50;
+      fg = const Color(0xFF1E3A8A);
+      borderCol = Colors.blue.shade300;
+    }
+
+    return Container(
+      width: width,
+      constraints: const BoxConstraints(minHeight: _kTableDataRowHeight),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      decoration: const BoxDecoration(
+        border: Border(
+          right: BorderSide(color: Color(0xFFE2E8F0), width: 1),
+          bottom: BorderSide(color: Color(0xFFE2E8F0), width: 1),
+        ),
+      ),
+      alignment: Alignment.center,
+      child: InkWell(
+        onTap: () =>
+            _handleApprovalCellTap(rec, onChangedCallback: onChangedCallback),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: borderCol),
+          ),
+          child: Text(
+            hasReview && !isDone ? '검토(${entries.length})' : label,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: fg,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -10091,7 +11222,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final List<Uint8List> allPageBytes = <Uint8List>[];
-    final mainBytes = rec.resolveMainImageBytes();
+    Uint8List? mainBytes = rec.resolveMainImageBytes();
+    if ((mainBytes == null || mainBytes.isEmpty) &&
+        _remotePhotoMemoryCache.containsKey(rec.id)) {
+      mainBytes = _remotePhotoMemoryCache[rec.id];
+    } else if (mainBytes == null || mainBytes.isEmpty) {
+      _resolveRecordMainImageOrFetchGithub(rec).then((fetched) {
+        if (fetched != null && fetched.isNotEmpty && mounted) {
+          setState(() {});
+        }
+      });
+    }
     if (mainBytes != null && mainBytes.isNotEmpty) {
       allPageBytes.add(mainBytes);
     }
