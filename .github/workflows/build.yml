@@ -1,5 +1,6 @@
 # .github/workflows/build.yml 전체 코드 (처음부터 끝까지 그대로 복사해 붙여넣으세요!)
-name: Build Flutter Android & iOS (Play Store AAB + App Store IPA)
+# ★ 새 앱 번들 ID(com.kyunghoon.evidencesnap) + iOS 프로비저닝 프로필 수동 서명 + App Store Connect 자동 전송 완비!
+name: Build Flutter Android & iOS (Play Store AAB + App Store Connect IPA)
 
 on:
   push:
@@ -8,9 +9,12 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+env:
+  APP_BUNDLE_ID: "com.kyunghoon.evidencesnap"
+
 jobs:
   build-android:
-    name: Build Signed APK & Google Play Store AAB
+    name: Build Signed APK & Google Play Store AAB (com.kyunghoon.evidencesnap)
     runs-on: ubuntu-latest
 
     steps:
@@ -45,8 +49,8 @@ jobs:
             cp AndroidManifest.xml /tmp/AndroidManifest.xml.bak
           fi
 
-      - name: Create Flutter Platform Scaffold
-        run: "rm -rf android ios && flutter create --platforms=android --org com.tectura77 --project-name doc_snap_archive ."
+      - name: Create Flutter Platform Scaffold (com.kyunghoon.evidencesnap)
+        run: "rm -rf android ios && flutter create --platforms=android --org com.kyunghoon --project-name evidencesnap ."
 
       - name: Restore Custom Files, Configure Dependencies, and Generate Android App Icon from icon.png
         run: |
@@ -58,14 +62,14 @@ jobs:
           flutter pub add image google_mlkit_text_recognition
           flutter pub add --dev flutter_launcher_icons
           if [ -f icon.png ]; then
-            printf 'flutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "icon.png"\n  min_sdk_android: 24\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' > flutter_launcher_icons.yaml
+            printf 'flutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "icon.png"\n  min_sdk_android: 21\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' > flutter_launcher_icons.yaml
             flutter pub get
             dart run flutter_launcher_icons -f flutter_launcher_icons.yaml || true
           else
             flutter pub get
           fi
           if [ -f /tmp/AndroidManifest.xml.bak ]; then
-            sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/package="com.example.doc_snap_archive"//g' -e 's/package="com.tectura77.doc_snap_archive"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml
+            sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/package="com.example.doc_snap_archive"//g' -e 's/package="com.tectura77.doc_snap_archive"//g' -e 's/package="com.kyunghoon.evidencesnap"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml
           fi
 
       - name: Prepare 100% Fixed Upload Keystore (Byte-Identical Certificate for Seamless Update & Play Store)
@@ -175,7 +179,6 @@ jobs:
           ) + "\n-----END RSA PRIVATE KEY-----\n"
           open('/tmp/fixed_key.pem', 'w').write(pem)
 
-          # Fixed validity: 2026-01-01 00:00:00Z to 2056-01-01 00:00:00Z
           alg_rsa_sha256 = bytes.fromhex("300d06092a864886f70d01010b0500")
           alg_rsa_enc = bytes.fromhex("300d06092a864886f70d0101010500")
           rdn_cn = bytes.fromhex("3117301506035504030c0e446f63536e617041726368697665")
@@ -220,7 +223,7 @@ jobs:
           PYEOF
           fi
 
-      - name: Configure Gradle, SDK 35, Fixed Release Signing, and Play Store Package ID
+      - name: Configure Gradle, SDK 35, Fixed Release Signing, and Package ID (com.kyunghoon.evidencesnap)
         env:
           KEY_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS_SECRET: ${{ secrets.KEY_ALIAS }}
@@ -234,12 +237,17 @@ jobs:
           sed -i -E 's/gradle-[0-9.]+-(all|bin)\.zip/gradle-8.10.2-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
 
           if [ -f android/app/build.gradle.kts ]; then
-            sed -i -E 's/com\.example\.doc_snap_archive/com.tectura77.doc_snap_archive/g' android/app/build.gradle.kts
-            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 36/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 36/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
+            sed -i -E 's/com\.example\.doc_snap_archive/com.kyunghoon.evidencesnap/g' android/app/build.gradle.kts
+            sed -i -E 's/com\.tectura77\.doc_snap_archive/com.kyunghoon.evidencesnap/g' android/app/build.gradle.kts
+            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts
             sed -i -E 's/signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)//g' android/app/build.gradle.kts
             cat << EOF >> android/app/build.gradle.kts
 
           android {
+              namespace = "com.kyunghoon.evidencesnap"
+              defaultConfig {
+                  applicationId = "com.kyunghoon.evidencesnap"
+              }
               signingConfigs {
                   create("release") {
                       storeFile = file("upload-keystore.jks")
@@ -275,19 +283,19 @@ jobs:
       - name: Upload Signed Release APK to Artifacts (스마트폰 바로 설치 및 덮어쓰기 업데이트용)
         uses: actions/upload-artifact@v4
         with:
-          name: doc-snap-archive-release-apk
+          name: evidencesnap-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 
       - name: Upload Signed Play Store AAB to Artifacts (구글 플레이스토어 정식 등록용)
         uses: actions/upload-artifact@v4
         with:
-          name: doc-snap-archive-playstore-aab
+          name: evidencesnap-playstore-aab
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
   build-ios:
-    name: Build iOS App (Supports App Store Signed IPA or Unsigned IPA)
+    name: Build iOS App & Upload to App Store Connect (com.kyunghoon.evidencesnap)
     runs-on: macos-latest
 
     steps:
@@ -311,10 +319,10 @@ jobs:
             cp main.dart /tmp/main.dart.bak
           fi
 
-      - name: Create Flutter iOS Scaffold
-        run: "rm -rf ios && flutter create --platforms=ios --org com.tectura77 --project-name doc_snap_archive ."
+      - name: Create Flutter iOS Scaffold (com.kyunghoon.evidencesnap)
+        run: "rm -rf ios && flutter create --platforms=ios --org com.kyunghoon --project-name evidencesnap ."
 
-      - name: Restore Custom Files, Generate iOS App Icon, and Configure iOS Info.plist Permissions & Podfile (iOS 15.5)
+      - name: Restore Custom Files, Generate iOS App Icon, and Configure Bundle ID & Info.plist Permissions
         run: |
           mkdir -p lib
           sed -e '/flutter_web_auth_2/d' /tmp/pubspec.yaml.bak > pubspec.yaml
@@ -330,38 +338,95 @@ jobs:
           else
             flutter pub get
           fi
+          # ★ iOS 배포 타겟 15.5 및 번들 ID(com.kyunghoon.evidencesnap) 강제 고정
           sed -i '' "s/.*platform :ios.*/platform :ios, '15.5'/g" ios/Podfile || true
           sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g" ios/Runner.xcodeproj/project.pbxproj || true
-          # ★ 애플 앱스토어 심사 필수: 카메라 및 사진첩 접근 권한 안내 문구(NSCameraUsageDescription, NSPhotoLibraryUsageDescription) 자동 삽입!
+          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = com.kyunghoon.evidencesnap;/g' ios/Runner.xcodeproj/project.pbxproj
+          # ★ 애플 앱스토어 심사 필수: 암호화 수출 규정 면제(ITSAppUsesNonExemptEncryption=false) 및 카메라/사진첩 접근 권한 안내 문구 자동 삽입
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string '공문, 자재송장, 영수증, 명함 및 PDF 변환할 문서를 촬영하기 위해 카메라 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSCameraUsageDescription '공문, 자재송장, 영수증, 명함 및 PDF 변환할 문서를 촬영하기 위해 카메라 권한이 필요합니다.'" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string '갤러리에 저장된 서류, 영수증, 명함 사진을 불러와 스캔 및 PDF로 변환하기 위해 사진첩 접근 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryUsageDescription '갤러리에 저장된 서류, 영수증, 명함 사진을 불러와 스캔 및 PDF로 변환하기 위해 사진첩 접근 권한이 필요합니다.'" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string '생성된 PDF 및 스캔 문서를 저장하기 위해 사진첩 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName '증빙서류 스냅'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string '증빙서류 스냅'" ios/Runner/Info.plist
 
-      - name: Build iOS App & Upload to App Store Connect (If Apple Secrets Provided) or Build Unsigned IPA
+      - name: Sign with Provisioning Profile (com.kyunghoon.evidencesnap) & Upload to App Store Connect
         env:
-          IOS_CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
-          IOS_CERT_PASS: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-          IOS_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
-          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          # ★ 기존 시크릿 이름과 보편적인 시크릿 이름을 모두 자동 인식하도록 호환 처리!
+          IOS_CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 || secrets.BUILD_CERTIFICATE_BASE64 || secrets.P12_BASE64 }}
+          IOS_CERT_PASS: ${{ secrets.IOS_CERTIFICATE_PASSWORD || secrets.P12_PASSWORD || secrets.CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 || secrets.BUILD_PROVISION_PROFILE_BASE64 || secrets.PROVISIONING_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID || secrets.APP_STORE_CONNECT_API_KEY_ID || secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID || secrets.APP_STORE_CONNECT_ISSUER_ID || secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY || secrets.APP_STORE_CONNECT_API_PRIVATE_KEY || secrets.ASC_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
+          set -e
           BUILD_NUM=$((100 + ${{ github.run_number }}))
+
           if [ -n "$IOS_CERT_B64" ] && [ -n "$IOS_PROFILE_B64" ]; then
-            echo "Apple Signing Secrets detected! Building signed App Store IPA..."
-            security create-keychain -p "buildpass" build.keychain
-            security default-keychain -s build.keychain
-            security unlock-keychain -p "buildpass" build.keychain
-            security set-keychain-settings -t 3600 -u build.keychain
-            echo "$IOS_CERT_B64" | base64 --decode > /tmp/dist.p12
-            security import /tmp/dist.p12 -k build.keychain -P "$IOS_CERT_PASS" -T /usr/bin/codesign
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "buildpass" build.keychain
+            echo "✅ Apple Signing Certificate & Provisioning Profile detected! Configuring manual code signing for com.kyunghoon.evidencesnap..."
+            KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+            KEYCHAIN_PASS="temp_build_keychain_pass"
+
+            security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+            echo "$IOS_CERT_B64" | tr -d ' \n\r\t' | base64 --decode > /tmp/dist.p12
+            security import /tmp/dist.p12 -P "$IOS_CERT_PASS" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+            echo "$IOS_PROFILE_B64" | tr -d ' \n\r\t' | base64 --decode > /tmp/profile.mobileprovision
+            security cms -D -i /tmp/profile.mobileprovision > /tmp/profile.plist
+
+            UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /tmp/profile.plist)
+            PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" /tmp/profile.plist)
+            TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" /tmp/profile.plist)
+            echo "📌 Provisioning Profile Loaded -> Name: $PROFILE_NAME | UUID: $UUID | TeamID: $TEAM_ID"
+
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-            echo "$IOS_PROFILE_B64" | base64 --decode > /tmp/profile.mobileprovision
-            UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< $(/usr/bin/security cms -D -i /tmp/profile.mobileprovision))
-            TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" /dev/stdin <<< $(/usr/bin/security cms -D -i /tmp/profile.mobileprovision))
             cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+
+            # ★ Runner 타겟에 Manual Signing + Provisioning Profile(UUID/Name) + Team ID 정확히 주입 (Pod 타겟은 서명 비활성화)
+            python3 - "$UUID" "$PROFILE_NAME" "$TEAM_ID" << 'PY_SIGN'
+          import sys, re
+          uuid, prof_name, team_id = sys.argv[1], sys.argv[2], sys.argv[3]
+          pbx_path = 'ios/Runner.xcodeproj/project.pbxproj'
+          txt = open(pbx_path, 'r').read()
+          txt = re.sub(r'CODE_SIGN_STYLE\s*=\s*[^;]+;', 'CODE_SIGN_STYLE = Manual;', txt)
+          txt = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*[^;]+;', 'PRODUCT_BUNDLE_IDENTIFIER = com.kyunghoon.evidencesnap;', txt)
+          txt = re.sub(
+              r'(PRODUCT_BUNDLE_IDENTIFIER = com\.kyunghoon\.evidencesnap;)',
+              f'\1\n\t\t\t\tDEVELOPMENT_TEAM = {team_id};\n\t\t\t\tCODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";\n\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";\n\t\t\t\tPROVISIONING_PROFILE = "{uuid}";\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{prof_name}";',
+              txt
+          )
+          open(pbx_path, 'w').write(txt)
+          PY_SIGN
+
+            # Podfile에 Pods 타겟 코드서명 비활성화 설정 추가 (Xcode 15/16 충돌 방지)
+            cat << 'POD_EOF' >> ios/Podfile
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+              target.build_configurations.each do |config|
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.5'
+                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+              end
+            end
+          end
+          POD_EOF
+            # 만약 기존 Podfile에 기본 post_install 블록이 중복되면 정리
+            python3 - << 'PY_POD'
+          p = open('ios/Podfile').read()
+          parts = p.split('post_install do |installer|')
+          if len(parts) > 2:
+              open('ios/Podfile', 'w').write(parts[0] + 'post_install do |installer|' + parts[-1])
+          PY_POD
+
             cat <<PLIST > /tmp/ExportOptions.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -371,6 +436,15 @@ jobs:
             <string>app-store</string>
             <key>teamID</key>
             <string>$TEAM_ID</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.kyunghoon.evidencesnap</key>
+              <string>$UUID</string>
+            </dict>
             <key>uploadBitcode</key>
             <false/>
             <key>uploadSymbols</key>
@@ -378,13 +452,28 @@ jobs:
           </dict>
           </plist>
           PLIST
+
             flutter build ipa --release --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --export-options-plist=/tmp/ExportOptions.plist --no-tree-shake-icons
             mkdir -p build/ios/ipa_out
-            cp build/ios/ipa/*.ipa build/ios/ipa_out/doc-snap-archive-appstore.ipa
+            cp build/ios/ipa/*.ipa build/ios/ipa_out/evidencesnap-appstore.ipa
+
+            # ★ App Store Connect 자동 업로드 (API Key 방식 또는 Apple ID + 앱 암호 방식 모두 지원!)
             if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_PRIVATE_KEY" ]; then
+              echo "🚀 Uploading IPA to App Store Connect via API Key ($ASC_KEY_ID)..."
               mkdir -p ~/.appstoreconnect/private_keys
-              echo "$ASC_PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
-              xcrun altool --upload-app --type ios -f build/ios/ipa_out/doc-snap-archive-appstore.ipa --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+              if echo "$ASC_PRIVATE_KEY" | grep -q "BEGIN PRIVATE KEY"; then
+                echo "$ASC_PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+              else
+                echo "$ASC_PRIVATE_KEY" | tr -d ' \n\r\t' | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+              fi
+              xcrun altool --upload-app --type ios -f build/ios/ipa_out/evidencesnap-appstore.ipa --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+              echo "✅ Successfully uploaded com.kyunghoon.evidencesnap to App Store Connect!"
+            elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
+              echo "🚀 Uploading IPA to App Store Connect via Apple ID ($APPLE_ID)..."
+              xcrun altool --upload-app --type ios -f build/ios/ipa_out/evidencesnap-appstore.ipa -u "$APPLE_ID" -p "$APPLE_APP_SPECIFIC_PASSWORD"
+              echo "✅ Successfully uploaded com.kyunghoon.evidencesnap to App Store Connect!"
+            else
+              echo "⚠️ App Store Connect API Key or Apple ID credentials not found in Secrets. Signed IPA is saved to Artifacts."
             fi
           else
             echo "Building Unsigned IPA (Add Apple Secrets to sign & auto-upload to App Store Connect)..."
@@ -392,12 +481,12 @@ jobs:
             mkdir -p build/ios/ipa/Payload build/ios/ipa_out
             APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
             cp -R "$APP_PATH" build/ios/ipa/Payload/Runner.app
-            cd build/ios/ipa && zip -qry ../ipa_out/doc-snap-archive-ios.ipa Payload
+            cd build/ios/ipa && zip -qry ../ipa_out/evidencesnap-unsigned.ipa Payload
           fi
 
       - name: Upload iOS IPA to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: doc-snap-archive-ios-ipa
+          name: evidencesnap-ios-ipa
           path: build/ios/ipa_out/*.ipa
           if-no-files-found: error
