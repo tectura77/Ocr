@@ -351,13 +351,13 @@ jobs:
 
       - name: Sign with Provisioning Profile (com.kyunghoon.evidencesnap) & Upload to App Store Connect
         env:
-          # ★ 기존 시크릿 이름과 보편적인 시크릿 이름을 모두 자동 인식하도록 호환 처리!
-          IOS_CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 || secrets.BUILD_CERTIFICATE_BASE64 || secrets.P12_BASE64 }}
-          IOS_CERT_PASS: ${{ secrets.IOS_CERTIFICATE_PASSWORD || secrets.P12_PASSWORD || secrets.CERTIFICATE_PASSWORD }}
-          IOS_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 || secrets.BUILD_PROVISION_PROFILE_BASE64 || secrets.PROVISIONING_PROFILE_BASE64 }}
+          # ★ 등록하신 모든 시크릿 이름과 보편적인 시크릿 이름을 모두 자동 인식하도록 호환 처리!
+          IOS_CERT_B64: ${{ secrets.P12_BASE64 || secrets.IOS_CERT_B64 || secrets.IOS_CERTIFICATE_BASE64 || secrets.BUILD_CERTIFICATE_BASE64 || secrets.ISO_P12_BASE64 }}
+          IOS_CERT_PASS: ${{ secrets.CERTIFICATE_PASSWORD || secrets.IOS_CERT_PASS || secrets.IOS_CERTIFICATE_PASSWORD || secrets.P12_PASSWORD }}
+          IOS_PROFILE_B64: ${{ secrets.PROVISIONING_PROFILE_BASE64 || secrets.IOS_PROFILE_B64 || secrets.IOS_PROFILE_BASE64 || secrets.IOS_PROVISIONING_PROFILE_BASE64 || secrets.BUILD_PROVISION_PROFILE_BASE64 }}
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID || secrets.APP_STORE_CONNECT_API_KEY_ID || secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID || secrets.APP_STORE_CONNECT_ISSUER_ID || secrets.ASC_ISSUER_ID }}
-          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY || secrets.APP_STORE_CONNECT_API_PRIVATE_KEY || secrets.ASC_PRIVATE_KEY }}
+          ASC_PRIVATE_KEY: ${{ secrets.IOS_API_KEY_BASE64 || secrets.APPSTORE_API_PRIVATE_KEY || secrets.APP_STORE_CONNECT_API_PRIVATE_KEY || secrets.ASC_PRIVATE_KEY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
@@ -389,19 +389,27 @@ jobs:
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
             cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
 
-            # ★ Runner 타겟에 Manual Signing + Provisioning Profile(UUID/Name) + Team ID 정확히 주입 (Pod 타겟은 서명 비활성화)
+            # ★ Runner 타겟에 Manual Signing + Provisioning Profile(UUID/Name) + Team ID 정확히 주입 (문법 파싱 에러 방지)
             python3 - "$UUID" "$PROFILE_NAME" "$TEAM_ID" << 'PY_SIGN'
           import sys, re
           uuid, prof_name, team_id = sys.argv[1], sys.argv[2], sys.argv[3]
           pbx_path = 'ios/Runner.xcodeproj/project.pbxproj'
           txt = open(pbx_path, 'r').read()
           txt = re.sub(r'CODE_SIGN_STYLE\s*=\s*[^;]+;', 'CODE_SIGN_STYLE = Manual;', txt)
-          txt = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*[^;]+;', 'PRODUCT_BUNDLE_IDENTIFIER = com.kyunghoon.evidencesnap;', txt)
-          txt = re.sub(
-              r'(PRODUCT_BUNDLE_IDENTIFIER = com\.kyunghoon\.evidencesnap;)',
-              f'\1\n\t\t\t\tDEVELOPMENT_TEAM = {team_id};\n\t\t\t\tCODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";\n\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";\n\t\t\t\tPROVISIONING_PROFILE = "{uuid}";\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{prof_name}";',
-              txt
+          txt = re.sub(r'DEVELOPMENT_TEAM\s*=\s*[^;]+;', f'DEVELOPMENT_TEAM = {team_id};', txt)
+          txt = re.sub(r'PROVISIONING_PROFILE_SPECIFIER\s*=\s*[^;]+;', f'PROVISIONING_PROFILE_SPECIFIER = "{prof_name}";', txt)
+          
+          # Runner 본 타겟에만 안전하게 서명 설정 주입 (raw f-string으로 \1 깨짐 완벽 방지)
+          replacement = (
+              rf'\1' + '\n'
+              f'\t\t\t\tDEVELOPMENT_TEAM = {team_id};\n'
+              f'\t\t\t\tCODE_SIGN_STYLE = Manual;\n'
+              f'\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";\n'
+              f'\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";\n'
+              f'\t\t\t\tPROVISIONING_PROFILE = "{uuid}";\n'
+              f'\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{prof_name}";'
           )
+          txt = re.sub(r'(PRODUCT_BUNDLE_IDENTIFIER = com\.kyunghoon\.evidencesnap;)', replacement, txt)
           open(pbx_path, 'w').write(txt)
           PY_SIGN
 
