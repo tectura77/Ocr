@@ -235,7 +235,7 @@ jobs:
 
           if [ -f android/app/build.gradle.kts ]; then
             sed -i -E 's/com\.example\.doc_snap_archive/com.tectura77.doc_snap_archive/g' android/app/build.gradle.kts
-            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
+            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 36/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 36/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
             sed -i -E 's/signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)//g' android/app/build.gradle.kts
             cat << EOF >> android/app/build.gradle.kts
 
