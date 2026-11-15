@@ -62,7 +62,7 @@ jobs:
           flutter pub add "share_plus:^10.1.4" "path_provider:^2.1.5" "shared_preferences:^2.3.5" "image_picker:^1.1.2" "file_picker:^8.1.7" image google_mlkit_text_recognition record
           flutter pub add --dev flutter_launcher_icons
           if [ -f icon.png ]; then
-            printf 'flutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "icon.png"\n  min_sdk_android: 21\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' > flutter_launcher_icons.yaml
+            printf 'flutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "icon.png"\n  min_sdk_android: 24\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' > flutter_launcher_icons.yaml
             flutter pub get
             dart run flutter_launcher_icons -f flutter_launcher_icons.yaml || true
           else
@@ -242,14 +242,17 @@ jobs:
           if [ -f android/app/build.gradle.kts ]; then
             sed -i -E 's/com\.example\.doc_snap_archive/com.kyunghoon.evidencesnap/g' android/app/build.gradle.kts
             sed -i -E 's/com\.tectura77\.doc_snap_archive/com.kyunghoon.evidencesnap/g' android/app/build.gradle.kts
-            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 21/g' android/app/build.gradle.kts
+            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 24/g; s/minSdk\s*=\s*21/minSdk = 24/g' android/app/build.gradle.kts
             sed -i -E 's/signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)//g' android/app/build.gradle.kts
             cat << EOF >> android/app/build.gradle.kts
 
           android {
               namespace = "com.kyunghoon.evidencesnap"
+              compileSdk = 35
               defaultConfig {
                   applicationId = "com.kyunghoon.evidencesnap"
+                  minSdk = 24
+                  targetSdk = 35
               }
               signingConfigs {
                   create("release") {
@@ -270,6 +273,44 @@ jobs:
           }
           dependencies {
               implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+          }
+          EOF
+          elif [ -f android/app/build.gradle ]; then
+            sed -i -E 's/com\.example\.doc_snap_archive/com.kyunghoon.evidencesnap/g' android/app/build.gradle
+            sed -i -E 's/com\.tectura77\.doc_snap_archive/com.kyunghoon.evidencesnap/g' android/app/build.gradle
+            sed -i -E 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 35/g; s/compileSdkVersion\s+flutter\.compileSdkVersion/compileSdkVersion 35/g' android/app/build.gradle
+            sed -i -E 's/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/targetSdkVersion\s+flutter\.targetSdkVersion/targetSdkVersion 35/g' android/app/build.gradle
+            sed -i -E 's/minSdk\s*=\s*flutter\.minSdkVersion/minSdk = 24/g; s/minSdkVersion\s+flutter\.minSdkVersion/minSdkVersion 24/g; s/minSdkVersion\s+21/minSdkVersion 24/g' android/app/build.gradle
+            sed -i -E 's/signingConfig\s+signingConfigs\.debug//g; s/signingConfig\s*=\s*signingConfigs\.debug//g' android/app/build.gradle
+            cat << EOF >> android/app/build.gradle
+
+          android {
+              namespace "com.kyunghoon.evidencesnap"
+              compileSdkVersion 35
+              defaultConfig {
+                  applicationId "com.kyunghoon.evidencesnap"
+                  minSdkVersion 24
+                  targetSdkVersion 35
+              }
+              signingConfigs {
+                  release {
+                      storeFile file("upload-keystore.jks")
+                      storePassword "$PASS"
+                      keyAlias "$ALIAS_NAME"
+                      keyPassword "$PASS"
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                      shrinkResources false
+                      proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+                  }
+              }
+          }
+          dependencies {
+              implementation "com.google.mlkit:text-recognition-korean:16.0.1"
           }
           EOF
           fi
