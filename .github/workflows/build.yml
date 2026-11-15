@@ -435,21 +435,28 @@ jobs:
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
             cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
 
-            # ★ Runner 타겟에 Manual Signing + Provisioning Profile(UUID/Name) + Team ID 정확히 주입 (Pod 타겟은 서명 비활성화)
+            # ★ Runner 타겟에 Manual Signing + Provisioning Profile(UUID/Name) + Team ID 정확히 주입 (project.pbxproj 손상 방지)
             python3 - "$UUID" "$PROFILE_NAME" "$TEAM_ID" << 'PY_SIGN'
           import sys, re
           uuid, prof_name, team_id = sys.argv[1], sys.argv[2], sys.argv[3]
           pbx_path = 'ios/Runner.xcodeproj/project.pbxproj'
           txt = open(pbx_path, 'r').read()
-          txt = re.sub(r'CODE_SIGN_STYLE\s*=\s*[^;]+;', 'CODE_SIGN_STYLE = Manual;', txt)
+          for k in ['CODE_SIGN_STYLE', 'DEVELOPMENT_TEAM', 'CODE_SIGN_IDENTITY', '"CODE_SIGN_IDENTITY[sdk=iphoneos*]"', 'PROVISIONING_PROFILE', 'PROVISIONING_PROFILE_SPECIFIER']:
+              txt = re.sub(rf'^[ \t]*{re.escape(k)}\s*=\s*[^;]+;\r?\n?', '', txt, flags=re.MULTILINE)
           txt = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*[^;]+;', 'PRODUCT_BUNDLE_IDENTIFIER = com.kyunghoon.evidencesnap;', txt)
-          txt = re.sub(
-              r'(PRODUCT_BUNDLE_IDENTIFIER = com\.kyunghoon\.evidencesnap;)',
-              f'\1\n\t\t\t\tDEVELOPMENT_TEAM = {team_id};\n\t\t\t\tCODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";\n\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";\n\t\t\t\tPROVISIONING_PROFILE = "{uuid}";\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{prof_name}";',
-              txt
+          signing_block = (
+              'PRODUCT_BUNDLE_IDENTIFIER = com.kyunghoon.evidencesnap;\n'
+              f'\t\t\t\tDEVELOPMENT_TEAM = {team_id};\n'
+              '\t\t\t\tCODE_SIGN_STYLE = Manual;\n'
+              '\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";\n'
+              '\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";\n'
+              f'\t\t\t\tPROVISIONING_PROFILE = "{uuid}";\n'
+              f'\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{prof_name}";'
           )
+          txt = txt.replace('PRODUCT_BUNDLE_IDENTIFIER = com.kyunghoon.evidencesnap;', signing_block)
           open(pbx_path, 'w').write(txt)
           PY_SIGN
+            plutil -lint ios/Runner.xcodeproj/project.pbxproj
 
             # Podfile에 Pods 타겟 코드서명 비활성화 설정 추가 (Xcode 15/16 충돌 방지)
             cat << 'POD_EOF' >> ios/Podfile
