@@ -59,7 +59,7 @@ jobs:
           sed -e '/flutter_web_auth_2/d' /tmp/main.dart.bak > lib/main.dart
           cp lib/main.dart main.dart
           if [ -f /tmp/icon.png.bak ]; then cp /tmp/icon.png.bak icon.png; fi
-          flutter pub add image google_mlkit_text_recognition
+          flutter pub add "share_plus:^10.1.4" "path_provider:^2.1.5" "shared_preferences:^2.3.5" "image_picker:^1.1.2" "file_picker:^8.1.7" image google_mlkit_text_recognition record
           flutter pub add --dev flutter_launcher_icons
           if [ -f icon.png ]; then
             printf 'flutter_launcher_icons:\n  android: true\n  ios: false\n  image_path: "icon.png"\n  min_sdk_android: 21\n  adaptive_icon_background: "#1E3A8A"\n  adaptive_icon_foreground: "icon.png"\n' > flutter_launcher_icons.yaml
@@ -70,6 +70,9 @@ jobs:
           fi
           if [ -f /tmp/AndroidManifest.xml.bak ]; then
             sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/package="com.example.doc_snap_archive"//g' -e 's/package="com.tectura77.doc_snap_archive"//g' -e 's/package="com.kyunghoon.evidencesnap"//g' /tmp/AndroidManifest.xml.bak > android/app/src/main/AndroidManifest.xml
+          fi
+          if ! grep -q "android.permission.RECORD_AUDIO" android/app/src/main/AndroidManifest.xml; then
+            sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.RECORD_AUDIO" \/>/' android/app/src/main/AndroidManifest.xml
           fi
 
       - name: Prepare 100% Fixed Upload Keystore (Byte-Identical Certificate for Seamless Update & Play Store)
@@ -329,7 +332,8 @@ jobs:
           sed -e '/flutter_web_auth_2/d' /tmp/main.dart.bak > lib/main.dart
           cp lib/main.dart main.dart
           if [ -f /tmp/icon.png.bak ]; then cp /tmp/icon.png.bak icon.png; fi
-          flutter pub add image google_mlkit_text_recognition
+          # ★ ITMS-91061 해결: 개인정보 보호 매니페스트(PrivacyInfo.xcprivacy)가 포함된 최신 share_plus(^10.1.4) 및 플러그인 버전으로 강제 업그레이드!
+          flutter pub add "share_plus:^10.1.4" "path_provider:^2.1.5" "shared_preferences:^2.3.5" "image_picker:^1.1.2" "file_picker:^8.1.7" image google_mlkit_text_recognition record
           flutter pub add --dev flutter_launcher_icons
           if [ -f icon.png ]; then
             printf 'flutter_launcher_icons:\n  android: false\n  ios: true\n  image_path: "icon.png"\n  remove_alpha_ios: true\n' > flutter_launcher_icons.yaml
@@ -347,17 +351,18 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string '공문, 자재송장, 영수증, 명함 및 PDF 변환할 문서를 촬영하기 위해 카메라 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSCameraUsageDescription '공문, 자재송장, 영수증, 명함 및 PDF 변환할 문서를 촬영하기 위해 카메라 권한이 필요합니다.'" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string '갤러리에 저장된 서류, 영수증, 명함 사진을 불러와 스캔 및 PDF로 변환하기 위해 사진첩 접근 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryUsageDescription '갤러리에 저장된 서류, 영수증, 명함 사진을 불러와 스캔 및 PDF로 변환하기 위해 사진첩 접근 권한이 필요합니다.'" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string '생성된 PDF 및 스캔 문서를 저장하기 위해 사진첩 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string '현장 회의 녹취록을 녹음하고 AI로 요약하기 위해 마이크 권한이 필요합니다.'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription '현장 회의 녹취록을 녹음하고 AI로 요약하기 위해 마이크 권한이 필요합니다.'" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName '증빙서류 스냅'" ios/Runner/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string '증빙서류 스냅'" ios/Runner/Info.plist
 
       - name: Sign with Provisioning Profile (com.kyunghoon.evidencesnap) & Upload to App Store Connect
         env:
-          # ★ 등록하신 모든 시크릿 이름과 보편적인 시크릿 이름을 모두 자동 인식하도록 호환 처리!
-          IOS_CERT_B64: ${{ secrets.P12_BASE64 || secrets.IOS_CERT_B64 || secrets.IOS_CERTIFICATE_BASE64 || secrets.BUILD_CERTIFICATE_BASE64 || secrets.ISO_P12_BASE64 }}
-          IOS_CERT_PASS: ${{ secrets.CERTIFICATE_PASSWORD || secrets.IOS_CERT_PASS || secrets.IOS_CERTIFICATE_PASSWORD || secrets.P12_PASSWORD }}
-          IOS_PROFILE_B64: ${{ secrets.PROVISIONING_PROFILE_BASE64 || secrets.IOS_PROFILE_B64 || secrets.IOS_PROFILE_BASE64 || secrets.IOS_PROVISIONING_PROFILE_BASE64 || secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          # ★ 기존 시크릿 이름과 보편적인 시크릿 이름을 모두 자동 인식하도록 호환 처리!
+          IOS_CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 || secrets.BUILD_CERTIFICATE_BASE64 || secrets.P12_BASE64 }}
+          IOS_CERT_PASS: ${{ secrets.IOS_CERTIFICATE_PASSWORD || secrets.P12_PASSWORD || secrets.CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 || secrets.BUILD_PROVISION_PROFILE_BASE64 || secrets.PROVISIONING_PROFILE_BASE64 }}
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID || secrets.APP_STORE_CONNECT_API_KEY_ID || secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID || secrets.APP_STORE_CONNECT_ISSUER_ID || secrets.ASC_ISSUER_ID }}
-          ASC_PRIVATE_KEY: ${{ secrets.IOS_API_KEY_BASE64 || secrets.APPSTORE_API_PRIVATE_KEY || secrets.APP_STORE_CONNECT_API_PRIVATE_KEY || secrets.ASC_PRIVATE_KEY }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY || secrets.APP_STORE_CONNECT_API_PRIVATE_KEY || secrets.ASC_PRIVATE_KEY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
@@ -389,27 +394,19 @@ jobs:
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
             cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
 
-            # ★ Runner 타겟에 Manual Signing + Provisioning Profile(UUID/Name) + Team ID 정확히 주입 (문법 파싱 에러 방지)
+            # ★ Runner 타겟에 Manual Signing + Provisioning Profile(UUID/Name) + Team ID 정확히 주입 (Pod 타겟은 서명 비활성화)
             python3 - "$UUID" "$PROFILE_NAME" "$TEAM_ID" << 'PY_SIGN'
           import sys, re
           uuid, prof_name, team_id = sys.argv[1], sys.argv[2], sys.argv[3]
           pbx_path = 'ios/Runner.xcodeproj/project.pbxproj'
           txt = open(pbx_path, 'r').read()
           txt = re.sub(r'CODE_SIGN_STYLE\s*=\s*[^;]+;', 'CODE_SIGN_STYLE = Manual;', txt)
-          txt = re.sub(r'DEVELOPMENT_TEAM\s*=\s*[^;]+;', f'DEVELOPMENT_TEAM = {team_id};', txt)
-          txt = re.sub(r'PROVISIONING_PROFILE_SPECIFIER\s*=\s*[^;]+;', f'PROVISIONING_PROFILE_SPECIFIER = "{prof_name}";', txt)
-          
-          # Runner 본 타겟에만 안전하게 서명 설정 주입 (raw f-string으로 \1 깨짐 완벽 방지)
-          replacement = (
-              rf'\1' + '\n'
-              f'\t\t\t\tDEVELOPMENT_TEAM = {team_id};\n'
-              f'\t\t\t\tCODE_SIGN_STYLE = Manual;\n'
-              f'\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";\n'
-              f'\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";\n'
-              f'\t\t\t\tPROVISIONING_PROFILE = "{uuid}";\n'
-              f'\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{prof_name}";'
+          txt = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER\s*=\s*[^;]+;', 'PRODUCT_BUNDLE_IDENTIFIER = com.kyunghoon.evidencesnap;', txt)
+          txt = re.sub(
+              r'(PRODUCT_BUNDLE_IDENTIFIER = com\.kyunghoon\.evidencesnap;)',
+              f'\1\n\t\t\t\tDEVELOPMENT_TEAM = {team_id};\n\t\t\t\tCODE_SIGN_STYLE = Manual;\n\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";\n\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";\n\t\t\t\tPROVISIONING_PROFILE = "{uuid}";\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{prof_name}";',
+              txt
           )
-          txt = re.sub(r'(PRODUCT_BUNDLE_IDENTIFIER = com\.kyunghoon\.evidencesnap;)', replacement, txt)
           open(pbx_path, 'w').write(txt)
           PY_SIGN
 
@@ -461,7 +458,78 @@ jobs:
           </plist>
           PLIST
 
+            # ★ 애플 ITMS-91061 원천 차단 1단계: 앱 기본 PrivacyInfo.xcprivacy 생성 및 Pod 최신화
+            cat << 'PRIV_EOF' > ios/Runner/PrivacyInfo.xcprivacy
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>NSPrivacyTracking</key>
+            <false/>
+            <key>NSPrivacyTrackingDomains</key>
+            <array/>
+            <key>NSPrivacyCollectedDataTypes</key>
+            <array/>
+            <key>NSPrivacyAccessedAPITypes</key>
+            <array>
+              <dict>
+                <key>NSPrivacyAccessedAPIType</key>
+                <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+                <key>NSPrivacyAccessedAPITypeReasons</key>
+                <array>
+                  <string>CA92.1</string>
+                </array>
+              </dict>
+              <dict>
+                <key>NSPrivacyAccessedAPIType</key>
+                <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+                <key>NSPrivacyAccessedAPITypeReasons</key>
+                <array>
+                  <string>C617.1</string>
+                </array>
+              </dict>
+              <dict>
+                <key>NSPrivacyAccessedAPIType</key>
+                <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+                <key>NSPrivacyAccessedAPITypeReasons</key>
+                <array>
+                  <string>35F9.1</string>
+                </array>
+              </dict>
+              <dict>
+                <key>NSPrivacyAccessedAPIType</key>
+                <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+                <key>NSPrivacyAccessedAPITypeReasons</key>
+                <array>
+                  <string>E174.1</string>
+                </array>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          PRIV_EOF
+            sed -i '' 's/^          //' ios/Runner/PrivacyInfo.xcprivacy
+
             flutter build ipa --release --build-name="1.0.${{ github.run_number }}" --build-number="$BUILD_NUM" --export-options-plist=/tmp/ExportOptions.plist --no-tree-shake-icons
+
+            # ★ 애플 ITMS-91061 원천 차단 2단계: 아카이브 내 share_plus.framework 등 모든 프레임워크에 PrivacyInfo.xcprivacy 누락 여부 검사 및 자동 주입 후 재익스포트!
+            ARCHIVE_PATH="build/ios/archive/Runner.xcarchive"
+            if [ -d "$ARCHIVE_PATH" ]; then
+              cp ios/Runner/PrivacyInfo.xcprivacy "$ARCHIVE_PATH/Products/Applications/Runner.app/PrivacyInfo.xcprivacy" || true
+              for FW_DIR in "$ARCHIVE_PATH/Products/Applications/Runner.app/Frameworks/"*.framework; do
+                if [ -d "$FW_DIR" ]; then
+                  if [ ! -f "$FW_DIR/PrivacyInfo.xcprivacy" ] && ! find "$FW_DIR" -name "PrivacyInfo.xcprivacy" | grep -q "PrivacyInfo.xcprivacy"; then
+                    echo "🛡️ Injecting PrivacyInfo.xcprivacy into $(basename "$FW_DIR")..."
+                    cp ios/Runner/PrivacyInfo.xcprivacy "$FW_DIR/PrivacyInfo.xcprivacy"
+                  else
+                    echo "✅ $(basename "$FW_DIR") already contains PrivacyInfo.xcprivacy"
+                  fi
+                fi
+              done
+              rm -rf build/ios/ipa
+              xcodebuild -exportArchive -archivePath "$ARCHIVE_PATH" -exportOptionsPlist /tmp/ExportOptions.plist -exportPath build/ios/ipa
+            fi
+
             mkdir -p build/ios/ipa_out
             cp build/ios/ipa/*.ipa build/ios/ipa_out/evidencesnap-appstore.ipa
 
